@@ -89,7 +89,7 @@ Tracking or BinDiff), `td-server version set-current 1.1`, `td-server rebuild`.
 td setup https://saty.dev mygame --name you             # docker runner (Linux)
 td setup https://saty.dev mygame --name you --runner native --vc "C:\...\Microsoft Visual Studio 10.0\VC"
 cd mygame && td ghidra install && td ghidra build
-claude mcp add clank-together -- td mcp                  # or any MCP-capable agent
+claude mcp add clank-together -- td mcp --workspace "$PWD"   # or any MCP client: command "td", args ["mcp", "--workspace", "<dir>"]
 ```
 
 ## Tests

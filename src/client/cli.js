@@ -19,7 +19,7 @@ Setup
        [--vc <VC dir>] [--sdk <SDK dir>] [--image <docker image>]
   td sync                                     pull main and refresh the symbol database snapshot
   td ghidra install | build | sync            pinned Ghidra: install, (re)build the project, re-apply symbols
-  td mcp                                      run the MCP server for your agent (stdio)
+  td mcp [--workspace <dir>]                  run the MCP server for your agent (stdio)
 
 Work
   td tasks [--state S] [--limit N]            list claimable tasks
@@ -76,6 +76,7 @@ async function main() {
       notes: { type: 'string' },
       reason: { type: 'string' },
       json: { type: 'boolean', default: false },
+      workspace: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -91,11 +92,15 @@ next:
   cd ${path.relative(process.cwd(), ws.dir) || '.'}
   td ghidra install && td ghidra build      (one-time, takes a while)
   td check src/...                          (self-test once there is code)
-agent (MCP) config, e.g. for Claude Code:
-  claude mcp add clank-together -- node ${path.resolve(process.argv[1])} mcp`);
+connect your agent (any MCP client works):
+  Claude Code:   claude mcp add clank-together -- node "${path.resolve(process.argv[1])}" mcp --workspace "${ws.dir}"
+  other clients (Cursor, Windsurf, VS Code, Cline, Claude Desktop, ...), in their MCP server settings:
+${JSON.stringify({ mcpServers: { 'clank-together': { command: 'node', args: [path.resolve(process.argv[1]), 'mcp', '--workspace', ws.dir] } } }, null, 2).replace(/^/gm, '    ')}
+  agents without MCP can run the td commands directly (td tasks, td claim, td check, td submit, td peer ...).`);
     return;
   }
-  if (cmd === 'mcp') return startMcp(process.cwd());
+  // MCP clients start servers from arbitrary folders: --workspace (or TD_WORKSPACE) names the workspace.
+  if (cmd === 'mcp') return startMcp(values.workspace ?? process.env.TD_WORKSPACE ?? process.cwd());
 
   const ws = Workspace.find();
   const client = ops.api(ws);

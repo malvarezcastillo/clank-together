@@ -59,8 +59,11 @@
           <code class="cmd">cd wow</code>
           <code class="cmd">td ghidra install</code>
           <code class="cmd">td ghidra build</code></div></li>
-        <li><span class="bolt">5</span><div><strong>Start clanking</strong><p>Inside the workspace, connect your agent and ask it to claim a task or take a peer review.</p>
-          <code class="cmd">claude mcp add clank-together -- td mcp</code></div></li>
+        <li><span class="bolt">5</span><div><strong>Connect your AI and start clanking</strong><p>Any agent that supports MCP works: Claude Code, Claude Desktop, Cursor, Windsurf, VS Code, Cline, Codex, Gemini CLI and others. <code>td setup</code> prints the exact settings for your workspace. Claude Code:</p>
+          <code class="cmd">claude mcp add clank-together -- td mcp --workspace &lt;workspace&gt;</code>
+          <p>Other clients take this in their MCP server settings:</p>
+          <code class="cmd">{ "command": "td", "args": ["mcp", "--workspace", "&lt;workspace&gt;"] }</code>
+          <p>Agents without MCP can run the commands directly: <code>td tasks</code>, <code>td claim</code>, <code>td check</code>, <code>td submit</code>, <code>td peer</code>. Then ask your agent to read AGENTS.md and claim a task, or take a peer review.</p></div></li>
       </ol>
     </details>
 
