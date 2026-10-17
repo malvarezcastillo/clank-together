@@ -25,8 +25,9 @@ export const FUNCTION_KINDS = ['FUNCTION', 'STUB'];
 const ANNOTATION_RE = /^\s*\/\/\s*(FUNCTION|STUB|GLOBAL|VTABLE|STRING|SIZE)\s*:\s*(.*?)\s*$/;
 const ID_RE = /^(fn|gl|vt|st)_([0-9]{5,})$/;
 const SIZE_BODY_RE = /^0x([0-9a-fA-F]{1,8})$/;
-// Lines that look like an annotation attempt, so typos are reported instead of ignored.
-const LOOKS_LIKE_RE = /^\s*\/\/\s*(FUNCTION|STUB|GLOBAL|VTABLE|STRING|SIZE|LIBRARY)\b/i;
+// Lines that look like an annotation attempt (a keyword followed by an ID or an address), so typos
+// are reported instead of ignored. Ordinary comments ("// Function declarations") are not.
+const LOOKS_LIKE_RE = /^\s*\/\/\s*(FUNCTION|STUB|GLOBAL|VTABLE|STRING|SIZE|LIBRARY)\s*:?\s*((fn|gl|vt|st)_\d+|0x[0-9a-f]+)/i;
 
 export function isSymbolId(s) {
   return ID_RE.test(s);

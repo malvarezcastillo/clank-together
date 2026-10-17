@@ -150,12 +150,13 @@ export async function check(ws, files) {
     runners: ws.config.runners,
   });
   const rec = reconcile(result, ws.symbols);
-  return summarize(result, rec);
+  return summarize(result, rec, new Set(targets));
 }
 
-export function summarize(result, rec) {
+/** `files`: the files the user asked about; annotation problems elsewhere in the repo are not theirs. */
+export function summarize(result, rec, files = null) {
   return {
-    annotationErrors: result.annotationErrors,
+    annotationErrors: files ? result.annotationErrors.filter((e) => files.has(e.file)) : result.annotationErrors,
     units: result.units.map((u) => ({
       file: u.file,
       compiled: u.compiled,

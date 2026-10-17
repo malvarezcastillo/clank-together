@@ -29,6 +29,7 @@ Work
   td submit <taskId> [files...] [--notes T]   submit for server verification
   td result <attemptId>                       show a verification result
   td heartbeat <taskId> | td release <taskId>
+  td config [ghidraHome|server <value>]       show or change workspace settings
   td symbol <id|name|0xaddr>                  look up a symbol
   td symbol new <kind> <0xaddr> [--name N]    get a stable ID for a new global/vtable/string/function
   td decompile <symbol> | td disasm <symbol>  query the local Ghidra project
@@ -144,6 +145,17 @@ agent (MCP) config, e.g. for Claude Code:
       if (sub === 'verdict') return print(await client.post(`/api/peer-reviews/${id}/verdict`, { verdict, reason: values.reason, agentMeta: { client: 'td-cli' } }));
       if (sub === 'release') return print(await client.post(`/api/peer-reviews/${id}/release`));
       throw new Error('usage: td peer list|claim [id]|show <id>|verdict <id> same|different --reason ...|release <id>');
+    }
+    case 'config': {
+      // td config                    show settings (token hidden)
+      // td config <key> <value>      set one, e.g. `td config ghidraHome D:\ghidra_11.2.1_PUBLIC`
+      const [key, value] = args;
+      const SETTABLE = ['ghidraHome', 'server'];
+      if (!key) return print({ ...ws.config, token: ws.config.token ? '(set)' : null });
+      if (!SETTABLE.includes(key)) throw new Error(`settable keys: ${SETTABLE.join(', ')}`);
+      ws.config[key] = value;
+      ws.save();
+      return print(`${key} = ${value}`);
     }
     case 'ghidra':
       if (args[0] === 'install') return print(`Ghidra installed at ${await ghidra.installGhidra(ws)}`);

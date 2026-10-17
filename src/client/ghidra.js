@@ -51,7 +51,9 @@ export async function installGhidra(ws) {
     console.log(`downloading ${lock.url}`);
     await new Api('').download(lock.url, zip, lock.sha256);
   }
-  const r = os.platform() === 'win32' ? await run('tar', ['-xf', zip, '-C', toolsDir], { timeoutMs: 600_000 }) : await run('unzip', ['-q', '-o', zip, '-d', toolsDir], { timeoutMs: 600_000 });
+  // Windows' own tar.exe (bsdtar) unpacks zip files; a GNU tar earlier on PATH (Git Bash) would not.
+  const winTar = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+  const r = os.platform() === 'win32' ? await run(winTar, ['-xf', zip, '-C', toolsDir], { timeoutMs: 600_000 }) : await run('unzip', ['-q', '-o', zip, '-d', toolsDir], { timeoutMs: 600_000 });
   if (r.code !== 0) throw new Error(`could not unpack Ghidra: ${r.output}`);
   ws.config.ghidraHome = path.join(toolsDir, lock.dir);
   ws.save();

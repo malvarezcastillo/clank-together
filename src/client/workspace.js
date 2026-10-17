@@ -86,7 +86,11 @@ export class Workspace {
   }
 
   git(...args) {
-    return execFileSync('git', args, { cwd: this.dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    return this.gitRaw(...args).trim();
+  }
+
+  gitRaw(...args) {
+    return execFileSync('git', args, { cwd: this.dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   }
 
   head() {
@@ -95,7 +99,8 @@ export class Workspace {
 
   /** Files changed relative to HEAD (modified, added, untracked). */
   changedFiles() {
-    const out = this.git('status', '--porcelain', '--untracked-files=all');
+    // Untrimmed: each porcelain line starts with a two-column status that may begin with a space.
+    const out = this.gitRaw('status', '--porcelain', '--untracked-files=all');
     return out
       .split('\n')
       .filter(Boolean)
