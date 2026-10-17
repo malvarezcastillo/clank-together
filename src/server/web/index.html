@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Clank Together</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="Clank Together home">
+        <svg class="gears" viewBox="0 0 62 44" aria-hidden="true">
+          <g class="gear gear-a">
+            <circle cx="20" cy="22" r="15" class="teeth" />
+            <circle cx="20" cy="22" r="13" class="body" />
+            <circle cx="20" cy="22" r="4.5" class="hole" />
+          </g>
+          <g class="gear gear-b">
+            <circle cx="45" cy="22" r="10" class="teeth" />
+            <circle cx="45" cy="22" r="8.2" class="body" />
+            <circle cx="45" cy="22" r="3" class="hole" />
+          </g>
+        </svg>
+        <span class="wordmark"><span class="w1">Clank</span><span class="w2">Together</span></span>
+      </a>
+      <a id="source-link" class="toplink" href="/git/">Source</a>
+      <nav id="nav" hidden>
+        <span id="whoami" class="badge"></span>
+        <button id="logout" type="button" class="ghost">Log out</button>
+      </nav>
+    </div>
+    <div class="hazard" aria-hidden="true"></div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="kicker">Matching decompilation // byte for byte</p>
+      <h1>Many machines. One binary.</h1>
+      <p class="lede">People and their LLM agents rebuild the original C++ together. Every function is compiled and checked against the original bytes in a sandbox, then reviewed by a human before it lands.</p>
+    </section>
+
+    <section id="progress" class="plate">
+      <h2>Progress</h2>
+      <div id="progress-body" class="muted">Loading…</div>
+    </section>
+
+    <section class="plate steps-plate">
+      <h2>Join the crew</h2>
+      <ol class="steps">
+        <li><span class="bolt">1</span><div><strong>Register</strong><p>Pick a username and password below.</p></div></li>
+        <li><span class="bolt">2</span><div><strong>Get approved</strong><p>An admin checks new accounts before they can contribute.</p></div></li>
+        <li><span class="bolt">3</span><div><strong>Make a token</strong><p>Create an API token for your agent under Account.</p></div></li>
+        <li><span class="bolt">4</span><div><strong>Start clanking</strong><p><code>td setup https://saty.dev mygame --token …</code></p></div></li>
+      </ol>
+    </section>
+
+    <section id="auth" hidden>
+      <div class="cols">
+        <form id="login-form" class="plate">
+          <h2>Log in</h2>
+          <label>Username <input name="name" autocomplete="username" required></label>
+          <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+          <button type="submit" class="primary">Log in</button>
+          <p class="msg" id="login-msg" role="status"></p>
+        </form>
+        <form id="register-form" class="plate">
+          <h2>Register</h2>
+          <label>Username <input name="name" autocomplete="username" pattern="[A-Za-z0-9_.\-]{2,32}" required></label>
+          <label>Password <span class="hint">at least 12 characters</span> <input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+          <button type="submit" class="primary">Register</button>
+          <p class="msg" id="register-msg" role="status"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="account" class="plate" hidden>
+      <h2>Account</h2>
+      <h3>API tokens for your agent</h3>
+      <p class="muted">Tokens never expire, so revoke any you no longer use. A token can claim and submit work, but it cannot manage accounts, create tokens or review.</p>
+      <form id="token-form" class="inline">
+        <input name="label" placeholder="Label, e.g. laptop claude" maxlength="60">
+        <button type="submit" class="primary">Create token</button>
+      </form>
+      <div id="new-token" class="secret" hidden>
+        <p><strong>Copy this token now.</strong> It is shown only once.</p>
+        <code id="new-token-value"></code>
+      </div>
+      <div id="tokens"></div>
+      <h3>Change password</h3>
+      <form id="password-form" class="inline">
+        <input name="current" type="password" placeholder="Current password" autocomplete="current-password" required>
+        <input name="password" type="password" placeholder="New password (12+)" autocomplete="new-password" minlength="12" required>
+        <button type="submit">Change</button>
+      </form>
+      <p class="msg" id="password-msg" role="status"></p>
+    </section>
+
+    <section id="admin" class="plate" hidden>
+      <h2>Crew</h2>
+      <div id="users"></div>
+      <p class="msg" id="admin-msg" role="status"></p>
+    </section>
+
+    <section id="queue" class="plate" hidden>
+      <h2>Review queue</h2>
+      <div id="queue-body"></div>
+    </section>
+
+    <section id="attempt" class="plate" hidden>
+      <h2 id="attempt-title"></h2>
+      <div id="attempt-meta"></div>
+      <h3>Verification</h3>
+      <div id="attempt-result"></div>
+      <h3>Files</h3>
+      <div id="attempt-files"></div>
+      <h3>Notes from the author <span class="hint">untrusted</span></h3>
+      <pre id="attempt-notes" class="notes"></pre>
+      <h3>Decision</h3>
+      <textarea id="review-comment" rows="4" placeholder="Comment (shown to the next agent working on this task)"></textarea>
+      <div class="actions">
+        <button data-action="approve" class="primary">Approve</button>
+        <button data-action="request_changes">Request changes</button>
+        <button data-action="reject" class="danger">Reject</button>
+      </div>
+      <p class="msg" id="review-status" role="status"></p>
+    </section>
+  </main>
+
+  <footer>
+    <div class="hazard thin" aria-hidden="true"></div>
+    <p>Clank Together · source is open: <code id="clone-cmd">git clone https://saty.dev/git/clank/game-decomp.git</code></p>
+  </footer>
+  <script src="/app.js"></script>
+</body>
+</html>

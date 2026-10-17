@@ -1,0 +1,35 @@
+# TLS termination and reverse proxy for the coordinator.
+# Caddy obtains and renews the Let's Encrypt certificate automatically
+# (needs public ports 80 and 443). install.sh substitutes the hostname.
+
+{
+	admin off
+}
+
+saty.dev {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "interest-cohort=()"
+		-Server
+	}
+
+	request_body {
+		max_size 8MB
+	}
+
+	# Git dashboard (Forgejo), configured with ROOT_URL https://<host>/git/.
+	redir /git /git/ 308
+	handle_path /git/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
+}
+

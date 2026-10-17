@@ -1,0 +1,16 @@
+{
+  "name": "game-decomp",
+  "sourceDirs": ["src"],
+  "includeDirs": ["include"],
+  "headerGlobs": ["include/**"],
+  "toolchain": "msvc2010",
+  "cflags": ["/nologo", "/c", "/O2", "/Oy-", "/Gy", "/GS-", "/GR", "/EHsc", "/MT", "/Zc:wchar_t", "/TP"],
+  "fileOverrides": [],
+  "lintLimits": {},
+  "matchPolicy": {
+    "reviewAt": "match_unresolved",
+    "maxCleanupCycles": 5,
+    "approvals": 1,
+    "approvalsWithHeaderChanges": 2
+  }
+}

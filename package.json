@@ -1,0 +1,19 @@
+{
+  "name": "clank-together",
+  "version": "0.1.0",
+  "description": "Coordinator, verifier and agent client for collaborative (LLM-assisted) matching decompilation of MSVC-built executables",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "bin": {
+    "td": "src/client/cli.js",
+    "td-server": "src/server/cli.js"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "server": "node src/server/cli.js start",
+    "client": "node src/client/cli.js"
+  }
+}

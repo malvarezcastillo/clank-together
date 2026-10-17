@@ -1,0 +1,71 @@
+// The compile + compare pipeline. The server's verifier and the contributor's
+// `td check` both run this, so a local result predicts the server result.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { CoffObject } from './coff.js';
+import { parseListing, normalizePath } from './listing.js';
+import { compareObject } from './compare.js';
+import { lintAnnotations } from './annotations.js';
+import { lintPreprocessed } from './lint.js';
+import { compileUnits, prepareJobDir } from './build.js';
+import { scanAnnotations } from './project.js';
+
+/**
+ * @param {object} p
+ * @param {string} p.repoDir
+ * @param {string} p.jobDir
+ * @param {object} p.project
+ * @param {string[]} p.units                  .cpp files to compile and compare
+ * @param {Record<string,string>} [p.overrides] submitted file contents
+ * @param {Map<string,object>} p.symbols      ID -> {kind, addr, size, library}
+ * @param {Map<string,string>} p.nameIndex    decorated name -> ID
+ * @param {import('./pe.js').PEImage} p.pe
+ * @param {Record<string,object>} p.runners
+ */
+// lintUnits: units whose preprocessed output is scanned (default: all compiled units).
+export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, lintUnits = null }) {
+  const scan = scanAnnotations(repoDir, project, overrides);
+  const annotationErrors = [...scan.errors, ...lintAnnotations(scan.annotations, symbols)];
+
+  prepareJobDir({ repoDir, jobDir, project, overrides });
+  const compiled = await compileUnits({ jobDir, units, project, runners, timeoutMs, preprocess: (f) => !lintUnits || lintUnits.has(f) });
+
+  const projectRoots = [...project.sourceDirs, ...project.includeDirs].map((d) => '/' + normalizePath(d) + '/');
+  const isProjectFile = (f) => projectRoots.some((r) => f.includes(r));
+
+  const results = [];
+  for (const c of compiled) {
+    const unit = { file: c.file, compiled: c.ok, log: trimLog(c.log), includes: c.includes ?? [], lintErrors: [], functions: [], inferred: [], bindings: {}, unannotated: [], errors: [] };
+    if (c.pre) unit.lintErrors = lintPreprocessed(fs.readFileSync(c.pre, 'latin1'), isProjectFile);
+    if (c.ok) {
+      try {
+        const obj = new CoffObject(fs.readFileSync(c.obj));
+        const listing = parseListing(c.cod ? fs.readFileSync(c.cod, 'latin1') : '');
+        Object.assign(unit, compareObject({ obj, listing, file: c.file, annotations: scan.annotations, symbols, nameIndex, pe }));
+      } catch (e) {
+        unit.errors.push({ file: c.file, message: `could not analyze compiler output: ${e.message}` });
+      }
+    }
+    results.push(unit);
+  }
+  return { annotationErrors, units: results, annotations: scan.annotations };
+}
+
+function trimLog(log) {
+  if (!log) return '';
+  // Drop the noise cl.exe prints for every file, keep diagnostics.
+  const lines = log.split(/\r?\n/).filter((l) => l.trim() && !/^(== |Microsoft \(R\)|Copyright \(C\)|Note: including file:)/.test(l) && !/^\S+\.(c|cpp|cc|cxx)$/i.test(l.trim()));
+  return lines.slice(0, 200).join('\n');
+}
+
+/** Flattens a check result into per-ID function results. */
+export function functionResults(check) {
+  const out = new Map();
+  for (const u of check.units) for (const f of u.functions) out.set(f.id, { ...f, file: u.file });
+  return out;
+}
+
+export function jobDirFor(base, name) {
+  return path.join(base, name.replace(/[^A-Za-z0-9_-]/g, '_'));
+}

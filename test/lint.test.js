@@ -1,0 +1,103 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { parseAnnotations, lintAnnotations, declaredName } from '../src/shared/annotations.js';
+import { lintSubmission, lintPreprocessed, normalizeRepoPath, globToRegExp } from '../src/shared/lint.js';
+
+test('annotations bind to the next code line and use stable IDs', () => {
+  const src = ['// FUNCTION: fn_00012', '// comment', '', 'void Foo::Bar()', '{', '}', '// GLOBAL: gl_00003', 'static int g_count = 0;', '// SIZE: 0x24', '// VTABLE: vt_00001', 'class Foo {'].join('\n');
+  const { annotations, errors } = parseAnnotations(src, 'src/foo.cpp');
+  assert.deepEqual(errors, []);
+  assert.deepEqual(annotations.map((a) => [a.kind, a.id ?? a.size, a.targetLine]), [['FUNCTION', 'fn_00012', 4], ['GLOBAL', 'gl_00003', 8], ['SIZE', 0x24, 11], ['VTABLE', 'vt_00001', 11]]);
+  assert.equal(annotations[1].name, 'g_count');
+});
+
+test('addresses in annotations are rejected', () => {
+  const { errors } = parseAnnotations('// FUNCTION: GAME 0x401000\nvoid f() {}\n', 'a.cpp');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /symbol ID, not an address/);
+});
+
+test('wrong prefix and typos are reported', () => {
+  assert.equal(parseAnnotations('// GLOBAL: fn_00001\nint x;\n').errors.length, 1);
+  assert.equal(parseAnnotations('// Function: fn_00001\nvoid f();\n').errors.length, 1);
+  assert.equal(parseAnnotations('// FUNCTION: fn_00001\n').errors.length, 1);
+});
+
+test('annotation lint: folded functions allowed, duplicate data warned, unknown IDs and library code rejected', () => {
+  const src = '// FUNCTION: fn_00001\nvoid a(){}\n// FUNCTION: fn_00001\nvoid b(){}\n// FUNCTION: fn_00002\nvoid c(){}\n// FUNCTION: fn_00009\nvoid d(){}\n// GLOBAL: gl_00001\nint x;\n// GLOBAL: gl_00001\nint y;\n';
+  const { annotations } = parseAnnotations(src, 'x.cpp');
+  const syms = new Map([['fn_00001', { kind: 'function' }], ['fn_00002', { kind: 'function', library: true }], ['gl_00001', { kind: 'global' }]]);
+  const res = lintAnnotations(annotations, syms);
+  const errors = res.filter((e) => e.severity !== 'warning').map((e) => e.message);
+  const warnings = res.filter((e) => e.severity === 'warning').map((e) => e.message);
+  assert.equal(errors.length, 2);
+  assert.ok(errors.some((m) => m.includes('library')));
+  assert.ok(errors.some((m) => m.includes('fn_00009')));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /gl_00001 is also annotated/);
+});
+
+test('annotation details and stacking', () => {
+  const { annotations } = parseAnnotations('// FUNCTION: fn_00010 <CAnimKitInst>\n// FUNCTION: fn_00011 <int, float>\ntemplate <class T> void f() {}\n', 'x.h');
+  assert.deepEqual(annotations.map((a) => [a.id, a.detail, a.targetLine]), [['fn_00010', '<CAnimKitInst>', 3], ['fn_00011', '<int, float>', 3]]);
+});
+
+test('declaredName', () => {
+  assert.equal(declaredName('static int g_count = 0;'), 'g_count');
+  assert.equal(declaredName('const char* Foo::s_names[4] = {'), 'Foo::s_names');
+  assert.equal(declaredName('MyType g_obj;'), 'g_obj');
+});
+
+test('repo paths are normalized strictly', () => {
+  assert.equal(normalizeRepoPath('src/a.cpp'), 'src/a.cpp');
+  for (const bad of ['../x.cpp', '/etc/passwd', 'src/../../x', 'C:/x.cpp', 'src\\a.cpp', 'src/.hidden.cpp', 'src//a.cpp']) assert.equal(normalizeRepoPath(bad), null, bad);
+});
+
+test('globs', () => {
+  assert.ok(globToRegExp('include/**').test('include/a/b.h'));
+  assert.ok(globToRegExp('src/**').test('src/x.cpp'));
+  assert.ok(!globToRegExp('src/*.cpp').test('src/a/x.cpp'));
+});
+
+const allowed = { allowedPaths: ['src/player.cpp', 'include/**'] };
+
+test('clean submissions pass', () => {
+  const errors = lintSubmission({ 'src/player.cpp': '#include "player.h"\n#pragma once\nint f() { return 1; }\n// __asm in a comment is fine\nconst char* s = "__asm";\n' }, allowed);
+  assert.deepEqual(errors, []);
+});
+
+test('banned constructs and paths are rejected', () => {
+  const cases = {
+    'inline asm': 'void f() { __asm { int 3 } }',
+    'short asm': 'void f() { _asm nop }',
+    emit: 'void f() { __emit 0x90; }',
+    'pragma comment': '#pragma comment(linker, "/foo")',
+    'code_seg': '#pragma code_seg(".text")',
+    'unknown pragma': '#pragma bogus',
+    'line directive': '#line 1 "x.cpp"',
+    naked: '__declspec(naked) void f() {}',
+    'absolute include': '#include "/etc/passwd"',
+    'parent include': '#include "../../secret.h"',
+    'macro include': '#include MACRO',
+    '__pragma': '__pragma(code_seg(".x")) void f(){}',
+  };
+  for (const [name, code] of Object.entries(cases)) {
+    assert.ok(lintSubmission({ 'src/player.cpp': code }, allowed).length > 0, name);
+  }
+  assert.ok(lintSubmission({ 'src/other.cpp': 'int x;' }, allowed).length > 0, 'path outside task');
+  assert.ok(lintSubmission({ 'src/player.txt': 'int x;' }, { allowedPaths: ['src/**'] }).length > 0, 'extension');
+  assert.ok(lintSubmission({}, allowed).length > 0, 'empty');
+});
+
+test('large numeric initializers are rejected', () => {
+  const blob = 'unsigned char code[] = {' + Array.from({ length: 300 }, (_, i) => `0x${(i & 0xff).toString(16)}`).join(',') + '};';
+  assert.ok(lintSubmission({ 'src/player.cpp': blob }, allowed).some((e) => e.message.includes('initializer')));
+});
+
+test('preprocessed output catches asm hidden behind macros, ignoring compiler headers', () => {
+  const pre = ['#line 1 "C:\\\\vc\\\\include\\\\intrin.h"', 'void sys() { __asm int 3 }', '#line 1 "z:\\\\job\\\\src\\\\player.cpp"', 'void f() { __asm { nop } }'].join('\n');
+  const errors = lintPreprocessed(pre, (f) => f.includes('/src/'));
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /inline assembly/);
+  assert.match(errors[0].file, /player\.cpp/);
+});

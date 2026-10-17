@@ -1,0 +1,39 @@
+[Unit]
+Description=Forgejo (Clank Together git dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=git
+Group=git
+WorkingDirectory=/var/lib/forgejo
+ExecStart=/usr/local/bin/forgejo web --config /etc/forgejo/app.ini
+Restart=on-failure
+RestartSec=5
+Environment=USER=git HOME=/var/lib/forgejo FORGEJO_WORK_DIR=/var/lib/forgejo
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/forgejo
+ReadOnlyPaths=/etc/forgejo
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
