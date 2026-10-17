@@ -245,10 +245,39 @@ h3 { margin: 22px 0 8px; font-size: 14px; font-weight: 600; color: var(--muted);
 
 /* --- steps */
 
-.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px; }
-.steps li { display: flex; gap: 12px; align-items: flex-start; }
-.steps p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
-.steps code { word-break: break-all; }
+/* "Join the crew" is a collapsible plate; the summary looks like the other plate headings. */
+details.steps-plate > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 12px; }
+details.steps-plate > summary::-webkit-details-marker { display: none; }
+details.steps-plate > summary h2 { margin: 0; }
+details.steps-plate > summary::after {
+  content: "";
+  margin-left: auto;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: rotate(45deg);
+  transition: transform 0.15s;
+}
+details.steps-plate[open] > summary::after { transform: rotate(-135deg); }
+details.steps-plate[open] > summary { margin-bottom: 18px; }
+
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; }
+.steps li { display: flex; gap: 14px; align-items: flex-start; padding: 14px 0; border-top: 1px dashed var(--line); }
+.steps li:first-child { border-top: none; padding-top: 0; }
+.steps li > div { min-width: 0; flex: 1; }
+.steps p { margin: 2px 0 6px; color: var(--muted); font-size: 14px; }
+.steps code.cmd {
+  display: block;
+  margin: 4px 0;
+  padding: 6px 10px;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 13px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
 .bolt {
   flex: none;
   width: 30px;

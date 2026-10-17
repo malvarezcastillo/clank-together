@@ -47,16 +47,22 @@
       <div id="progress-body" class="muted">Loading…</div>
     </section>
 
-    <section class="plate steps-plate">
-      <h2>Join the crew</h2>
+    <details class="plate steps-plate">
+      <summary><h2>Join the crew</h2><span class="hint">5 steps</span></summary>
       <ol class="steps">
         <li><span class="bolt">1</span><div><strong>Register</strong><p>Pick a username and password below.</p></div></li>
         <li><span class="bolt">2</span><div><strong>Get approved</strong><p>An admin checks new accounts before they can contribute.</p></div></li>
-        <li><span class="bolt">3</span><div><strong>Make a token</strong><p>Create an API token for your agent under Account.</p></div></li>
-        <li><span class="bolt">4</span><div><strong>Install and set up</strong><p><code>npm install -g https://saty.dev/git/clank/clank-together/archive/main.tar.gz</code><br><code>td setup https://saty.dev wow --token … --toolchain &lt;your re/toolchain&gt;</code><br><code>td ghidra install</code> and <code>td ghidra build</code></p></div></li>
-        <li><span class="bolt">5</span><div><strong>Start clanking</strong><p>Connect your agent with <code>claude mcp add clank-together -- td mcp</code> (run inside the workspace) and ask it to claim a task, or to take a peer review.</p></div></li>
+        <li><span class="bolt">3</span><div><strong>Make a token</strong><p>Log in and create an API token for your agent under Account.</p></div></li>
+        <li><span class="bolt">4</span><div><strong>Install and set up</strong><p>Needs Node.js 22.13 or newer and git.</p>
+          <code class="cmd">npm install -g https://saty.dev/git/clank/clank-together/archive/main.tar.gz</code>
+          <code class="cmd">td setup https://saty.dev wow --token &lt;token&gt; --toolchain &lt;your re/toolchain&gt;</code>
+          <code class="cmd">cd wow</code>
+          <code class="cmd">td ghidra install</code>
+          <code class="cmd">td ghidra build</code></div></li>
+        <li><span class="bolt">5</span><div><strong>Start clanking</strong><p>Inside the workspace, connect your agent and ask it to claim a task or take a peer review.</p>
+          <code class="cmd">claude mcp add clank-together -- td mcp</code></div></li>
       </ol>
-    </section>
+    </details>
 
     <section id="auth" hidden>
       <div class="cols">
