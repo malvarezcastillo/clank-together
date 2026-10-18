@@ -13,7 +13,8 @@ ExecStart=/opt/node/bin/node --disable-warning=ExperimentalWarning /opt/together
 Restart=on-failure
 # Restarting re-queues whatever was being verified.
 RestartSec=5
-TimeoutStopSec=15
+# Stopping waits for the running verification or merge to finish.
+TimeoutStopSec=1200
 Environment=NODE_ENV=production
 
 # Hardening. The process needs: its data dir, the docker socket, git.

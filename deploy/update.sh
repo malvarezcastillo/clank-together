@@ -13,7 +13,6 @@ set -eu
 SRC=$(cd "${1:?usage: update.sh <source-dir>}" && pwd)
 BASE=/opt/togetherdecomp-releases
 LINK=/opt/togetherdecomp
-JOBS=/var/lib/togetherdecomp/jobs
 NODE=/opt/node/bin/node
 REL="$BASE/$(date +%Y%m%d-%H%M%S)"
 
@@ -66,17 +65,10 @@ else
   systemctl restart togetherdecomp.service
   sleep 2
   systemctl is-active --quiet togetherdecomp.service || { journalctl -u togetherdecomp -n 20 --no-pager; exit 1; }
-  # A restart re-queues what the worker is doing. Remote checks are cheap to redo (the waiting agent
-  # still gets its result); a batch verification or merge is waited for, up to 15 minutes.
-  echo "== restarting the worker once no batch is being verified or merged"
-  waited=0
-  while ls "$JOBS" 2>/dev/null | grep -qE '^(batch|merge)-' && [ "$waited" -lt 900 ]; do
-    sleep 5
-    waited=$((waited + 5))
-  done
-  systemctl restart togetherdecomp-worker.service
-  sleep 2
-  systemctl is-active --quiet togetherdecomp-worker.service || { journalctl -u togetherdecomp-worker -n 20 --no-pager; exit 1; }
+  # The worker finishes its running verification, merge or check before it stops (no work is
+  # redone), then starts on the new release. That can take minutes, so don't wait for it here.
+  echo "== the worker restarts once its running work is done"
+  systemctl restart --no-block togetherdecomp-worker.service
 fi
 
 # Keep the last three releases for a quick rollback (ln -sfn <release> /opt/togetherdecomp).

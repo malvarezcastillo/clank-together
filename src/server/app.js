@@ -720,14 +720,21 @@ export async function startServer(dataDir, { role = 'all' } = {}) {
     await new Promise((r) => server.listen(ctx.config.listen.port, ctx.config.listen.host, r));
     console.log(`clank together coordinator listening on http://${ctx.config.listen.host}:${ctx.config.listen.port} (public url ${ctx.config.publicUrl})`);
   }
-  // Quick exit: requests still open (an agent waiting on a remote check can wait for minutes) are
-  // cut off after a moment; agents retry, and the work itself lives in the database and the worker.
+  // The web side exits quickly: requests still open (an agent waiting on a remote check can wait
+  // for minutes) are cut off after a moment; agents retry. The worker drains: it takes no new work
+  // and exits once its running verifications, merges and checks are done, so nothing is redone.
+  const busy = () => ctx.runsWorker && (ctx.verifier.running > 0 || ctx.merger.busy || ctx.checks.running > 0);
+  const exitWhenIdle = () => (busy() ? setTimeout(exitWhenIdle, 1000) : process.exit(0));
   const shutdown = () => {
     for (const stop of stops) stop();
-    if (!server) process.exit(0);
-    server.close(() => process.exit(0));
+    if (busy()) console.log('stopping: finishing the running work first');
+    if (!server) return exitWhenIdle();
+    server.close();
     server.closeIdleConnections();
-    setTimeout(() => process.exit(0), 3000).unref();
+    setTimeout(() => {
+      server.closeAllConnections();
+      exitWhenIdle();
+    }, 3000).unref();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
