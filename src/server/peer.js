@@ -49,10 +49,9 @@ export class PeerReviews {
   }
 
   /**
-   * Attempts waiting for peer review that `user` may take, closest to a decision first: a function
-   * one verdict short of a decision beats one nobody has looked at yet, so decisions get finished
-   * instead of verdicts spread thinly over the whole queue. Functions still in peer review come
-   * before extra confirmations toward auto-acceptance of ones already waiting for a human.
+   * Attempts waiting for peer review that `user` may take, in random order: functions still in
+   * peer review and ones collecting confirmations toward auto-acceptance alike, so the whole queue
+   * moves and reviewers spread over different work.
    */
   available(user, limit = 20) {
     limit = Math.max(1, Math.min(limit, 1000));
@@ -70,8 +69,7 @@ export class PeerReviews {
             AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
        )
        WHERE (state = 'peer_review' AND MAX(confirmations, objections) + in_progress < ?)
-          OR (state = 'in_review' AND ? > ? AND confirmations + in_progress < ?)
-       ORDER BY state = 'in_review', MAX(confirmations, objections) DESC, finished_at`,
+          OR (state = 'in_review' AND ? > ? AND confirmations + in_progress < ?)`,
       now(),
       user.id,
       user.id,
@@ -81,17 +79,14 @@ export class PeerReviews {
       this.required,
       this.autoAccept,
     );
-    // Closest to a decision first, but in random order within each stage (by batch, so a batch
-    // stays together): reviewers spread over different groups instead of all taking the same one.
-    const stage = (r) => `${r.state}:${Math.max(r.confirmations, r.objections)}`;
+    // Random by batch, so a batch stays together.
     const key = new Map();
     for (const r of rows) {
-      const k = `${stage(r)}:${r.batch_id ?? -r.attempt_id}`;
+      const k = r.batch_id ?? -r.attempt_id;
       if (!key.has(k)) key.set(k, Math.random());
       r.shuffle = key.get(k);
     }
-    const tier = (r) => (r.state === 'in_review' ? 100 : 0) - Math.max(r.confirmations, r.objections);
-    return rows.sort((a, b) => tier(a) - tier(b) || a.shuffle - b.shuffle).slice(0, limit);
+    return rows.sort((a, b) => a.shuffle - b.shuffle).slice(0, limit);
   }
 
   // A function waiting for a human takes further reviewers toward auto-acceptance.
@@ -109,9 +104,7 @@ export class PeerReviews {
       const pick = attemptId ? options.find((o) => o.attempt_id === attemptId) : options[0];
       if (!pick) throw new HttpError(attemptId ? 409 : 404, attemptId ? 'this attempt is not open for your review (yours, already reviewed, or enough reviewers)' : 'no attempts are waiting for peer review');
       // Reviews come in bulk like the porting work: the pick's batch and source file, up to
-      // REVIEW_GROUP functions, furthest along first. One read of the shared code covers them all,
-      // and the next reviewers get the same group (it is now closest to a decision), so groups
-      // are decided together.
+      // REVIEW_GROUP functions, furthest along first. One read of the shared code covers them all.
       const stage = (o) => (o.state === 'in_review' ? -10 : 0) + Math.max(o.confirmations, o.objections);
       const near = options
         .filter((o) => o === pick || (pick.batch_id && o.batch_id === pick.batch_id) || (pick.unit && o.unit === pick.unit && o.state === pick.state))
