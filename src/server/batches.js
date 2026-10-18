@@ -21,6 +21,7 @@ export function returnBatch(store, batchId, reason) {
     );
   }
   store.run(`UPDATE batches SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ?`, reason, batchId);
+  store.run('DELETE FROM batch_checks WHERE batch_id = ?', batchId);
   store.event('batch_returned', b.user_id, { batch: batchId, reason });
 }
 

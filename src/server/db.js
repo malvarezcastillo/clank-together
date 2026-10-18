@@ -199,6 +199,14 @@ CREATE TABLE IF NOT EXISTS original_code (
   PRIMARY KEY (version_id, addr)
 );
 
+-- The check a batch was verified with, so its merge can reuse it when main did not change
+-- anything the compiled units depend on.
+CREATE TABLE IF NOT EXISTS batch_checks (
+  batch_id INTEGER PRIMARY KEY REFERENCES batches(id),
+  head TEXT NOT NULL,
+  check_json TEXT NOT NULL
+);
+
 -- Remote checks, queued by the web process and run by the worker process.
 CREATE TABLE IF NOT EXISTS check_jobs (
   id INTEGER PRIMARY KEY,
@@ -233,7 +241,8 @@ export class Store {
     // Fingerprint of main's compiled code per function (submissions may only change their own tasks).
     this.addColumn('func_status', 'code_hash', 'TEXT');
     this.addColumn('versions', 'label', 'TEXT');
-    this.addColumn('check_jobs', 'files_hash', 'TEXT'); // a retry of the same check joins the queued one // human-readable name, e.g. "World of Warcraft 5.0.3 (build 15890, x64)"
+    this.addColumn('check_jobs', 'files_hash', 'TEXT'); // a retry of the same check joins the queued one
+    this.addColumn('batches', 'cost', 'INTEGER'); // units its verification compiles (queue order) // human-readable name, e.g. "World of Warcraft 5.0.3 (build 15890, x64)"
     this.addColumn('attempts', 'batch_id', 'INTEGER REFERENCES batches(id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
   }

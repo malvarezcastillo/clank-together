@@ -167,6 +167,15 @@ export class Tasks {
    * One submission for one or more leased tasks: the files once, an attempt per task. Verified
    * with a single compile and merged as a whole (see Verifier.verifyBatch, Merger).
    */
+  /** How many units verifying these files compiles: the units themselves and every includer of a header. */
+  compileCost(paths) {
+    const units = new Set(paths.filter((p) => /\.(c|cc|cpp|cxx)$/i.test(p)));
+    for (const h of paths.filter((p) => !units.has(p))) {
+      for (const r of this.store.all('SELECT unit FROM unit_deps WHERE header = ?', h)) units.add(r.unit);
+    }
+    return units.size;
+  }
+
   submitBatch(user, { taskIds, baseCommit, files, notes = null, agentMeta = null, envDigest = null }) {
     const ids = [...new Set((taskIds ?? []).map(Number))];
     if (!ids.length) throw new HttpError(400, 'taskIds must list the tasks this submission covers');
@@ -178,6 +187,7 @@ export class Tasks {
         user.id, baseCommit, JSON.stringify(files), notes, agentMeta, envDigest, now(),
       );
       const batchId = Number(b.lastInsertRowid);
+      this.store.run('UPDATE batches SET cost = ? WHERE id = ?', this.compileCost(Object.keys(files)), batchId);
       const attempts = [];
       for (const id of ids) {
         const r = this.store.run(

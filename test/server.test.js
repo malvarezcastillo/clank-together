@@ -601,7 +601,13 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   // One human click for the batch; one merge commit.
   const rev = await request('POST', `/api/batches/${s2.body.batchId}/review`, { action: 'approve' }, { cookie: reviewer });
   assert.equal(rev.status, 200, JSON.stringify(rev.body));
+  // Nothing on main changed since verification: the merge reuses that compile.
+  let compiles = 0;
+  const counted = ctx.verifier.check;
+  ctx.verifier.check = async (...args) => (compiles++, counted(...args));
   await ctx.merger.pump();
+  ctx.verifier.check = counted;
+  assert.equal(compiles, 0, 'the merge did not compile again');
   const merged = await batchState(s2.body.batchId);
   assert.equal(merged.state, 'merged', JSON.stringify(merged));
   assert.match(ctx.repo.git(['log', '-1', '--format=%B']), new RegExp(`Decompile ${b}[\\s\\S]*Peer-reviewed-by`));

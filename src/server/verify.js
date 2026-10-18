@@ -70,7 +70,12 @@ export class Verifier {
     const max = this.config.verifyConcurrency ?? 2;
     while (this.running < max) {
       const b = this.store.tx(() => {
-        const row = this.store.get(`SELECT * FROM batches WHERE state = 'queued' ORDER BY id LIMIT 1`);
+        // Small batches first, so a few lines in one file do not wait behind a header change that
+        // recompiles hundreds of units; a big batch that waited 20 minutes goes first.
+        const row = this.store.get(
+          `SELECT * FROM batches WHERE state = 'queued' ORDER BY (COALESCE(cost, 0) > 20 AND created_at > ?), id LIMIT 1`,
+          now() - 20 * 60_000,
+        );
         if (row) {
           this.store.run(`UPDATE batches SET state = 'verifying' WHERE id = ?`, row.id);
           this.store.run(`UPDATE attempts SET state = 'verifying' WHERE batch_id = ? AND state = 'queued'`, row.id);
@@ -100,17 +105,24 @@ export class Verifier {
    */
   // dependents: false compiles only the submitted units, not every unit that includes a changed
   // header (remote checks: quick feedback; the submission's verification still checks them all).
-  async check(files, jobName, { allUnits = false, timeoutMs = null, dependents = true } = {}) {
+  // lint: false skips the preprocessed-output lint (code that already passed it, e.g. on merge).
+  async check(files, jobName, { allUnits = false, timeoutMs = null, dependents = true, lint = true } = {}) {
     const changedHeaders = Object.keys(files).filter((f) => !isUnit(f));
-    const units = new Set(Object.keys(files).filter(isUnit));
+    const submittedUnits = Object.keys(files).filter(isUnit);
+    const units = new Set(submittedUnits);
+    const lintUnits = new Set(lint ? submittedUnits : []);
     const allProjectUnits = () => listSources(this.repo.dir, this.project, { unitsOnly: true });
     if (allUnits) for (const u of allProjectUnits()) units.add(u);
     else if (changedHeaders.length && (dependents || !units.size)) {
       // Only units that include a changed header; all of them until a rebuild has recorded dependencies.
       const known = this.store.get('SELECT COUNT(*) AS n FROM unit_deps').n > 0;
-      const ph = changedHeaders.map(() => '?').join(',');
-      const dependents = known ? this.store.all(`SELECT DISTINCT unit FROM unit_deps WHERE header IN (${ph})`, ...changedHeaders).map((r) => r.unit) : allProjectUnits();
-      for (const u of dependents) units.add(u);
+      for (const h of changedHeaders) {
+        const deps = known ? this.store.all('SELECT unit FROM unit_deps WHERE header = ? ORDER BY unit', h).map((r) => r.unit) : allProjectUnits();
+        for (const u of deps) units.add(u);
+        // A header expands the same way in every unit that includes it: one of them shows what its
+        // macros and inline code turn into, so the macro-proof lint needs only that one.
+        if (lint && deps.length && !deps.some((u) => lintUnits.has(u))) lintUnits.add(deps[0]);
+      }
     }
 
     const v = this.store.currentVersion();
@@ -131,7 +143,7 @@ export class Verifier {
         timeoutMs: timeoutMs ?? this.config.buildTimeoutMs ?? 300_000,
         // The macro-proof lint needs the /P pass: for submitted units; for every unit when a header
         // changed (a macro there expands everywhere); never for a rebuild of trusted main.
-        lintUnits: allUnits && !Object.keys(files).length ? new Set() : changedHeaders.length ? null : new Set(Object.keys(files).filter(isUnit)),
+        lintUnits,
         analyze: (args) => analyzeInWorkers({ ...args, symbols, nameIndex, peFile: v.file }),
       });
       const rec = reconcile(check, symbols);
@@ -154,6 +166,38 @@ export class Verifier {
       for (const e of freeTextErrors(text, this.repo.show(baseCommit, file), inOriginal)) errors.push({ file, ...e });
     }
     return errors;
+  }
+
+  // What a merge needs from the verification's check (without listings and byte diffs).
+  rememberCheck(batchId, { check, rec, changedHeaders }) {
+    const compact = {
+      annotationErrors: check.annotationErrors,
+      units: check.units.map((u) => ({ ...u, functions: u.functions.map(({ asm, diffRegions, ...f }) => f) })),
+    };
+    this.store.run('INSERT OR REPLACE INTO batch_checks (batch_id, head, check_json) VALUES (?, ?, ?)', batchId, this.repo.head(), JSON.stringify({ check: compact, rec, changedHeaders }));
+  }
+
+  /**
+   * The verification's check of a batch, if merging the same files now would compile the same
+   * thing: no file the compiled units consist of (sources, included headers) changed on main since.
+   */
+  reusableCheck(batch, files) {
+    const row = this.store.get('SELECT head, check_json FROM batch_checks WHERE batch_id = ?', batch.id);
+    const verified = batch.result_json ? JSON.parse(batch.result_json).mergedFiles : null;
+    if (!row || !verified) return null;
+    const keys = Object.keys(files);
+    if (keys.length !== Object.keys(verified).length || keys.some((f) => files[f] !== verified[f])) return null;
+    const saved = JSON.parse(row.check_json);
+    if (row.head !== this.repo.head()) {
+      const changed = this.repo.git(['diff', '--name-only', row.head, 'HEAD']).split('\n').filter(Boolean);
+      const relevant = new Set(keys);
+      for (const u of saved.check.units) {
+        relevant.add(u.file);
+        for (const h of u.includes ?? []) relevant.add(h);
+      }
+      if (changed.some((f) => relevant.has(f))) return null;
+    }
+    return saved;
   }
 
   /** Functions that match on main but would no longer match with this change. */
@@ -255,6 +299,7 @@ export class Verifier {
       `UPDATE batches SET state = 'open', finished_at = ?, result_json = ? WHERE id = ?`,
       now(), JSON.stringify({ mergedFiles: merged.files, check: summarizeCheck(check), changedHeaders, outside }), batch.id,
     );
+    this.rememberCheck(batch.id, { check, rec, changedHeaders });
     if (failed) returnBatch(this.store, batch.id, `${failed} of ${attempts.length} functions need work; see each function's feedback`);
   }
 
