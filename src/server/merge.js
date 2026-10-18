@@ -15,7 +15,7 @@ export class Merger {
   start() {
     this.store.run(`UPDATE batches SET state = 'open' WHERE state = 'merging'`);
     this.store.run(`UPDATE tasks SET state = 'approved' WHERE state = 'merging'`);
-    this.timer = setInterval(() => this.pump(), 3000);
+    this.timer = setInterval(() => { try { this.pump(); } catch (e) { console.error(`merge pump: ${e.message}`); } }, 3000);
   }
 
   stop() {

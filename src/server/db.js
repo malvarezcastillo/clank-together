@@ -214,6 +214,8 @@ export const hashToken = (t) => crypto.createHash('sha256').update(t).digest('he
 export class Store {
   constructor(file) {
     this.db = new DatabaseSync(file);
+    // CLI commands (rebuild, ghidra refresh) write from a second process; wait for their locks.
+    this.db.exec('PRAGMA busy_timeout = 15000');
     this.migrateUsers();
     this.db.exec(SCHEMA);
     this.addColumn('func_status', 'confirmed', 'INTEGER NOT NULL DEFAULT 0');

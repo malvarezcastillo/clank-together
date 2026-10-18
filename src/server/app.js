@@ -631,7 +631,7 @@ export async function startServer(dataDir) {
   ctx.tasks.generate();
   ctx.verifier.start();
   ctx.merger.start();
-  const sweeper = setInterval(() => ctx.tasks.sweepExpired(), 60_000);
+  const sweeper = setInterval(() => { try { ctx.tasks.sweepExpired(); } catch (e) { console.error(`lease sweep: ${e.message}`); } }, 60_000);
   const server = createApp(ctx);
   await new Promise((r) => server.listen(ctx.config.listen.port, ctx.config.listen.host, r));
   console.log(`clank together coordinator listening on http://${ctx.config.listen.host}:${ctx.config.listen.port} (public url ${ctx.config.publicUrl})`);

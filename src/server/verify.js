@@ -38,7 +38,7 @@ export class Verifier {
       );
       this.store.run('UPDATE attempts SET batch_id = ? WHERE id = ?', Number(b.lastInsertRowid), a.id);
     }
-    this.timer = setInterval(() => this.pump(), 2000);
+    this.timer = setInterval(() => { try { this.pump(); } catch (e) { console.error(`verify pump: ${e.message}`); } }, 2000);
     this.pump();
   }
 
