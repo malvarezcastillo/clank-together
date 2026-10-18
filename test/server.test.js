@@ -514,6 +514,14 @@ test('agents place held, unplaced functions into files before porting them', asy
   ctx.store.run(`UPDATE tasks SET state = 'done', lease_user = NULL WHERE id = ?`, task);
 });
 
+test('renaming an account keeps its tokens working', async () => {
+  const token = await activeUser('renameme2055');
+  ctx.accounts.rename('renameme2055', 'renamed', null);
+  assert.equal((await call('GET', '/api/me', null, token)).body.name, 'renamed');
+  await activeUser('takenname');
+  assert.throws(() => ctx.accounts.rename('renamed', 'TakenName', null), /taken/);
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

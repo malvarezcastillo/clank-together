@@ -251,6 +251,19 @@ export class Accounts {
     });
   }
 
+  /** Renames an account. Sessions and tokens belong to the account, so they keep working. */
+  rename(name, newName, adminId) {
+    checkName(newName);
+    return this.store.tx(() => {
+      const u = this.requireUser(name);
+      const taken = this.store.get('SELECT id FROM users WHERE name = ?', newName); // COLLATE NOCASE
+      if (taken && taken.id !== u.id) throw new AccountError(409, `the name ${newName} is taken`);
+      this.store.run('UPDATE users SET name = ? WHERE id = ?', newName, u.id);
+      this.store.event('user_renamed', adminId, { from: u.name, to: newName });
+      return { from: u.name, to: newName };
+    });
+  }
+
   activeAdmins() {
     return this.store.get(`SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active'`).n;
   }

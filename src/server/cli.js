@@ -27,6 +27,7 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   user list [--status pending|active|revoked]
   user approve|reject|revoke|reinstate <name>
   user role <name> --role R
+  user rename <name> <new-name>          rename an account (sessions and tokens keep working)
   user password <name> [--password-stdin] reset a password (logs out browser sessions)
   user token <name> [label]              create an API token for an account
   version add <id> <exe> [--current]     register a target executable version
@@ -123,6 +124,8 @@ async function main() {
         return console.log(accounts.reinstate(name, null));
       case 'role':
         return console.log(accounts.setRole(name, values.role, null));
+      case 'rename':
+        return console.log(accounts.rename(name, rest[1], null));
       case 'token': {
         const u = accounts.requireUser(name);
         const t = accounts.createApiToken(u.id, rest[1] ?? 'cli');
