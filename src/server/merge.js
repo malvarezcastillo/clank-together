@@ -4,7 +4,7 @@ import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
-import { returnBatch, batchAttempts } from './batches.js';
+import { returnBatch, batchAttempts, settleBatch } from './batches.js';
 import { withoutFunctions } from './split.js';
 
 export class Merger {
@@ -79,7 +79,8 @@ export class Merger {
     const newState = action === 'reject' ? 'rejected' : 'needs_cleanup';
     this.store.run('UPDATE attempts SET state = ? WHERE id = ?', newState, attemptId);
     this.store.run(`UPDATE tasks SET state = 'needs_cleanup', preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`, attempt.user_id, now() + 6 * 3600_000, now(), attempt.task_id);
-    returnBatch(this.store, attempt.batch_id, `a reviewer asked for changes to ${attempt.task_id}`);
+    // Only this function goes back; the rest of its batch carries on.
+    settleBatch(this.store, attempt.batch_id, `a reviewer asked for changes to ${attempt.task_id}`);
     return { state: newState };
   }
 
@@ -101,7 +102,7 @@ export class Merger {
       : this.store.get(
           `SELECT b.* FROM batches b WHERE b.state = 'open' AND json_extract(COALESCE(b.result_json, '{}'), '$.noSplit') IS NULL
               AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state = 'approved')
-              AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state NOT IN ('approved', 'peer_review', 'in_review'))
+              AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN ('queued', 'verifying', 'merging'))
             ORDER BY b.id LIMIT 1`,
         );
     const batch = whole ?? partial;
@@ -122,7 +123,10 @@ export class Merger {
     }
   }
 
-  /** Moves the approved attempts of `parent` into a batch of their own and merges that. */
+  /**
+   * Moves the approved attempts of `parent` into a batch of their own and merges that. Functions
+   * still in review, and ones that were sent back, are left out of it.
+   */
   async mergeApprovedPart(parent) {
     const attempts = batchAttempts(this.store, parent.id);
     const approved = attempts.filter((a) => a.state === 'approved');
@@ -165,6 +169,11 @@ export class Merger {
 
   noSplit(batch, reason) {
     this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.noSplit', ?) WHERE id = ?`, reason, batch.id);
+    // With a function sent back it can never merge as a whole, so it all goes back.
+    if (this.store.get(`SELECT 1 FROM attempts WHERE batch_id = ? AND state IN ('needs_cleanup', 'rejected', 'returned')`, batch.id)) {
+      returnBatch(this.store, batch.id, `a function of this batch was sent back and the rest cannot be merged without it: ${reason}`);
+      return this.log.info(`batch ${batch.id} returned: ${reason}`);
+    }
     this.log.info(`batch ${batch.id} waits to merge as a whole: ${reason}`);
   }
 
@@ -233,7 +242,10 @@ export class Merger {
       }
       this.store.run(`UPDATE batches SET state = 'merged', merged_commit = ? WHERE id = ?`, commit, batch.id);
       this.store.event('merged', batch.user_id, { batch: batch.id, functions: attempts.length, commit });
-      if (split) this.rebaseRemainder(split, merged.files, commit);
+      if (split) {
+        this.rebaseRemainder(split, merged.files, commit);
+        settleBatch(this.store, split.parent.id, 'its approved functions merged; the others were sent back');
+      }
     });
     this.tasks.generate();
     if (this.config.pushRemote) {

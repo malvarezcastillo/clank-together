@@ -23,7 +23,8 @@ import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
 import { hex } from '../shared/annotations.js';
 
-const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'web');
+// TD_WEB_DIR points through the release symlink in production, so new pages are live without a restart.
+const WEB_DIR = process.env.TD_WEB_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'web');
 
 export const DEFAULT_CONFIG = {
   listen: { host: '127.0.0.1', port: 8080 },
@@ -180,6 +181,39 @@ export function createApp(ctx) {
     if (!v) throw new HttpError(404, 'unknown version');
     const rows = [...store.symbolMap(v.id).values()].map((s) => [s.id, s.kind, s.addr, s.size, s.name, s.decorated, s.library ? 1 : 0, s.unit]);
     return { version: v.id, head: repo.head(), columns: ['id', 'kind', 'addr', 'size', 'name', 'decorated', 'library', 'unit'], symbols: rows };
+  });
+
+  // Public: who is on the project and what their agents are doing right now. No token labels or
+  // other account details; only names, roles and work.
+  const ACTIVE_MS = 15 * 60_000;
+  router.on('GET', '/api/crew', () => {
+    const since = Date.now() - ACTIVE_MS;
+    const users = store.all(
+      `SELECT u.name, u.role, u.approved_at AS joined,
+              (SELECT COUNT(*) FROM attempts a WHERE a.user_id = u.id AND a.state = 'merged') AS merged,
+              (SELECT COUNT(*) FROM attempts a WHERE a.user_id = u.id) AS submitted,
+              (SELECT COUNT(*) FROM peer_reviews p WHERE p.reviewer_id = u.id) AS peer_reviews,
+              (SELECT MAX(last_used_at) FROM api_tokens t WHERE t.user_id = u.id) AS last_seen
+         FROM users u WHERE u.status = 'active' ORDER BY merged DESC, peer_reviews DESC, u.approved_at`,
+    );
+    const agents = store.all(
+      `SELECT u.id, u.name, COUNT(DISTINCT t.id) AS agents, MAX(t.last_used_at) AS last_seen
+         FROM api_tokens t JOIN users u ON u.id = t.user_id
+        WHERE t.revoked_at IS NULL AND t.last_used_at > ? AND u.status = 'active' GROUP BY u.id ORDER BY last_seen DESC`,
+      since,
+    );
+    const active = agents.map((a) => {
+      const units = store.all(
+        `SELECT s.unit, COUNT(*) AS functions FROM tasks t JOIN symbols s ON s.id = t.symbol_id
+          WHERE t.state = 'leased' AND t.lease_user = ? GROUP BY s.unit ORDER BY functions DESC`,
+        a.id,
+      );
+      const reviewing = store.get('SELECT COUNT(DISTINCT attempt_id) AS n FROM peer_leases WHERE reviewer_id = ? AND expires_at > ?', a.id, Date.now()).n;
+      const waiting = store.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND state IN ('queued', 'verifying')`, a.id).n;
+      const today = store.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND created_at > ?`, a.id, Date.now() - 24 * 3600_000).n;
+      return { name: a.name, agents: a.agents, lastSeen: a.last_seen, units: units.map((u) => ({ unit: u.unit ?? '(no unit)', functions: u.functions })), reviewing, verifying: waiting, submittedToday: today };
+    });
+    return { activeMinutes: ACTIVE_MS / 60_000, users, active };
   });
 
   router.on('GET', '/api/progress', () => {
@@ -518,6 +552,7 @@ export function createApp(ctx) {
               (SELECT COUNT(*) FROM reviews r WHERE r.attempt_id = a.id AND r.action = 'approve') AS approvals,
               (SELECT COUNT(*) FROM reviews r WHERE r.attempt_id = a.id AND r.reviewer_id = ?) AS reviewed_by_me,
               (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS peer_same,
+              (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS peer_different,
               (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS peer_working
          FROM attempts a JOIN users u ON u.id = a.user_id JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
         WHERE a.state IN ('in_review', 'peer_review') ORDER BY a.state = 'peer_review', a.finished_at`,

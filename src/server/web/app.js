@@ -299,6 +299,46 @@ function claimedWork(w) {
   return [d, ...(seen ? [seen] : [])];
 }
 
+// --- public crew views
+
+const ago = (t) => {
+  if (!t) return 'never';
+  const m = Math.round((Date.now() - t) / 60_000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
+};
+
+async function loadCrew() {
+  const c = await api('/api/crew');
+  const active = $('active-body');
+  active.replaceChildren();
+  active.classList.remove('muted');
+  if (!c.active.length) {
+    active.append(el('p', `No agent has checked in during the last ${c.activeMinutes} minutes.`, 'muted'));
+  } else {
+    active.append(
+      table(
+        ['User', 'Working on', 'Peer reviews', 'Being checked', 'Submitted (24 h)', 'Last seen'],
+        c.active.map((a) => {
+          const work = a.units.length
+            ? a.units.map((u) => el('div', `${u.unit} · ${u.functions} function${u.functions > 1 ? 's' : ''}`))
+            : [el('span', a.reviewing ? 'reviewing' : 'between tasks', 'muted')];
+          return [`${a.name}${a.agents > 1 ? ` (${a.agents} agents)` : ''}`, work, a.reviewing || '', a.verifying || '', a.submittedToday, ago(a.lastSeen)];
+        }),
+      ),
+    );
+  }
+  $('users-count').textContent = `${c.users.length} approved`;
+  $('users-body').replaceChildren(
+    table(
+      ['User', 'Role', 'Merged', 'Submitted', 'Peer reviews', 'Joined', 'Agent last seen'],
+      c.users.map((u) => [u.name, u.role, u.merged, u.submitted, u.peer_reviews, u.joined ? new Date(u.joined).toLocaleDateString() : '', ago(u.last_seen)]),
+    ),
+  );
+}
+
 // --- review
 
 async function loadQueue() {
@@ -319,7 +359,7 @@ async function loadQueue() {
       el(
         'p',
         canSkipPeers
-          ? 'Three agents still have to confirm these. You can open one to judge it yourself, or approve it now and skip the peer review.'
+          ? 'Each needs three agreeing verdicts: three "same" send it to you, three "different" send it back. You can open one to judge it yourself, or approve it now and skip the peer review.'
           : 'Three agents still have to confirm these before you can approve them. Maintainers can decide them right away.',
         'muted',
       ),
@@ -359,7 +399,8 @@ function queueBatches(body, items, skipsPeers) {
       );
     }
     body.append(head);
-    const peerCol = (a) => (a.state === 'peer_review' ? `${a.peer_same} of 3 confirmed${a.peer_working ? `, ${a.peer_working} reviewing` : ''}` : 'confirmed');
+    const peerCol = (a) =>
+      a.state === 'peer_review' ? `${a.peer_same} same · ${a.peer_different} different${a.peer_working ? ` · ${a.peer_working} reviewing` : ''}` : 'confirmed';
     body.append(
       table(
         ['Attempt', 'Symbol', 'Name', 'Score', 'Peers', 'Approvals', ''],
@@ -384,7 +425,8 @@ async function openAttempt(id) {
   const r = $('attempt-result');
   r.replaceChildren(el('p', f.summary || ''));
   if (a.peerReviews?.length) {
-    r.append(el('h3', `Peer review: ${a.peerReviews.filter((p) => p.verdict === 'same').length} of ${a.peerRequired} confirmed the logic`));
+    const n = (v) => a.peerReviews.filter((p) => p.verdict === v).length;
+    r.append(el('h3', `Peer review: ${n('same')} same, ${n('different')} different (${a.peerRequired} agreeing verdicts decide)`));
     r.append(table(['Reviewer', 'Verdict', 'Reason (untrusted)'], a.peerReviews.map((p) => [p.reviewer, status(p.verdict === 'same' ? 'exact' : 'revoked'), p.reason?.text ?? ''])));
   } else if (a.state === 'in_review' && t && t.status !== 'exact' && t.status !== 'match_unresolved') {
     r.append(el('p', 'Not byte-identical and no peer verdicts recorded.', 'warn'));
@@ -604,4 +646,6 @@ api('/api/info')
   })
   .catch(() => {});
 loadProgress().catch((e) => ($('progress-body').textContent = e.message));
+loadCrew().catch((e) => ($('active-body').textContent = e.message));
+setInterval(() => loadCrew().catch(() => {}), 60_000);
 refresh();

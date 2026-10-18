@@ -485,3 +485,9 @@ details.fold[open] > summary { margin-bottom: 6px; }
   .panes, .asm-row { grid-template-columns: 1fr; }
   .asm-row > div + div { border-left: none; }
 }
+
+/* --- public crew views */
+.live-dot { display: inline-block; width: 9px; height: 9px; margin-left: 8px; border-radius: 50%; background: var(--ok); vertical-align: middle; animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+#active-body td div { font-family: var(--font-mono); font-size: 13px; }

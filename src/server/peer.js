@@ -3,14 +3,16 @@
 // A reviewer reads the original function (assembly and pseudocode, from their own pinned Ghidra
 // via `td disasm` / `td decompile`) and the submitted code, and decides whether the logic is the
 // same. No automated verdicts: the context deliberately leaves out the server's byte diff and score.
-// `peerReviews` (default 3) different accounts must all say "same"; one "different" sends the
-// attempt back to its author with the reason. Then it goes to human review.
+// An attempt stays in peer review until `peerReviews` (default 3) different accounts agree: that
+// many "same" verdicts send it on to human review, that many "different" ones send it back to its
+// author with their reasons. With mixed verdicts, further reviewers are let in until one side
+// gets there.
 
 import { HttpError } from './http.js';
 import { now } from './db.js';
 import { untrusted } from './tasks.js';
 import { hex } from '../shared/annotations.js';
-import { returnBatch } from './batches.js';
+import { settleBatch } from './batches.js';
 
 export const PEER_INSTRUCTIONS = [
   'Decide whether the submitted C++ does the same thing as the original function. It is not byte-identical; your judgment is what counts.',
@@ -39,6 +41,7 @@ export class PeerReviews {
     return this.store.all(
       `SELECT a.id AS attempt_id, a.batch_id, a.task_id, t.symbol_id, s.name, a.finished_at,
               (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
+              (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS objections,
               (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
          FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
         WHERE a.state = 'peer_review' AND a.user_id != ?
@@ -49,7 +52,7 @@ export class PeerReviews {
       user.id,
       user.id,
       Math.min(limit, 200),
-    ).filter((r) => r.confirmations + r.in_progress < this.required);
+    ).filter((r) => Math.max(r.confirmations, r.objections) + r.in_progress < this.required);
   }
 
   /**
@@ -149,9 +152,9 @@ export class PeerReviews {
       if (a.user_id === user.id) throw new HttpError(403, 'you cannot review your own attempt');
       if (this.store.get('SELECT 1 FROM peer_reviews WHERE attempt_id = ? AND reviewer_id = ?', attemptId, user.id)) throw new HttpError(409, 'you already reviewed this attempt');
       const leased = this.store.get('SELECT 1 FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ? AND expires_at > ?', attemptId, user.id, now());
-      const taken = this.store.get(`SELECT COUNT(*) AS n FROM peer_reviews WHERE attempt_id = ? AND verdict = 'same'`, attemptId).n;
+      const counts = this.counts(attemptId);
       const others = this.store.get('SELECT COUNT(*) AS n FROM peer_leases WHERE attempt_id = ? AND reviewer_id != ? AND expires_at > ?', attemptId, user.id, now()).n;
-      if (!leased && taken + others >= this.required) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
+      if (!leased && Math.max(counts.same, counts.different) + others >= this.required) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
 
       this.store.run(
         'INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, agent_meta, created_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -160,25 +163,28 @@ export class PeerReviews {
       this.store.run('DELETE FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ?', attemptId, user.id);
       this.store.event('peer_review', user.id, { attempt: attemptId, verdict });
 
-      if (verdict === 'different') {
-        // One "different" ends it: the author gets the reason, the other leases are dropped.
+      const same = counts.same + (verdict === 'same' ? 1 : 0);
+      const different = counts.different + (verdict === 'different' ? 1 : 0);
+      if (different >= this.required) {
+        // Enough independent reviewers found a difference: back to the author with their reasons.
         this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
         this.store.run(`UPDATE attempts SET state = 'needs_cleanup' WHERE id = ?`, attemptId);
         this.store.run(
           `UPDATE tasks SET state = 'needs_cleanup', cleanup_cycles = cleanup_cycles + 1, preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`,
           a.user_id, now() + 6 * 3600_000, now(), a.task_id,
         );
-        // The batch merges as a whole, so it goes back with this function; confirmed ones keep their verdicts.
-        returnBatch(this.store, a.batch_id, `a peer review found a difference in ${a.task_id}`);
-        return { state: 'needs_cleanup', confirmations: taken };
+        // Only this function goes back; the rest of its batch carries on.
+        settleBatch(this.store, a.batch_id, `${different} peer reviews found a difference in ${a.task_id}`);
+        return { state: 'needs_cleanup', same, different, required: this.required };
       }
-      const confirmations = taken + 1;
-      if (confirmations >= this.required) {
+      if (same >= this.required) {
+        this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
         this.store.run(`UPDATE attempts SET state = 'in_review' WHERE id = ?`, attemptId);
         this.store.run(`UPDATE tasks SET state = 'in_review', updated_at = ? WHERE id = ?`, now(), a.task_id);
-        return { state: 'in_review', confirmations };
+        return { state: 'in_review', same, different, required: this.required };
       }
-      return { state: 'peer_review', confirmations, required: this.required };
+      // Undecided: it stays in review until one side has enough verdicts.
+      return { state: 'peer_review', same, different, required: this.required };
     });
   }
 
@@ -191,11 +197,12 @@ export class PeerReviews {
   }
 
   /** True when the attempt passed peer review (enough "same", no "different"). */
+  counts(attemptId) {
+    const r = this.store.get(`SELECT SUM(verdict = 'same') AS same, SUM(verdict = 'different') AS different FROM peer_reviews WHERE attempt_id = ?`, attemptId);
+    return { same: r?.same ?? 0, different: r?.different ?? 0 };
+  }
+
   confirmed(attemptId) {
-    const r = this.store.get(
-      `SELECT SUM(verdict = 'same') AS same, SUM(verdict = 'different') AS diff FROM peer_reviews WHERE attempt_id = ?`,
-      attemptId,
-    );
-    return (r?.same ?? 0) >= this.required && !(r?.diff ?? 0);
+    return this.counts(attemptId).same >= this.required;
   }
 }

@@ -333,15 +333,33 @@ test('peer review: three other agents must agree, by reading only', async () => 
   assert.equal(ctx.tasks.get(task.id).state, 'in_review');
   assert.ok(ctx.peers.confirmed(attempt));
 
-  // A single "different" sends the next attempt back with the reason.
+  // One "different" is not enough: it stays in review until three agree, here after a mixed round.
   const second = Number(
     ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, task.id, authorId, ctx.repo.head(), now()).lastInsertRowid,
   );
-  await call('POST', '/api/peer-reviews/claim', { attemptId: second }, r4);
-  const no = await call('POST', `/api/peer-reviews/${second}/verdict`, { verdict: 'different', reason: 'the original checks the flag before the loop, this does not' }, r4);
-  assert.equal(no.body.state, 'needs_cleanup');
+  const verdict = async (reviewer, v) => {
+    await call('POST', '/api/peer-reviews/claim', { attemptId: second }, reviewer);
+    return (await call('POST', `/api/peer-reviews/${second}/verdict`, { verdict: v, reason: v === 'same' ? 'the same branches, calls and returns' : 'the original checks the flag before the loop, this does not' }, reviewer)).body;
+  };
+  assert.equal((await verdict(r4, 'different')).state, 'peer_review', 'one objection does not send it back');
+  assert.equal((await verdict(r1, 'different')).state, 'peer_review');
+  const mixed = await verdict(r2, 'same');
+  assert.deepEqual([mixed.state, mixed.same, mixed.different], ['peer_review', 1, 2], 'a split vote lets another reviewer in');
+  const no = await verdict(r3, 'different');
+  assert.equal(no.state, 'needs_cleanup', 'three objections send it back');
   assert.equal(ctx.peers.verdicts(second)[0].reason.untrusted, true);
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task.id);
+});
+
+test('the crew view is public and shows no account details', async () => {
+  const token = await activeUser('crewview');
+  await call('GET', '/api/tasks', null, token); // the agent checks in
+  const r = await request('GET', '/api/crew');
+  assert.equal(r.status, 200);
+  assert.ok(r.body.users.some((u) => u.name === 'crewview'));
+  assert.ok(r.body.active.some((a) => a.name === 'crewview'), 'an agent that just called in is active');
+  const text = JSON.stringify(r.body);
+  for (const secret of ['label', 'token', 'password', 'status']) assert.equal(text.includes(`"${secret}"`), false, `no ${secret} field`);
 });
 
 test('remote checks are queued in the database and run by the worker', async () => {
@@ -443,7 +461,7 @@ test('split: the approved part of a batch merges while the rest waits for review
   ctx.verifier.check = realCheck;
 });
 
-test('batches: one compile, auto-approval, peer review, return as a whole, carry-over, one merge', async () => {
+test('batches: one compile, auto-approval, peer review, one function sent back, carry-over', async () => {
   const author = await activeUser('bauthor');
   const peers = [await activeUser('bpeer1'), await activeUser('bpeer2'), await activeUser('bpeer3')];
   await ctx.accounts.createUser('breviewer', 'reviewer', PASSWORD);
@@ -459,7 +477,8 @@ test('batches: one compile, auto-approval, peer review, return as a whole, carry
   // The compiler is stubbed: A byte-identical, B not; B's code fingerprint decides carry-over.
   let bHash = 'hash-b-1';
   const realCheck = ctx.verifier.check;
-  ctx.verifier.check = async () => ({
+  // A function is only compiled when its code is in the file.
+  ctx.verifier.check = async (files) => ({
     check: {
       annotationErrors: [],
       units: [{
@@ -467,7 +486,7 @@ test('batches: one compile, auto-approval, peer review, return as a whole, carry
         functions: [
           { id: a, status: STATUS.EXACT, score: 1, file: 'src/batch.cpp', codeHash: 'hash-a', relocations: [], size: { ours: 8, original: 8 } },
           { id: b, status: STATUS.MISMATCH, score: 0.9, file: 'src/batch.cpp', codeHash: bHash, relocations: [], size: { ours: 8, original: 8 } },
-        ],
+        ].filter((f) => (files['src/batch.cpp'] ?? '').includes(f.id === a ? 'int fa()' : 'int fb()')),
       }],
     },
     rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] },
@@ -490,22 +509,27 @@ test('batches: one compile, auto-approval, peer review, return as a whole, carry
   assert.equal(r1[a].state, 'approved', 'byte-identical needs no human');
   assert.equal(r1[b].state, 'peer_review');
 
-  // Round 1: a peer claim covers the batch's waiting functions; two confirm, one finds a difference.
+  // Round 1: a peer claim covers the batch's waiting functions; all three find a difference.
   const pc = await call('POST', '/api/peer-reviews/claim', { attemptId: r1[b].attemptId }, peers[0]);
   assert.deepEqual(pc.body.functions.map((f) => f.symbol), [b]);
-  await call('POST', `/api/peer-reviews/${r1[b].attemptId}/verdict`, { verdict: 'same', reason: 'same logic, checked branches and calls' }, peers[0]);
-  await call('POST', '/api/peer-reviews/claim', { attemptId: r1[b].attemptId }, peers[1]);
-  await call('POST', `/api/peer-reviews/${r1[b].attemptId}/verdict`, { verdict: 'same', reason: 'same logic, checked branches and calls' }, peers[1]);
-  await call('POST', '/api/peer-reviews/claim', { attemptId: r1[b].attemptId }, peers[2]);
-  await call('POST', `/api/peer-reviews/${r1[b].attemptId}/verdict`, { verdict: 'different', reason: 'the original checks the flag first, this does not' }, peers[2]);
-  const back = await batchState(s1.body.batchId);
-  assert.equal(back.state, 'returned', 'the batch goes back as a whole');
-  assert.ok(back.functions.every((f) => ['returned', 'needs_cleanup'].includes(f.state)), JSON.stringify(back.functions));
+  for (const t of peers) {
+    await call('POST', '/api/peer-reviews/claim', { attemptId: r1[b].attemptId }, t);
+    await call('POST', `/api/peer-reviews/${r1[b].attemptId}/verdict`, { verdict: 'different', reason: 'the original checks the flag first, this does not' }, t);
+  }
+  // Only B goes back; A merges on its own and the batch is over.
+  const back = Object.fromEntries((await batchState(s1.body.batchId)).functions.map((f) => [f.symbol, f]));
+  assert.equal(back[b].state, 'needs_cleanup');
+  assert.equal(back[a].state, 'approved', 'the rest of the batch is not sent back');
+  await ctx.merger.pump();
+  assert.doesNotMatch(ctx.repo.show(ctx.repo.head(), 'src/batch.cpp'), /int fb\(\)/, 'the function sent back is not merged');
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', a).state, 'done');
+  assert.equal((await batchState(s1.body.batchId)).state, 'returned');
 
-  // Round 2: the author fixes B (new fingerprint) and resubmits; three peers confirm.
+  // Round 2: the author fixes B (new fingerprint) and resubmits it; three peers confirm.
   bHash = 'hash-b-2';
-  for (const id of taskIds) assert.equal((await call('POST', '/api/tasks/claim', { taskId: id }, author)).status, 200);
-  const s2 = await submit();
+  const taskOfB = claim.body.tasks.find((t) => t.symbol === b).task;
+  assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOfB }, author)).status, 200);
+  const s2 = await call('POST', '/api/batches', { taskIds: [taskOfB], baseCommit: ctx.repo.head(), files: { 'src/batch.cpp': source } }, author);
   const r2 = Object.fromEntries((await settle(s2.body.batchId)).functions.map((f) => [f.symbol, f]));
   assert.equal(r2[b].state, 'peer_review', 'changed code gets reviewed again');
   for (const t of peers) {
@@ -520,7 +544,7 @@ test('batches: one compile, auto-approval, peer review, return as a whole, carry
   await ctx.merger.pump();
   const merged = await batchState(s2.body.batchId);
   assert.equal(merged.state, 'merged', JSON.stringify(merged));
-  assert.match(ctx.repo.git(['log', '-1', '--format=%B']), /Decompile 2 functions in src\/batch\.cpp[\s\S]*Peer-reviewed-by/);
+  assert.match(ctx.repo.git(['log', '-1', '--format=%B']), new RegExp(`Decompile ${b}[\\s\\S]*Peer-reviewed-by`));
   assert.equal(ctx.store.get('SELECT confirmed FROM func_status WHERE symbol_id = ?', b).confirmed, 1);
   assert.equal(ctx.store.get('SELECT code_hash FROM func_status WHERE symbol_id = ?', a).code_hash, 'hash-a');
 

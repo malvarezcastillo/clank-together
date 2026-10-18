@@ -1,8 +1,9 @@
-// A batch merges as a whole. When one of its attempts fails (verification, peer review, human
-// review or the merge re-check), the whole batch goes back to its author: every other attempt
-// that was still on its way is marked returned, and its task becomes claimable again (reserved
-// for the author for a while). Peer verdicts stay attached to their attempts, so a resubmission
-// whose compiled code is unchanged for a function carries them over (Verifier.carryOver).
+// When verification or the merge re-check fails, the whole batch goes back to its author: every
+// attempt that was still on its way is marked returned, and its task becomes claimable again
+// (reserved for the author for a while). Peer verdicts stay attached to their attempts, so a
+// resubmission whose compiled code is unchanged for a function carries them over
+// (Verifier.carryOver). A peer or human verdict against one function sends back only that
+// function; the rest of the batch goes on, and its approved part merges without it (merge.js).
 
 import { now } from './db.js';
 
@@ -21,6 +22,17 @@ export function returnBatch(store, batchId, reason) {
   }
   store.run(`UPDATE batches SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ?`, reason, batchId);
   store.event('batch_returned', b.user_id, { batch: batchId, reason });
+}
+
+// Attempts still on their way to main; the others were sent back or rejected.
+export const LIVE_STATES = ['queued', 'verifying', 'peer_review', 'in_review', 'approved', 'merging'];
+
+/** Ends a batch whose functions were all sent back or rejected. */
+export function settleBatch(store, batchId, reason) {
+  if (!batchId) return;
+  const ph = LIVE_STATES.map(() => '?').join(',');
+  if (store.get(`SELECT 1 FROM attempts WHERE batch_id = ? AND state IN (${ph})`, batchId, ...LIVE_STATES)) return;
+  store.run(`UPDATE batches SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ? AND state = 'open'`, reason, batchId);
 }
 
 /** Attempts of a batch with their task's symbol. */

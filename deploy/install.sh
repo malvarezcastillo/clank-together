@@ -58,10 +58,15 @@ systemctl restart docker
 echo "== service user and code"
 id togetherdecomp >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --shell /usr/sbin/nologin togetherdecomp
 usermod -aG docker togetherdecomp
-rm -rf "$APP.new" && mkdir -p "$APP.new"
-cp -a "$SRC/src" "$SRC/template" "$SRC/ghidra_scripts" "$SRC/toolchain" "$SRC/package.json" "$APP.new/"
-chown -R root:root "$APP.new" && chmod -R go-w "$APP.new"
-rm -rf "$APP.old"; [ -d "$APP" ] && mv "$APP" "$APP.old"; mv "$APP.new" "$APP"
+# Code updates go through update.sh (releases behind a symlink); here it only lays the code down.
+if [ ! -e "$APP" ]; then
+  mkdir -p /opt/togetherdecomp-releases/initial
+  cp -a "$SRC/src" "$SRC/template" "$SRC/ghidra_scripts" "$SRC/toolchain" "$SRC/deploy" "$SRC/package.json" /opt/togetherdecomp-releases/initial/
+  chown -R root:root /opt/togetherdecomp-releases && chmod -R go-w,a+rX /opt/togetherdecomp-releases
+  ln -s /opt/togetherdecomp-releases/initial "$APP"
+else
+  sh "$SRC/deploy/update.sh" "$SRC"
+fi
 
 mkdir -p "$DATA" && chown togetherdecomp:togetherdecomp "$DATA" && chmod 700 "$DATA"
 NODE="/opt/node/bin/node --disable-warning=ExperimentalWarning"

@@ -12,6 +12,7 @@ ExecStart=/opt/node/bin/node --disable-warning=ExperimentalWarning /opt/together
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
+Environment=TD_WEB_DIR=/opt/togetherdecomp/src/server/web
 
 # Hardening. The process needs: its data dir and git. Compiling happens in togetherdecomp-worker.
 NoNewPrivileges=true
