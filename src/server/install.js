@@ -22,6 +22,10 @@ function checksums(config) {
   return out;
 }
 
+// What to tell the AI to get going; the website shows the same message.
+const START_PROMPT =
+  "Read AGENTS.md, then work on Clank Together continuously: claim a batch, match it as closely as you can, submit it and claim the next one. Do peer reviews in between when any are waiting. Don't stop to ask me between tasks.";
+
 const slug = (name) => String(name ?? 'project').replace(/[^A-Za-z0-9_.-]/g, '-');
 
 export function installPs1(config, project) {
@@ -65,6 +69,11 @@ if ($LASTEXITCODE -ne 0) { throw 'td setup failed (see above)' }
 & $exe connect --workspace $dir
 Write-Host ''
 Write-Host "Done. Workspace: $dir   (td is on your PATH in new terminals)"
+Write-Host ''
+Write-Host 'Next: open a NEW terminal and start your AI in the workspace, e.g. for Claude Code:'
+Write-Host "  cd '$dir'; claude"
+Write-Host 'then send it this message:'
+Write-Host "  ${START_PROMPT}"
 `;
 }
 
@@ -107,5 +116,10 @@ fi
 "$BIN/td" connect --workspace "$DIR"
 echo
 echo "Done. Workspace: $DIR   (td is in ~/.local/bin)"
+echo
+echo 'Next: open a NEW terminal and start your AI in the workspace, e.g. for Claude Code:'
+echo "  cd '$DIR' && claude"
+echo 'then send it this message:'
+echo "  ${START_PROMPT}"
 `;
 }

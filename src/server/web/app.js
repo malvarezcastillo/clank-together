@@ -190,14 +190,25 @@ $('token-form').addEventListener('submit', async (e) => {
   }
 });
 
-$('copy-install').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText($('install-win').textContent);
-    $('copy-install').textContent = 'Copied';
-  } catch {
-    $('copy-install').textContent = 'Select the line and copy it';
-  }
-});
+// Every command or message the reader has to paste gets its own copy button.
+for (const code of document.querySelectorAll('code.cmd')) {
+  const wrap = el('div', null, 'cmd-row');
+  code.replaceWith(wrap);
+  const btn = button('Copy', async () => {
+    try {
+      await navigator.clipboard.writeText(code.textContent);
+      btn.textContent = 'Copied';
+    } catch {
+      btn.textContent = 'Select and copy';
+    }
+    setTimeout(() => (btn.textContent = 'Copy'), 2000);
+  }, 'copy');
+  wrap.append(code, btn);
+}
+
+// Links to the guide open it before scrolling there.
+for (const a of document.querySelectorAll('a[href="#guide"]')) a.addEventListener('click', () => ($('guide').open = true));
+if (location.hash === '#guide') $('guide').open = true;
 
 $('password-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -373,6 +384,10 @@ api('/api/info')
       $('target-meta').title = info.version.sha256;
       $('target').hidden = false;
     }
+    // The guide's workspace paths use the installer's default folder name.
+    const folder = String(info.project ?? 'project').replace(/[^A-Za-z0-9_.-]/g, '-');
+    for (const c of document.querySelectorAll('.ws-win, .ws-linux, #open-win, #open-linux'))
+      c.textContent = c.textContent.replace('wowdecomp', folder);
     if (info.gitWeb) $('source-link').href = info.gitWeb;
     $('clone-cmd').textContent = `git clone ${info.git}`;
   })
