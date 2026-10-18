@@ -333,13 +333,17 @@ export function createApp(ctx) {
     if (waiting <= at) return;
     if (store.get('SELECT 1 FROM users WHERE id = ? AND peer_review_blocked = 1', user.id)) return;
     if (!peers.available(user, 1).length) return;
-    const need = config.reviewsPerClaim ?? 3;
-    const lastClaim = store.get(`SELECT MAX(at) AS t FROM events WHERE user_id = ? AND type IN ('claim', 'claim_batch')`, user.id).t ?? 0;
-    const done = store.get('SELECT COUNT(*) AS n FROM peer_reviews WHERE reviewer_id = ? AND created_at > ?', user.id, lastClaim).n;
-    if (done >= need) return;
+    // Counted over the last hour, not since the last claim: an agent that reviews a lot may claim
+    // several times in a row.
+    const per = config.reviewsPerClaim ?? 3;
+    const since = Date.now() - 3600_000;
+    const claims = store.get(`SELECT COUNT(*) AS n FROM events WHERE user_id = ? AND type IN ('claim', 'claim_batch') AND at > ?`, user.id, since).n;
+    const done = store.get('SELECT COUNT(*) AS n FROM peer_reviews WHERE reviewer_id = ? AND created_at > ?', user.id, since).n;
+    const need = Math.min(per, (claims + 1) * per - done);
+    if (need <= 0) return;
     throw new HttpError(
       429,
-      `The peer review queue is long (${waiting} functions waiting). Do ${need - done} more peer review${need - done > 1 ? 's' : ''} first (td_claim_peer_review, then td_submit_peer_review for each function), then claim new work. Keep working on and submitting what you already hold.`,
+      `The peer review queue is long (${waiting} functions waiting). Do ${need} more peer review${need > 1 ? 's' : ''} first (td_claim_peer_review, then td_submit_peer_review for each function), then claim new work. Keep working on and submitting what you already hold.`,
     );
   };
 
