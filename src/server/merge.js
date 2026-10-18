@@ -5,6 +5,7 @@ import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
 import { returnBatch, batchAttempts } from './batches.js';
+import { withoutFunctions } from './split.js';
 
 export class Merger {
   constructor({ store, config, repo, project, tasks, verifier, getPe, peers, log = console }) {
@@ -75,19 +76,33 @@ export class Merger {
     return { state: newState };
   }
 
-  /** Merges the oldest open batch whose attempts are all approved. */
+  /**
+   * Merges the oldest open batch whose attempts are all approved. Failing that, splits off the
+   * approved part of a batch whose other functions still wait for review, so finished work
+   * doesn't wait for the slowest function of its batch.
+   */
   async pump() {
     if (this.busy) return;
-    const batch = this.store.get(
+    const whole = this.store.get(
       `SELECT b.* FROM batches b WHERE b.state = 'open'
           AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id)
           AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state != 'approved')
         ORDER BY b.id LIMIT 1`,
     );
+    const partial = whole
+      ? null
+      : this.store.get(
+          `SELECT b.* FROM batches b WHERE b.state = 'open' AND json_extract(COALESCE(b.result_json, '{}'), '$.noSplit') IS NULL
+              AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state = 'approved')
+              AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state NOT IN ('approved', 'peer_review', 'in_review'))
+            ORDER BY b.id LIMIT 1`,
+        );
+    const batch = whole ?? partial;
     if (!batch) return;
     this.busy = true;
     try {
-      await this.merge(batch);
+      if (whole) await this.merge(whole);
+      else await this.mergeApprovedPart(partial);
     } catch (e) {
       this.log.error(`merge of batch ${batch.id} failed: ${e.stack}`);
       try {
@@ -100,7 +115,53 @@ export class Merger {
     }
   }
 
-  async merge(batch) {
+  /** Moves the approved attempts of `parent` into a batch of their own and merges that. */
+  async mergeApprovedPart(parent) {
+    const attempts = batchAttempts(this.store, parent.id);
+    const approved = attempts.filter((a) => a.state === 'approved');
+    const pending = attempts.filter((a) => a.state !== 'approved');
+    const files = withoutFunctions(JSON.parse(parent.files_json), pending.map((a) => a.symbol_id), (f) => this.repo.show(parent.base_commit, f));
+    if (!files) return this.noSplit(parent, 'the approved and pending functions share code that cannot be separated');
+    const child = this.store.tx(() => {
+      const r = this.store.run(
+        `INSERT INTO batches (user_id, base_commit, files_json, notes, agent_meta, env_digest, state, result_json, created_at, finished_at)
+         SELECT user_id, base_commit, ?, notes, agent_meta, env_digest, 'open', json_set(COALESCE(result_json, '{}'), '$.splitFrom', id), created_at, finished_at FROM batches WHERE id = ?`,
+        JSON.stringify(files), parent.id,
+      );
+      const id = Number(r.lastInsertRowid);
+      for (const a of approved) this.store.run('UPDATE attempts SET batch_id = ? WHERE id = ?', id, a.id);
+      return this.store.get('SELECT * FROM batches WHERE id = ?', id);
+    });
+    this.log.info(`batch ${parent.id}: merging its ${approved.length} approved functions as batch ${child.id}; ${pending.length} still in review`);
+    try {
+      await this.merge(child, { parent, parentFiles: JSON.parse(parent.files_json), splitFiles: files });
+    } catch (e) {
+      try {
+        this.repo.reset();
+      } catch {}
+      this.undoSplit(parent, child, approved, `merging the approved part failed: ${e.message}`);
+      throw e;
+    }
+  }
+
+  // The approved attempts go back to the batch they came from, which then merges as a whole.
+  undoSplit(parent, child, approved, reason) {
+    this.store.tx(() => {
+      for (const a of approved) {
+        this.store.run(`UPDATE attempts SET batch_id = ?, state = 'approved' WHERE id = ?`, parent.id, a.id);
+        this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), a.task_id);
+      }
+      this.store.run(`UPDATE batches SET state = 'superseded' WHERE id = ?`, child.id);
+    });
+    this.noSplit(parent, reason);
+  }
+
+  noSplit(batch, reason) {
+    this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.noSplit', ?) WHERE id = ?`, reason, batch.id);
+    this.log.info(`batch ${batch.id} waits to merge as a whole: ${reason}`);
+  }
+
+  async merge(batch, split = null) {
     this.store.run(`UPDATE batches SET state = 'merging' WHERE id = ?`, batch.id);
     const attempts = batchAttempts(this.store, batch.id);
     for (const a of attempts) this.store.run(`UPDATE tasks SET state = 'merging', updated_at = ? WHERE id = ?`, now(), a.task_id);
@@ -108,6 +169,10 @@ export class Merger {
     const files = JSON.parse(batch.files_json);
 
     const bounce = (summary, details) => {
+      if (split) {
+        this.undoSplit(split.parent, batch, attempts, summary);
+        return;
+      }
       this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.mergeFailure', json(?)) WHERE id = ?`, JSON.stringify({ summary, ...details }), batch.id);
       returnBatch(this.store, batch.id, summary);
       this.log.info(`merge of batch ${batch.id} bounced: ${summary}`);
@@ -161,6 +226,7 @@ export class Merger {
       }
       this.store.run(`UPDATE batches SET state = 'merged', merged_commit = ? WHERE id = ?`, commit, batch.id);
       this.store.event('merged', batch.user_id, { batch: batch.id, functions: attempts.length, commit });
+      if (split) this.rebaseRemainder(split, merged.files, commit);
     });
     this.tasks.generate();
     if (this.config.pushRemote) {
@@ -172,6 +238,21 @@ export class Merger {
     }
     this.onMerged?.(commit);
     this.log.info(`merged batch ${batch.id} (${attempts.length} functions) as ${commit.slice(0, 10)}`);
+  }
+
+  /**
+   * After the approved part of a batch merged, the rest of the batch is based on that commit:
+   * its files become the merged files plus the still-pending functions.
+   */
+  rebaseRemainder({ parent, parentFiles, splitFiles }, mergedFiles, commit) {
+    const files = {};
+    for (const [file, full] of Object.entries(parentFiles)) {
+      const rebased = this.repo.merge3(mergedFiles[file], splitFiles[file], full);
+      // A conflict here surfaces again when the rest merges, and goes back to its author then.
+      if (rebased === null) return this.log.error(`batch ${parent.id}: could not rebase ${file} onto ${commit.slice(0, 10)}`);
+      files[file] = rebased;
+    }
+    this.store.run('UPDATE batches SET files_json = ?, base_commit = ? WHERE id = ?', JSON.stringify(files), commit, parent.id);
   }
 
   /**

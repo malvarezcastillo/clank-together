@@ -24,14 +24,25 @@ import { scanAnnotations } from './project.js';
  * @param {Record<string,object>} p.runners
  */
 // lintUnits: units whose preprocessed output is scanned (default: all compiled units).
-export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, lintUnits = null }) {
+// analyze: replaces the in-process analysis of the compiler output (the server runs it in worker
+// threads, so a check of many units doesn't block it).
+export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, lintUnits = null, analyze = null }) {
   const scan = scanAnnotations(repoDir, project, overrides);
   const annotationErrors = [...scan.errors, ...lintAnnotations(scan.annotations, symbols)];
 
   prepareJobDir({ repoDir, jobDir, project, overrides });
   const compiled = await compileUnits({ jobDir, units, project, runners, timeoutMs, preprocess: (f) => !lintUnits || lintUnits.has(f) });
 
-  const projectRoots = [...project.sourceDirs, ...project.includeDirs].map((d) => '/' + normalizePath(d) + '/');
+  const roots = { sourceDirs: project.sourceDirs, includeDirs: project.includeDirs };
+  const results = analyze
+    ? await analyze({ compiled, annotations: scan.annotations, roots })
+    : analyzeCompiled({ compiled, annotations: scan.annotations, roots, symbols, nameIndex, pe });
+  return { annotationErrors, units: results, annotations: scan.annotations };
+}
+
+/** Lints and compares the compiler output of each unit against the original. */
+export function analyzeCompiled({ compiled, annotations, roots, symbols, nameIndex, pe }) {
+  const projectRoots = [...roots.sourceDirs, ...roots.includeDirs].map((d) => '/' + normalizePath(d) + '/');
   const isProjectFile = (f) => projectRoots.some((r) => f.includes(r));
 
   const results = [];
@@ -42,14 +53,14 @@ export async function checkUnits({ repoDir, jobDir, project, units, overrides = 
       try {
         const obj = new CoffObject(fs.readFileSync(c.obj));
         const listing = parseListing(c.cod ? fs.readFileSync(c.cod, 'latin1') : '');
-        Object.assign(unit, compareObject({ obj, listing, file: c.file, annotations: scan.annotations, symbols, nameIndex, pe }));
+        Object.assign(unit, compareObject({ obj, listing, file: c.file, annotations, symbols, nameIndex, pe }));
       } catch (e) {
         unit.errors.push({ file: c.file, message: `could not analyze compiler output: ${e.message}` });
       }
     }
     results.push(unit);
   }
-  return { annotationErrors, units: results, annotations: scan.annotations };
+  return results;
 }
 
 function trimLog(log) {

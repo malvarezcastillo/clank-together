@@ -79,6 +79,24 @@ export class Repo {
     return { files: out, conflicts };
   }
 
+  /** Three-way merge of texts: the change from base to theirs applied to ours, or null on a conflict. */
+  merge3(ours, base, theirs) {
+    if (base === theirs) return ours;
+    if (base === ours) return theirs;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'td-merge-'));
+    try {
+      const [b, o, t] = ['base', 'ours', 'theirs'].map((n) => path.join(tmp, n));
+      fs.writeFileSync(b, base);
+      fs.writeFileSync(o, ours);
+      fs.writeFileSync(t, theirs);
+      return execFileSync('git', ['merge-file', '-p', o, b, t], { encoding: 'utf8' });
+    } catch {
+      return null;
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
   commitFiles(files, message, author) {
     for (const [file, content] of Object.entries(files)) {
       const abs = path.join(this.dir, file);

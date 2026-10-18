@@ -10,6 +10,7 @@ import { STATUS } from '../shared/compare.js';
 import { listSources, isUnit } from '../shared/project.js';
 import { now } from './db.js';
 import { returnBatch, batchAttempts } from './batches.js';
+import { analyzeInWorkers } from './analyze.js';
 
 const RANK = { [STATUS.EXACT]: 3, [STATUS.UNRESOLVED]: 2, [STATUS.MISMATCH]: 1, [STATUS.MISSING]: 0, [STATUS.NO_ADDRESS]: 0 };
 
@@ -93,6 +94,7 @@ export class Verifier {
 
     const v = this.store.currentVersion();
     const symbols = this.store.symbolMap(v.id);
+    const nameIndex = this.store.nameIndex();
     const jobDir = path.join(this.jobsDir, jobName);
     try {
       const check = await checkUnits({
@@ -102,13 +104,14 @@ export class Verifier {
         units: [...units],
         overrides: files,
         symbols,
-        nameIndex: this.store.nameIndex(),
+        nameIndex,
         pe: this.getPe(),
         runners: this.config.runners,
         timeoutMs: timeoutMs ?? this.config.buildTimeoutMs ?? 300_000,
         // The macro-proof lint needs the /P pass: for submitted units; for every unit when a header
         // changed (a macro there expands everywhere); never for a rebuild of trusted main.
         lintUnits: allUnits && !Object.keys(files).length ? new Set() : changedHeaders.length ? null : new Set(Object.keys(files).filter(isUnit)),
+        analyze: (args) => analyzeInWorkers({ ...args, symbols, nameIndex, peFile: v.file }),
       });
       const rec = reconcile(check, symbols);
       return { check, rec, symbols, changedHeaders, units: [...units] };

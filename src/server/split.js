@@ -1,0 +1,99 @@
+// Splitting a batch: the functions that are already approved merge on their own, while the rest
+// stays in review. The approved part is the submitted files with every pending function put back
+// the way it is on the batch's base commit (or removed, when the submission added it). The merge
+// re-verifies the result on main, so a split that breaks anything is caught there.
+
+import { parseAnnotations } from '../shared/annotations.js';
+
+/**
+ * Function definitions in a file by symbol ID: the annotation lines through the closing brace.
+ * Several IDs on one definition (folded functions) share a region.
+ * @returns {Map<string, {start: number, end: number, ids: string[]}>|null}  0-based, end exclusive
+ */
+export function functionRegions(text) {
+  const { annotations } = parseAnnotations(text);
+  const lines = text.split('\n');
+  const groups = new Map();
+  for (const a of annotations) {
+    if (a.kind !== 'FUNCTION' && a.kind !== 'STUB') continue;
+    const g = groups.get(a.targetLine) ?? { start: a.line - 1, targetLine: a.targetLine, ids: [] };
+    g.start = Math.min(g.start, a.line - 1);
+    g.ids.push(a.id);
+    groups.set(a.targetLine, g);
+  }
+  const out = new Map();
+  for (const g of groups.values()) {
+    const end = bodyEnd(lines, g.targetLine - 1);
+    if (end === null) return null;
+    const region = { start: g.start, end, ids: g.ids };
+    for (const id of g.ids) out.set(id, region);
+  }
+  return out;
+}
+
+// Index of the line after the brace that closes the body starting at or after line `from`.
+function bodyEnd(lines, from) {
+  let depth = 0;
+  let opened = false;
+  let block = false;
+  for (let i = from; i < lines.length; i++) {
+    const s = lines[i];
+    for (let j = 0; j < s.length; j++) {
+      const c = s[j];
+      if (block) {
+        if (c === '*' && s[j + 1] === '/') (block = false), j++;
+        continue;
+      }
+      if (c === '/' && s[j + 1] === '/') break;
+      if (c === '/' && s[j + 1] === '*') {
+        block = true;
+        j++;
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        for (j++; j < s.length && s[j] !== c; j++) if (s[j] === '\\') j++;
+        continue;
+      }
+      if (c === ';' && !opened) return null; // a declaration, not a definition
+      if (c === '{') (depth++, (opened = true));
+      else if (c === '}' && --depth === 0 && opened) return i + 1;
+    }
+  }
+  return null;
+}
+
+/**
+ * The submitted files without the changes to `ids`.
+ * @param {Record<string,string>} files     submitted files
+ * @param {Iterable<string>} ids            symbol IDs whose changes are taken out
+ * @param {(file: string) => string|null} baseText  the file on the batch's base commit
+ * @returns {Record<string,string>|null}    null when the functions can't be separated cleanly
+ */
+export function withoutFunctions(files, ids, baseText) {
+  const pending = new Set(ids);
+  const out = {};
+  for (const [file, text] of Object.entries(files)) {
+    const regions = functionRegions(text);
+    if (!regions) return null;
+    const mine = [...new Set([...regions].filter(([id]) => pending.has(id)).map(([, r]) => r))];
+    if (!mine.length) {
+      out[file] = text;
+      continue;
+    }
+    const base = baseText(file);
+    const baseRegions = base === null ? new Map() : functionRegions(base);
+    if (!baseRegions) return null;
+    const baseLines = base === null ? [] : base.split('\n');
+    const lines = text.split('\n');
+    // Replace from the bottom so earlier line numbers stay valid.
+    for (const r of mine.sort((a, b) => b.start - a.start)) {
+      // A definition shared with a function that is not pending can't be split.
+      if (r.ids.some((id) => !pending.has(id))) return null;
+      const b = baseRegions.get(r.ids[0]);
+      if (b && (b.ids.length !== r.ids.length || b.ids.some((id) => !r.ids.includes(id)))) return null;
+      lines.splice(r.start, r.end - r.start, ...(b ? baseLines.slice(b.start, b.end) : []));
+    }
+    out[file] = lines.join('\n');
+  }
+  return out;
+}

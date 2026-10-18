@@ -344,6 +344,67 @@ test('peer review: three other agents must agree, by reading only', async () => 
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task.id);
 });
 
+test('split: the approved part of a batch merges while the rest waits for review', async () => {
+  const author = await activeUser('sauthor');
+  const peers = [await activeUser('speer1'), await activeUser('speer2'), await activeUser('speer3')];
+  await ctx.accounts.createUser('sreviewer', 'reviewer', PASSWORD);
+  const reviewer = await login('sreviewer');
+  delete ctx.merger.pump;
+
+  const v = ctx.store.currentVersion();
+  const c = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x401500, size: 8, unit: 'src/split.cpp' }).symbol.id;
+  const d = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x401540, size: 8, unit: 'src/split.cpp' }).symbol.id;
+  ctx.tasks.generate();
+
+  // Stubbed compiler: C is byte-identical, D is not; a function is only compiled when its code is in the file.
+  const realCheck = ctx.verifier.check;
+  ctx.verifier.check = async (files) => {
+    const text = files['src/split.cpp'] ?? '';
+    const functions = [];
+    if (text.includes('int fc()')) functions.push({ id: c, status: STATUS.EXACT, score: 1, file: 'src/split.cpp', codeHash: 'hash-c', relocations: [], size: { ours: 8, original: 8 } });
+    if (text.includes('int fd()')) functions.push({ id: d, status: STATUS.MISMATCH, score: 0.9, file: 'src/split.cpp', codeHash: 'hash-d', relocations: [], size: { ours: 8, original: 8 } });
+    return {
+      check: { annotationErrors: [], units: [{ file: 'src/split.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions }] },
+      rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] },
+      changedHeaders: [],
+      units: ['src/split.cpp'],
+    };
+  };
+
+  const claim = await call('POST', '/api/tasks/claim-batch', { unit: 'src/split.cpp' }, author);
+  const taskIds = claim.body.tasks.map((t) => t.task);
+  const source = `#include "x.h"\n\n// FUNCTION: ${c}\nint fc() {\n  return 1;\n}\n\n// FUNCTION: ${d}\nint fd() {\n  if (x) { return 2; }\n  return 3;\n}\n`;
+  const s = await call('POST', '/api/batches', { taskIds, baseCommit: ctx.repo.head(), files: { 'src/split.cpp': source } }, author);
+  assert.equal(s.status, 200, JSON.stringify(s.body));
+  const batchState = async (id) => (await call('GET', `/api/batches/${id}`, null, author)).body;
+  await waitFor(async () => !['queued', 'verifying'].includes((await batchState(s.body.batchId)).state));
+
+  // C merges on its own; D stays behind in the original batch, rebased onto that commit.
+  await ctx.merger.pump();
+  const head1 = ctx.repo.head();
+  const onMain = ctx.repo.show(head1, 'src/split.cpp');
+  assert.match(onMain, /int fc\(\)/);
+  assert.doesNotMatch(onMain, /int fd\(\)/, 'the function still in review is not merged');
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', c).state, 'done');
+  const rest = ctx.store.get('SELECT * FROM batches WHERE id = ?', s.body.batchId);
+  assert.equal(rest.state, 'open');
+  assert.equal(rest.base_commit, head1);
+  assert.equal(JSON.parse(rest.files_json)['src/split.cpp'], source);
+
+  // D passes review later and merges on top.
+  const att = (await batchState(s.body.batchId)).functions.find((f) => f.symbol === d).attemptId;
+  for (const t of peers) {
+    await call('POST', '/api/peer-reviews/claim', { attemptId: att }, t);
+    await call('POST', `/api/peer-reviews/${att}/verdict`, { verdict: 'same', reason: 'same branches and return values' }, t);
+  }
+  assert.equal((await request('POST', `/api/batches/${s.body.batchId}/review`, { action: 'approve' }, { cookie: reviewer })).status, 200);
+  await ctx.merger.pump();
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', s.body.batchId).state, 'merged');
+  assert.equal(ctx.repo.show(ctx.repo.head(), 'src/split.cpp'), source);
+
+  ctx.verifier.check = realCheck;
+});
+
 test('batches: one compile, auto-approval, peer review, return as a whole, carry-over, one merge', async () => {
   const author = await activeUser('bauthor');
   const peers = [await activeUser('bpeer1'), await activeUser('bpeer2'), await activeUser('bpeer3')];
