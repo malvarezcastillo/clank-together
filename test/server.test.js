@@ -580,6 +580,43 @@ test('the symbol table is only sent when it changed; downloads come compressed w
   await plain.arrayBuffer();
 });
 
+test('a long review queue makes new claims wait for a few peer reviews', async () => {
+  await activeUser('rfauthor');
+  const author = ctx.accounts.byName('rfauthor');
+  const worker = await activeUser('rfworker');
+  const v = ctx.store.currentVersion();
+  const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x40f800, size: 8, unit: 'src/rf.cpp' }).symbol.id;
+  ctx.tasks.generate();
+  const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
+  ctx.store.run(`UPDATE tasks SET state = 'peer_review' WHERE id = ?`, task);
+  const attempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, task, author.id, ctx.repo.head(), now()).lastInsertRowid);
+  const before = ctx.config.peerReviewFirstAt;
+  ctx.config.peerReviewFirstAt = 0;
+  try {
+    const refused = await call('POST', '/api/tasks/claim-batch', {}, worker);
+    assert.equal(refused.status, 429);
+    assert.match(refused.body.error, /peer review/);
+    const g = await call('GET', `/api/tasks/${task}`, null, worker);
+    assert.match(g.body.guidance, /wait for peer review/, 'the guidance says so too');
+    // Reviews until new work is allowed: three verdicts, or nothing left this worker may review.
+    let ok = refused;
+    for (let i = 0; i < 4 && ok.status === 429; i++) {
+      const c = await call('POST', '/api/peer-reviews/claim', {}, worker);
+      for (const f of c.body.functions ?? []) {
+        await call('POST', `/api/peer-reviews/${f.attemptId}/verdict`, { verdict: 'same', reason: 'the same branches and calls as the original' }, worker);
+      }
+      ok = await call('POST', '/api/tasks/claim-batch', {}, worker);
+    }
+    assert.notEqual(ok.status, 429, JSON.stringify(ok.body));
+    assert.ok(ctx.store.get('SELECT COUNT(*) AS n FROM peer_reviews WHERE reviewer_id = ?', ctx.accounts.byName('rfworker').id).n <= 3);
+    for (const t of ok.body.tasks ?? []) await call('POST', `/api/tasks/${t.task}/release`, {}, worker);
+  } finally {
+    ctx.config.peerReviewFirstAt = before;
+    ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE id = ?`, attempt);
+    ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task);
+  }
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

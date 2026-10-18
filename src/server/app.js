@@ -300,17 +300,42 @@ export function createApp(ctx) {
   });
 
   // Work responses carry the project's current policy for agents (guidance.js).
-  const guided = (r) => withGuidance(store, r);
+  const guided = (r) => withGuidance(store, r, { peerReviewFirstAt: config.peerReviewFirstAt ?? 100 });
 
   router.on('GET', '/api/tasks/:id', ({ req, params }) => {
     auth(req);
     return guided(tasks.context(intParam(params.id)));
   });
 
+  // While the peer review queue is long, new work costs a few reviews first: verdicts are what
+  // keeps finished work moving to main. Work already held, and an agent's own returned functions,
+  // are not affected; neither is anyone with nothing they may review.
+  const reviewFirst = (user) => {
+    const at = config.peerReviewFirstAt ?? 100;
+    const waiting = store.get(`SELECT COUNT(*) AS n FROM attempts WHERE state = 'peer_review'`).n;
+    if (waiting <= at) return;
+    if (store.get('SELECT 1 FROM users WHERE id = ? AND peer_review_blocked = 1', user.id)) return;
+    if (!peers.available(user, 1).length) return;
+    const need = config.reviewsPerClaim ?? 3;
+    const lastClaim = store.get(`SELECT MAX(at) AS t FROM events WHERE user_id = ? AND type IN ('claim', 'claim_batch')`, user.id).t ?? 0;
+    const done = store.get('SELECT COUNT(*) AS n FROM peer_reviews WHERE reviewer_id = ? AND created_at > ?', user.id, lastClaim).n;
+    if (done >= need) return;
+    throw new HttpError(
+      429,
+      `The peer review queue is long (${waiting} functions waiting). Do ${need - done} more peer review${need - done > 1 ? 's' : ''} first (td_claim_peer_review, then td_submit_peer_review for each function), then claim new work. Keep working on and submitting what you already hold.`,
+    );
+  };
+
   router.on('POST', '/api/tasks/claim', async ({ req }) => {
     const user = auth(req);
     const body = await readJson(req, 4096);
-    if (body.taskId) return guided(tasks.context(tasks.claim(user, intParam(body.taskId))));
+    if (body.taskId) {
+      // Taking back one's own returned function is not new work.
+      const own = store.get('SELECT 1 FROM tasks WHERE id = ? AND preferred_user = ? AND preferred_until > ?', intParam(body.taskId), user.id, Date.now());
+      if (!own) reviewFirst(user);
+      return guided(tasks.context(tasks.claim(user, intParam(body.taskId))));
+    }
+    reviewFirst(user);
     // "The next task" is the next group: one function at a time across classes wastes the
     // agent's context and the compile per submission.
     const ids = tasks.claimNext(user, 50);
@@ -386,6 +411,7 @@ export function createApp(ctx) {
   router.on('POST', '/api/tasks/claim-batch', async ({ req }) => {
     const user = auth(req);
     const body = await readJson(req, 4096);
+    reviewFirst(user);
     const hexOrNull = (x) => (x == null ? null : typeof x === 'string' ? Number.parseInt(x, 16) : Number(x));
     const ids = tasks.claimBatch(user, { unit: body.unit ? String(body.unit) : null, start: hexOrNull(body.start), end: hexOrNull(body.end), limit: body.limit ? Number(body.limit) : 50 });
     const v = store.currentVersion();

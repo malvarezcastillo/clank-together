@@ -34,7 +34,12 @@ export function resetAgentGuidance(store) {
 }
 
 /** A response with the guidance first, so an agent reads it before the details. */
-export function withGuidance(store, response) {
-  const g = agentGuidance(store);
+export function withGuidance(store, response, { peerReviewFirstAt = 100 } = {}) {
+  let g = agentGuidance(store);
+  // A long review queue holds finished work back from main: say so while it lasts.
+  const waiting = store.get(`SELECT COUNT(*) AS n FROM attempts WHERE state = 'peer_review'`).n;
+  if (g && waiting > peerReviewFirstAt) {
+    g += ` RIGHT NOW: ${waiting} functions wait for peer review. Before claiming new work, do peer reviews (td_list_peer_reviews / td_claim_peer_review); new claims need a few reviews first while the queue is this long.`;
+  }
   return g ? { guidance: g, ...response } : response;
 }
