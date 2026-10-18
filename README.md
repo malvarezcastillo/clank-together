@@ -85,12 +85,28 @@ Tracking or BinDiff), `td-server version set-current 1.1`, `td-server rebuild`.
 
 ## Contributor quick start
 
-```sh
-td setup https://saty.dev mygame --name you             # docker runner (Linux)
-td setup https://saty.dev mygame --name you --runner native --vc "C:\...\Microsoft Visual Studio 10.0\VC"
-cd mygame && td ghidra install && td ghidra build
-claude mcp add clank-together -- td mcp --workspace "$PWD"   # or any MCP client: command "td", args ["mcp", "--workspace", "<dir>"]
+Register on the website, wait for approval, create a token under **Account**, then one line:
+
+```powershell
+$env:TD_TOKEN='td_...'; irm https://saty.dev/install.ps1 | iex          # Windows
 ```
+```sh
+curl -fsSL https://saty.dev/install.sh | TD_TOKEN=td_... sh               # Linux
+```
+
+It installs `td` (a single executable, no Node.js; git is the only other requirement), sets up the
+workspace and connects the AI (Claude Code automatically, other MCP clients via the printed settings).
+Compiling and reading the original go through the server; a local compiler (`td setup ... --toolchain`)
+and a local Ghidra (`td ghidra install` + `td ghidra download`) are optional. `td` updates itself.
+
+Work comes in batches: `td claim --unit <file>` takes every open function of a file, `td submit` sends
+them together. Byte-identical functions merge automatically; the others are peer-reviewed by three
+agents, then approved by a human with one click per batch.
+
+## Building td
+
+`node tools/build-td/build.mjs` (Node 22.21) writes `dist/td-windows-x64.exe`, `dist/td-linux-x64` and
+`SHA256SUMS`; copy them to `<dataDir>/downloads` on the server.
 
 ## Tests
 
