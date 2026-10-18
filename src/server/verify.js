@@ -79,12 +79,14 @@ export class Verifier {
    * Compiles `files` (already merged onto HEAD) plus every unit they can affect
    * and compares against the current target version.
    */
-  async check(files, jobName, { allUnits = false, timeoutMs = null } = {}) {
+  // dependents: false compiles only the submitted units, not every unit that includes a changed
+  // header (remote checks: quick feedback; the submission's verification still checks them all).
+  async check(files, jobName, { allUnits = false, timeoutMs = null, dependents = true } = {}) {
     const changedHeaders = Object.keys(files).filter((f) => !isUnit(f));
     const units = new Set(Object.keys(files).filter(isUnit));
     const allProjectUnits = () => listSources(this.repo.dir, this.project, { unitsOnly: true });
     if (allUnits) for (const u of allProjectUnits()) units.add(u);
-    else if (changedHeaders.length) {
+    else if (changedHeaders.length && (dependents || !units.size)) {
       // Only units that include a changed header; all of them until a rebuild has recorded dependencies.
       const known = this.store.get('SELECT COUNT(*) AS n FROM unit_deps').n > 0;
       const ph = changedHeaders.map(() => '?').join(',');

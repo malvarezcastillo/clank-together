@@ -65,8 +65,9 @@ export class CheckQueue {
     let state = 'done';
     let result;
     try {
-      const { check, rec } = await this.verifier.check(files, `check-${job.user_id}-${job.id}`);
+      const { check, rec, changedHeaders } = await this.verifier.check(files, `check-${job.user_id}-${job.id}`, { dependents: false });
       result = { gate: 'ok', head: this.repo.head(), ...summarizeCheck(check, rec, new Set(Object.keys(files))) };
+      if (changedHeaders?.length) result.note = 'Header changes: this check compiled only your own files. The submission is also checked against every file that includes the changed headers.';
     } catch (e) {
       state = 'failed';
       result = { error: e.message };
