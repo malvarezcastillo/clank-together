@@ -12,7 +12,14 @@ export class Repo {
   }
 
   git(args, opts = {}) {
-    return execFileSync('git', args, { cwd: this.dir, encoding: opts.encoding ?? 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], input: opts.input });
+    try {
+      return execFileSync('git', args, { cwd: this.dir, encoding: opts.encoding ?? 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], input: opts.input });
+    } catch (e) {
+      // git's own explanation, not just "Command failed".
+      const why = `${e.stderr ?? ''}${e.stdout ?? ''}`.trim();
+      if (why) e.message = `git ${args.find((a) => !a.startsWith('-') && !a.includes('=')) ?? ''} failed: ${why.slice(0, 2000)}`;
+      throw e;
+    }
   }
 
   head() {
