@@ -317,8 +317,10 @@ export class Merger {
       if (!identical && !peerConfirmed) {
         // Code that builds but no longer passes (main changed beneath it): only this function goes
         // back to its author; the rest of the batch merges without it on the next round.
+        // Changed functions someone else holds is about the whole submission, not this function:
+        // sending back one at a time would drain the batch with the same reason every round.
         const builds = !ev.feedback.compileErrors?.length && ev.feedback.summary !== 'compilation failed';
-        if (builds && attempts.length > 1) return this.sendBackOne(batch, attempts, a, ev.feedback, split);
+        if (builds && attempts.length > 1 && !ev.feedback.changedOutside) return this.sendBackOne(batch, attempts, a, ev.feedback, split);
         return bounce(`re-verification on current main failed for ${a.symbol_id}: ${ev.feedback.summary}`, { feedback: ev.feedback });
       }
       if (peerConfirmed) confirmedIds.add(a.symbol_id);
