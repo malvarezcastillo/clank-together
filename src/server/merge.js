@@ -37,12 +37,16 @@ export class Merger {
     return this.store.tx(() => this.reviewOne(reviewer, attemptId, action, comment));
   }
 
-  /** The same decision for every attempt of a batch that waits for human review. */
+  /**
+   * The same decision for every attempt of a batch that waits for human review. Maintainers also
+   * decide the functions still in peer review.
+   */
   reviewBatch(reviewer, batchId, action, comment) {
     if (!hasRole(reviewer, 'reviewer')) throw new HttpError(403, 'only reviewers can review');
     if (!['approve', 'request_changes', 'reject'].includes(action)) throw new HttpError(400, 'invalid action');
     return this.store.tx(() => {
-      const waiting = this.store.all(`SELECT id FROM attempts WHERE batch_id = ? AND state = 'in_review'`, batchId);
+      const states = hasRole(reviewer, 'maintainer') ? `'in_review', 'peer_review'` : `'in_review'`;
+      const waiting = this.store.all(`SELECT id FROM attempts WHERE batch_id = ? AND state IN (${states})`, batchId);
       if (!waiting.length) throw new HttpError(409, 'nothing in this batch waits for human review');
       const results = waiting.map((w) => ({ attemptId: w.id, ...this.reviewOne(reviewer, w.id, action, comment) }));
       return { batchId, results };
@@ -52,12 +56,15 @@ export class Merger {
   reviewOne(reviewer, attemptId, action, comment) {
     const attempt = this.store.get('SELECT * FROM attempts WHERE id = ?', attemptId);
     if (!attempt) throw new HttpError(404, 'no such attempt');
-    if (attempt.state !== 'in_review') throw new HttpError(409, `attempt is ${attempt.state}`);
+    // Maintainers may decide without waiting for the three peer verdicts.
+    const skipsPeers = attempt.state === 'peer_review' && hasRole(reviewer, 'maintainer');
+    if (attempt.state !== 'in_review' && !skipsPeers) throw new HttpError(409, `attempt is ${attempt.state}`);
     if (attempt.user_id === reviewer.id) throw new HttpError(403, 'you cannot review your own attempt');
     if (this.store.get('SELECT 1 FROM reviews WHERE attempt_id = ? AND reviewer_id = ?', attemptId, reviewer.id)) throw new HttpError(409, 'you already reviewed this attempt');
 
     this.store.run('INSERT INTO reviews (attempt_id, reviewer_id, action, comment, created_at) VALUES (?, ?, ?, ?, ?)', attemptId, reviewer.id, action, comment?.slice(0, 4000) ?? null, now());
-    this.store.event('review', reviewer.id, { attempt: attemptId, action });
+    this.store.event('review', reviewer.id, { attempt: attemptId, action, ...(skipsPeers && { skippedPeerReview: true }) });
+    if (skipsPeers) this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
 
     if (action === 'approve') {
       const approvals = this.store.get(`SELECT COUNT(*) AS n FROM reviews WHERE attempt_id = ? AND action = 'approve'`, attemptId).n;

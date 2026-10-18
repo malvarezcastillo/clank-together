@@ -344,6 +344,24 @@ test('peer review: three other agents must agree, by reading only', async () => 
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task.id);
 });
 
+test('maintainers can decide a function still in peer review; reviewers cannot', async () => {
+  await ctx.accounts.createUser('pmaint', 'maintainer', PASSWORD);
+  await ctx.accounts.createUser('previewer', 'reviewer', PASSWORD);
+  await activeUser('pmauthor');
+  const author = ctx.accounts.byName('pmauthor');
+  const v = ctx.store.currentVersion();
+  const sym = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x401600, size: 8, unit: 'src/peer.cpp' }).symbol.id;
+  ctx.tasks.generate();
+  const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id;
+  ctx.store.run(`UPDATE tasks SET state = 'peer_review' WHERE id = ?`, task);
+  const attempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, task, author.id, ctx.repo.head(), now()).lastInsertRowid);
+
+  assert.throws(() => ctx.merger.review(ctx.accounts.byName('previewer'), attempt, 'approve'), /attempt is peer_review/);
+  assert.equal(ctx.merger.review(ctx.accounts.byName('pmaint'), attempt, 'approve').state, 'approved');
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = ?', task).state, 'approved');
+  assert.ok(ctx.store.get(`SELECT 1 FROM events WHERE type = 'review' AND data LIKE '%skippedPeerReview%'`));
+});
+
 test('split: the approved part of a batch merges while the rest waits for review', async () => {
   const author = await activeUser('sauthor');
   const peers = [await activeUser('speer1'), await activeUser('speer2'), await activeUser('speer3')];
