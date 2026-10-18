@@ -18,6 +18,7 @@ import { functionRegions } from './split.js';
 import { CheckQueue, WorkerUnavailable } from './checks.js';
 import { withGuidance } from './guidance.js';
 import { reviewerStats } from './reviewers.js';
+import { inferUnits } from './grouping.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
@@ -299,8 +300,26 @@ export function createApp(ctx) {
   router.on('POST', '/api/tasks/claim', async ({ req }) => {
     const user = auth(req);
     const body = await readJson(req, 4096);
-    const id = tasks.claim(user, body.taskId ? intParam(body.taskId) : null);
-    return guided(tasks.context(id));
+    if (body.taskId) return guided(tasks.context(tasks.claim(user, intParam(body.taskId))));
+    // "The next task" is the next group: one function at a time across classes wastes the
+    // agent's context and the compile per submission.
+    const ids = tasks.claimNext(user, 50);
+    const others = ids.slice(1).map((id) => {
+      const t = tasks.get(id);
+      return { task: id, symbol: t.symbol_id };
+    });
+    return guided({
+      ...tasks.context(ids[0]),
+      alsoClaimed: others,
+      note: groupNote(ids.length, tasks.lastGroup),
+    });
+  });
+
+  // Organize before porting: put held functions that are in no source file yet into files.
+  router.on('POST', '/api/tasks/place', async ({ req }) => {
+    const user = auth(req);
+    const body = await readJson(req, 64 * 1024);
+    return guided(tasks.place(user, body.assignments));
   });
 
   router.on('POST', '/api/tasks/:id/heartbeat', ({ req, params }) => {
@@ -343,6 +362,15 @@ export function createApp(ctx) {
     return r;
   };
 
+  // What to do with a claimed group; unplaced functions are organized into files first.
+  const groupNote = (n, group) => {
+    if (!group || n < 1) return undefined;
+    if (group.kind === 'range') {
+      return `These ${n} neighbouring functions are in no source file yet. Organize first: read them (td_decompile, td_disassemble; strings, __FILE__ in asserts and call targets show where they come from), decide which source file each belongs to (an existing one, or a new .cpp named after its class or subsystem), give them names if you can tell (Class::Method), and record that with td_place. Then port them file by file and submit as one batch.`;
+    }
+    return `You hold ${n} tasks of one ${group.kind} (${group.key}). Work through all of them, then submit them together as one batch (td_submit with every taskId).`;
+  };
+
   // Bulk work: claim every open function of a unit (source file) or an address range, submit the
   // file once. Verified with one compile; merged as a whole.
   router.on('POST', '/api/tasks/claim-batch', async ({ req }) => {
@@ -361,6 +389,7 @@ export function createApp(ctx) {
       tasks: rows.map((r) => ({ ...r, addr: r.addr != null ? '0x' + hex(r.addr) : null, annotation: `// FUNCTION: ${r.symbol}` })),
       allowedPaths: tasks.allowedPathsForTasks(ids),
       baseCommit: repo.head(),
+      group: body.unit || body.start != null ? undefined : tasks.lastGroup && { kind: tasks.lastGroup.kind, key: tasks.lastGroup.key, note: groupNote(ids.length, tasks.lastGroup) },
       note: 'Write or fix every function, check, then submit them together (td submit --all). Context of one task: GET /api/tasks/<id>.',
     });
   });
@@ -745,6 +774,18 @@ export async function startServer(dataDir, { role = 'all' } = {}) {
   const stops = [];
   if (role !== 'web') {
     ctx.tasks.generate();
+    // Put unplaced functions where their neighbours or class already are; again every half hour.
+    const place = () => {
+      try {
+        const n = inferUnits(ctx.store);
+        if (n) console.log(`placed ${n} function(s) in the files of their neighbours or class`);
+      } catch (e) {
+        console.error(`placing functions: ${e.message}`);
+      }
+    };
+    place();
+    const placer = setInterval(place, 30 * 60_000);
+    stops.push(() => clearInterval(placer));
     ctx.verifier.start();
     ctx.merger.start();
     ctx.checks.start();

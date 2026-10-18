@@ -20,7 +20,7 @@ const TOOLS = [
   },
   {
     name: 'td_claim_task',
-    description: 'Claim a task (or the next best one). Returns the full task context: symbol ID and address, file to write, previous attempts and their feedback, reviewer comments.',
+    description: 'Claim one specific task by id. Without an id it claims the next group (like td_claim_batch) and returns the first task context plus the others in alsoClaimed. Returns the full task context: symbol ID and address, file to write, previous attempts and their feedback, reviewer comments.',
     inputSchema: { type: 'object', properties: { taskId: int('task to claim; omit for the next available') } },
     run: async (ws, a) => ops.api(ws).post('/api/tasks/claim', { taskId: a.taskId }),
   },
@@ -90,9 +90,29 @@ const TOOLS = [
   },
   {
     name: 'td_claim_batch',
-    description: 'Claim many functions at once: every open function of a source file (unit), or of an address range of the current version, up to limit (default 50). Work through them in the file, td_check, then td_submit them together. Much cheaper than one function at a time.',
+    description: 'Claim many functions at once. With no arguments (the usual way): the next coherent group the server picks, a whole source file, a class, or neighbouring functions in the binary. Or every open function of a given source file (unit) or address range. Work through them, td_check, then td_submit them together. Much cheaper than one function at a time.',
     inputSchema: { type: 'object', properties: { unit: str('repo-relative source file, e.g. Engine/Source/FrameXML/LoadXML.cpp'), start: str('range start, hex'), end: str('range end, hex (exclusive)'), limit: int('max functions, default 50') } },
     run: async (ws, a) => ops.claimBatch(ws, a),
+  },
+  {
+    name: 'td_place',
+    description:
+      'Organize functions you hold that are in no source file yet: assign each to a .cpp file (existing, or a new one named after its class or subsystem) and optionally a name like Class::Method. Do this before porting a group of unplaced functions; later work then comes per file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assignments: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { taskId: { type: 'integer' }, unit: { type: 'string', description: 'repo path of the .cpp file' }, name: { type: 'string', description: 'optional, e.g. CGUnit_C::UpdateDisplayInfo' } },
+            required: ['taskId', 'unit'],
+          },
+        },
+      },
+      required: ['assignments'],
+    },
+    run: async (ws, a) => ops.api(ws).post('/api/tasks/place', { assignments: a.assignments }),
   },
   {
     name: 'td_get_batch',
@@ -200,7 +220,8 @@ const INSTRUCTIONS = [
   'Work continuously until the user tells you to stop; do not wait for confirmation between tasks.',
   'Port first, polish later: write faithful C++ (same logic, calls, conditions, data accesses) and submit it;',
   'functions that are not byte-identical are confirmed by three other agents in peer review, which is the normal path.',
-  'Loop: td_claim_batch (a whole unit: every open function of one source file) or td_claim_task ->',
+  'Loop: td_claim_batch with no arguments (the server hands out a coherent group: a source file, a class, or neighbouring functions) ->',
+  'if the group is in no source file yet, organize it first with td_place (which file, which name) ->',
   'read the originals (td_disassemble, td_decompile) -> write the C++ with the given annotations ->',
   'td_check to fix compile errors and clear structural differences (two or three checks per function, do not chase exact bytes) -> td_submit (everything you hold) ->',
   'immediately claim the next work. Do not wait for verification; look at results later with td_get_batch / td_get_result',

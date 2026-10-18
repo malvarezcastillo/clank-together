@@ -3,6 +3,11 @@
 import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hex } from '../shared/annotations.js';
+import { groupFor } from './grouping.js';
+import { normalizeRepoPath } from '../shared/lint.js';
+
+// Names agents give unplaced functions: C++ identifiers, scopes and template arguments only.
+const PLACE_NAME_RE = /^[A-Za-z_~][\w:<>,*& ~]{0,200}$/;
 
 export const CLAIMABLE = ['open', 'needs_cleanup', 'hard'];
 const PREFERRED_HOLD_MS = 6 * 3600_000;
@@ -84,8 +89,71 @@ export class Tasks {
    * Claims several tasks at once: every claimable function of a unit (source file) or of an
    * address range in the current version, up to `limit`. They are submitted together as a batch.
    */
+  /**
+   * The next work as a coherent group: the best open task and everything that belongs with it (its
+   * source file, its class, or the run of neighbouring unplaced functions). Returns task ids.
+   */
+  claimNext(user, limit = 50) {
+    return this.store.tx(() => {
+      const held = this.leasesOf(user.id).length;
+      const room = Math.min(Math.max(1, limit | 0), 200, this.maxLeased - held);
+      if (room <= 0) throw new HttpError(409, `you already hold ${held} tasks; submit or release some first`);
+      const seed = this.bestOpen(user);
+      if (!seed) throw new HttpError(404, 'no open tasks');
+      const group = groupFor(this.store, seed, { claimable: CLAIMABLE, user, now: now(), limit: room });
+      const ids = group.ids.includes(seed.id) ? group.ids : [seed.id, ...group.ids].slice(0, room);
+      const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
+      const head = this.repo.head();
+      for (const id of ids) this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, head, now(), id);
+      this.store.event('claim_batch', user.id, { tasks: ids.length, group: group.kind, key: group.key });
+      this.lastGroup = group;
+      return ids;
+    });
+  }
+
+  /**
+   * Places functions the user holds that are in no source file yet: each gets the file (and
+   * optionally the name) the agent chose after reading it. Organizing first makes the later work
+   * come in per-file batches.
+   */
+  place(user, assignments) {
+    if (!Array.isArray(assignments) || !assignments.length) throw new HttpError(400, 'assignments must list { taskId, unit, name? }');
+    if (assignments.length > 200) throw new HttpError(400, 'at most 200 assignments at a time');
+    return this.store.tx(() => {
+      const placed = [];
+      for (const a of assignments) {
+        const t = this.requireLease(user, Number(a.taskId));
+        const sym = this.store.get('SELECT * FROM symbols WHERE id = ?', t.symbol_id);
+        if (sym.unit) throw new HttpError(409, `${sym.id} is already in ${sym.unit}`);
+        const unit = normalizeRepoPath(String(a.unit ?? ''));
+        if (!unit || !this.project.sourceDirs.some((d) => unit.startsWith(`${d}/`)) || !/\.(c|cc|cpp|cxx)$/i.test(unit) || unit.split('/').includes('..')) {
+          throw new HttpError(400, `${sym.id}: unit must be a .cpp/.c file under ${this.project.sourceDirs.join(', ')}`);
+        }
+        const name = a.name == null ? null : String(a.name).trim();
+        if (name && !PLACE_NAME_RE.test(name)) throw new HttpError(400, `${sym.id}: a name may only use C++ identifiers, scopes (::) and template arguments`);
+        this.store.run('UPDATE symbols SET unit = ? WHERE id = ?', unit, sym.id);
+        if (name && !sym.name) this.store.run('UPDATE symbols SET name = ? WHERE id = ?', name, sym.id);
+        placed.push({ task: t.id, symbol: sym.id, unit, name: name && !sym.name ? name : sym.name });
+      }
+      this.store.event('placed', user.id, { functions: placed.length, units: [...new Set(placed.map((p) => p.unit))].slice(0, 20) });
+      return { placed, allowedPaths: this.allowedPathsForTasks(placed.map((p) => p.task)) };
+    });
+  }
+
+  // The open task to work on next for this user.
+  bestOpen(user) {
+    const ph = CLAIMABLE.map(() => '?').join(',');
+    return this.store.get(
+      `SELECT * FROM tasks WHERE state IN (${ph})
+          AND (preferred_user IS NULL OR preferred_user = ? OR preferred_until < ?)
+        ORDER BY (preferred_user = ?) DESC, priority DESC, (state = 'hard') ASC, difficulty ASC, id ASC LIMIT 1`,
+      ...CLAIMABLE, user.id, now(), user.id,
+    );
+  }
+
   claimBatch(user, { unit = null, start = null, end = null, limit = 50 } = {}) {
-    if (!unit && (start == null || end == null)) throw new HttpError(400, 'give a unit (source file) or an address range (start, end)');
+    // Without a file or range: the next coherent group.
+    if (!unit && (start == null || end == null)) return this.claimNext(user, limit);
     return this.store.tx(() => {
       const held = this.leasesOf(user.id).length;
       const room = Math.min(Math.max(1, limit | 0), 200, this.maxLeased - held);
