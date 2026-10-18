@@ -766,6 +766,32 @@ test('agents with an outdated td are told to update in their guidance', async ()
   fs.rmSync(path.join(dir, 'SHA256SUMS'));
 });
 
+test('a check can be started without waiting and fetched later', async () => {
+  const user = await activeUser('asyncchk');
+  const real = ctx.verifier.check;
+  ctx.verifier.check = async () => ({
+    check: { annotationErrors: [], units: [{ file: 'src/ac.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions: [] }] },
+    rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] },
+  });
+  ctx.checks.start();
+  try {
+    const r = await call('POST', '/api/check', { baseCommit: ctx.repo.head(), files: { 'src/ac.cpp': 'int ac() { return 0; }\n' }, wait: false }, user);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.ok(r.body.checkId);
+    assert.equal(r.body.state, 'queued', 'returns at once');
+    const done = await waitFor(async () => {
+      const g = await call('GET', `/api/checks/${r.body.checkId}`, null, user);
+      return g.body.state === 'done' && g.body;
+    });
+    assert.equal(done.result.units[0].file, 'src/ac.cpp');
+    const other = await activeUser('asyncchk2');
+    assert.equal((await call('GET', `/api/checks/${r.body.checkId}`, null, other)).status, 404, 'only your own checks');
+  } finally {
+    ctx.checks.stop();
+    ctx.verifier.check = real;
+  }
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

@@ -20,6 +20,7 @@ export class CheckQueue {
     Object.assign(this, { store, repo, verifier, config, log });
     this.running = 0;
     this.waiters = new Map(); // web side: job id -> requests waiting for it
+    this.detached = new Set(); // web side: checks started without waiting (kept until fetched)
   }
 
   workerAlive() {
@@ -31,12 +32,39 @@ export class CheckQueue {
    * files joins the job already on its way; a job nobody waits for any more is dropped.
    * @param {AbortSignal} [signal]  aborted when the client disconnects
    */
-  async run(userId, files, { signal } = {}) {
+  /**
+   * Queues a check (or joins the same one already on its way) and returns its id without waiting:
+   * the agent works on while it compiles and fetches the result with `result()`.
+   */
+  enqueue(userId, files, { detached = false } = {}) {
     if (!this.workerAlive()) throw new WorkerUnavailable('the compile service is paused for maintenance; try again in a few minutes');
     const filesJson = JSON.stringify(files);
     const hash = crypto.createHash('sha256').update(filesJson).digest('hex');
     const existing = this.store.get(`SELECT id FROM check_jobs WHERE user_id = ? AND files_hash = ? AND state IN ('queued', 'running') ORDER BY id DESC LIMIT 1`, userId, hash);
     const id = existing?.id ?? Number(this.store.run(`INSERT INTO check_jobs (user_id, files_json, files_hash, state, created_at) VALUES (?, ?, ?, 'queued', ?)`, userId, filesJson, hash, now()).lastInsertRowid);
+    // A check nobody waits on is dropped when its last waiter leaves; one started without waiting
+    // keeps an extra waiter until its result is fetched or a day passes.
+    if (detached) this.detached.add(id);
+    return id;
+  }
+
+  /** The state of a check of this user; with the result once done. */
+  result(userId, id) {
+    const job = this.store.get('SELECT id, user_id, state, result_json, created_at, finished_at FROM check_jobs WHERE id = ?', id);
+    if (!job || job.user_id !== userId) return null;
+    const ahead = job.state === 'queued' ? this.store.get(`SELECT COUNT(*) AS n FROM check_jobs WHERE state IN ('queued', 'running') AND id < ?`, id).n : 0;
+    if (job.state === 'done') this.detached.delete(id);
+    return {
+      checkId: job.id,
+      state: job.state,
+      ...(job.state === 'queued' && { ahead }),
+      ...(job.state === 'done' && { result: JSON.parse(job.result_json) }),
+      ...(job.state === 'failed' && { error: JSON.parse(job.result_json).error }),
+    };
+  }
+
+  async run(userId, files, { signal } = {}) {
+    const id = this.enqueue(userId, files);
     this.waiters.set(id, (this.waiters.get(id) ?? 0) + 1);
     try {
       // A queued check waits for the ones ahead of it, then builds; give up well after both.
@@ -54,7 +82,7 @@ export class CheckQueue {
       if (left > 0) this.waiters.set(id, left);
       else {
         this.waiters.delete(id);
-        this.store.run(`UPDATE check_jobs SET state = 'abandoned' WHERE id = ? AND state = 'queued'`, id);
+        if (!this.detached.has(id)) this.store.run(`UPDATE check_jobs SET state = 'abandoned' WHERE id = ? AND state = 'queued'`, id);
       }
     }
   }

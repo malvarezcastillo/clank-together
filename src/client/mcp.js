@@ -75,9 +75,22 @@ const TOOLS = [
   },
   {
     name: 'td_check',
-    description: 'Compile translation units locally and compare every annotated function against the original bytes. Same pipeline as the server. Returns status, score and byte-level diffs with the instruction at each mismatch.',
-    inputSchema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' }, description: 'repo-relative .cpp files; default: all changed files' } } },
-    run: async (ws, a) => ops.check(ws, a.files),
+    description:
+      'Compile translation units and compare every annotated function against the original bytes (on the server unless you have a local compiler). Returns status, score and byte-level diffs. With wait: false it returns a checkId at once: keep working (other functions, peer reviews) and fetch the result with td_check_result instead of waiting for the compile.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: { type: 'array', items: { type: 'string' }, description: 'repo-relative .cpp files; default: all changed files' },
+        wait: { type: 'boolean', description: 'false: queue the check and return its id right away (recommended)' },
+      },
+    },
+    run: async (ws, a) => ops.check(ws, a.files, { wait: a.wait !== false }),
+  },
+  {
+    name: 'td_check_result',
+    description: 'The result of a check started with td_check wait: false: queued (with how many are ahead), running, done (with the result) or failed.',
+    inputSchema: { type: 'object', properties: { checkId: int('id returned by td_check') }, required: ['checkId'] },
+    run: async (ws, a) => ops.api(ws).get(`/api/checks/${a.checkId}`),
   },
   {
     name: 'td_submit',

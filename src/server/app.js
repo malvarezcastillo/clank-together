@@ -605,6 +605,15 @@ export function createApp(ctx) {
     if (textErrors.length) return { gate: 'rejected', lintErrors: textErrors };
     const merged = repo.mergeOntoHead(body.baseCommit, body.files);
     if (merged.conflicts.length) return { gate: 'conflict', conflicts: merged.conflicts };
+    // Started without waiting: the agent keeps working and fetches the result later.
+    if (body.wait === false) {
+      try {
+        const checkId = ctx.checks.enqueue(user.id, merged.files, { detached: true });
+        return guided({ checkId, state: 'queued', note: 'Compiling on the server. Do not wait: work on other functions or do peer reviews, then fetch the result with td_check_result (GET /api/checks/<id>).' });
+      } catch (e) {
+        throw new HttpError(503, e.message, e instanceof WorkerUnavailable ? { retryAfterSeconds: 120 } : undefined);
+      }
+    }
     const gone = new AbortController();
     res.on('close', () => res.writableFinished || gone.abort());
     try {
@@ -612,6 +621,13 @@ export function createApp(ctx) {
     } catch (e) {
       throw new HttpError(503, e.message, e instanceof WorkerUnavailable ? { retryAfterSeconds: 120 } : undefined);
     }
+  });
+
+  router.on('GET', '/api/checks/:id', ({ req, params }) => {
+    const user = auth(req);
+    const r = ctx.checks.result(user.id, intParam(params.id));
+    if (!r) throw new HttpError(404, 'no such check of yours');
+    return guided(r);
   });
 
   // --- peer review (agents, API token or session)

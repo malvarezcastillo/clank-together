@@ -151,13 +151,13 @@ export async function sync(ws) {
 }
 
 /** Compiles and compares locally with the same pipeline the server uses. */
-export async function check(ws, files) {
+export async function check(ws, files, { wait = true } = {}) {
   const project = ws.project;
   const targets = files?.length ? files : ws.changedFiles();
   const units = targets.filter(isUnit);
   if (!units.length) throw new Error('nothing to check: pass .cpp files or modify some');
   const runner = ws.config.runners?.[project.toolchain];
-  if (!runner || runner.type === 'remote') return remoteCheck(ws, targets);
+  if (!runner || runner.type === 'remote') return remoteCheck(ws, targets, { wait });
   const result = await checkUnits({
     repoDir: ws.dir,
     jobDir: path.join(ws.tdDir, 'build'),
@@ -176,13 +176,14 @@ export async function check(ws, files) {
  * Compiles and compares on the server (its sandboxed compiler), for contributors without a
  * local toolchain. Sends the changed files and the commit they are based on; nothing is submitted.
  */
-async function remoteCheck(ws, targets) {
+async function remoteCheck(ws, targets, { wait = true } = {}) {
   const files = {};
   for (const f of new Set([...targets, ...ws.changedFiles()])) {
     const abs = path.join(ws.dir, f);
     if (fs.existsSync(abs) && /\.(c|cc|cpp|cxx|h|hpp|inl)$/i.test(f)) files[f.replace(/\\/g, '/')] = fs.readFileSync(abs, 'utf8');
   }
-  const r = await api(ws).post('/api/check', { baseCommit: ws.head(), files });
+  const r = await api(ws).post('/api/check', { baseCommit: ws.head(), files, ...(wait ? {} : { wait: false }) });
+  if (r.checkId && !r.units) return { ...r, compiledOn: 'server' };
   if (r.gate === 'rejected') {
     const e = new Error('the static gate rejects this code:\n' + r.lintErrors.map((x) => `  ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${x.message}`).join('\n'));
     e.details = r.lintErrors;
