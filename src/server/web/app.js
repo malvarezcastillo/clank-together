@@ -68,7 +68,8 @@ async function loadProgress() {
   const body = $('progress-body');
   body.replaceChildren();
   body.className = '';
-  const exact = p.byStatus.find((s) => s.status === 'exact') || { n: 0, bytes: 0 };
+  // Byte for byte: exact, and identical bytes whose referenced data has no name yet.
+  const exact = p.byStatus.filter((s) => s.status === 'exact' || s.status === 'match_unresolved').reduce((t, s) => ({ n: t.n + s.n, bytes: t.bytes + s.bytes }), { n: 0, bytes: 0 });
   const pct = p.bytes ? (exact.bytes / p.bytes) * 100 : 0;
 
   const gauge = el('div', null, 'gauge');

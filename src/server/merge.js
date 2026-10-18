@@ -5,7 +5,7 @@ import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
 import { returnBatch, batchAttempts, settleBatch } from './batches.js';
-import { withoutFunctions } from './split.js';
+import { withoutFunctions, functionRegions } from './split.js';
 import { RANK, bestResults, BIG_BATCH } from './verify.js';
 
 // Merges run in two lanes: one big merge (a header batch that must recompile many units) at a
@@ -190,6 +190,30 @@ export class Merger {
   }
 
   // The approved attempts go back to the batch they came from, which then merges as a whole.
+  // One function of a merge fails on current main: it goes back to its author, the others wait
+  // (approved) in their batch and merge on the next round, split from it.
+  sendBackOne(batch, attempts, failed, feedback, split) {
+    this.store.tx(() => {
+      this.store.run(`UPDATE attempts SET state = 'needs_cleanup', result_json = json_set(COALESCE(result_json, '{}'), '$.feedback', json(?)) WHERE id = ?`, JSON.stringify(feedback), failed.id);
+      this.store.run(
+        `UPDATE tasks SET state = 'needs_cleanup', preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`,
+        failed.user_id, now() + 6 * 3600_000, now(), failed.task_id,
+      );
+      const home = split ? split.parent.id : batch.id;
+      for (const a of attempts) {
+        if (a.id === failed.id) continue;
+        this.store.run(`UPDATE attempts SET batch_id = ?, state = 'approved' WHERE id = ?`, home, a.id);
+        this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), a.task_id);
+      }
+      if (split) {
+        this.store.run(`UPDATE attempts SET batch_id = ? WHERE id = ?`, home, failed.id);
+        this.store.run(`UPDATE batches SET state = 'superseded' WHERE id = ?`, batch.id);
+      }
+      this.store.run(`UPDATE batches SET state = 'open', result_json = json_remove(COALESCE(result_json, '{}'), '$.noSplit') WHERE id = ?`, home);
+    });
+    this.log.info(`batch ${batch.id}: ${failed.symbol_id} no longer passes on current main (${feedback.summary}); sent back, the rest merges without it`);
+  }
+
   undoSplit(parent, child, approved, reason) {
     this.store.tx(() => {
       for (const a of approved) {
@@ -262,7 +286,13 @@ export class Merger {
       // Byte-identical, or confirmed by peers and approved by a human; anything worse bounces.
       const identical = ev.state === 'approved' || ev.state === 'in_review';
       const peerConfirmed = ev.state === 'peer_review' && this.peers?.confirmed(a.id);
-      if (!identical && !peerConfirmed) return bounce(`re-verification on current main failed for ${a.symbol_id}: ${ev.feedback.summary}`, { feedback: ev.feedback });
+      if (!identical && !peerConfirmed) {
+        // Code that builds but no longer passes (main changed beneath it): only this function goes
+        // back to its author; the rest of the batch merges without it on the next round.
+        const builds = !ev.feedback.compileErrors?.length && ev.feedback.summary !== 'compilation failed';
+        if (builds && attempts.length > 1) return this.sendBackOne(batch, attempts, a, ev.feedback, split);
+        return bounce(`re-verification on current main failed for ${a.symbol_id}: ${ev.feedback.summary}`, { feedback: ev.feedback });
+      }
       if (peerConfirmed) confirmedIds.add(a.symbol_id);
       results.push({ id: a.symbol_id, name: ev.feedback.target?.demangled ?? null, status: ev.feedback.target?.status, peerConfirmed: !!peerConfirmed });
     }
@@ -280,7 +310,9 @@ export class Merger {
       results.length === 1
         ? `Decompile ${results[0].id}${results[0].name ? ` (${results[0].name})` : ''}`
         : `Decompile ${results.length} functions in ${[...new Set(Object.keys(files))].slice(0, 2).join(', ')}${Object.keys(files).length > 2 ? ', ...' : ''}`;
-    const lines = results.map((r) => `- ${r.id}${r.name ? ` ${r.name}` : ''}: ${r.peerConfirmed ? 'logic confirmed by peer review' : 'byte-identical'}`);
+    const head = this.repo.head();
+    const change = (id) => this.codeChange(id, merged.files, head);
+    const lines = results.map((r) => `- ${r.id}${r.name ? ` ${r.name}` : ''}: ${r.peerConfirmed ? 'logic confirmed by peer review' : 'byte-identical'}${change(r.id)}`);
     const message =
       `${title}\n\nBatch #${batch.id} by ${author}: ${identicalCount} byte-identical, ${results.length - identicalCount} confirmed by peer review.\n\n${lines.join('\n')}\n` +
       (peers.length ? `\nPeer-reviewed-by: ${peers.join(', ')}` : '') +
@@ -321,6 +353,27 @@ export class Merger {
     }
     this.onMerged?.(commit);
     this.log.info(`merged batch ${batch.id} (${attempts.length} functions) as ${commit.slice(0, 10)}`);
+  }
+
+  /**
+   * What a merge changes about one function's source, for the commit message: an annotation on
+   * code that was already there (an identical copy, or code marked INLINED) shows up in the diff
+   * as one line, and a function that was already right as none.
+   */
+  codeChange(id, files, head) {
+    const strip = (text) => text.split('\n').filter((l) => !/^\s*\/\/\s*(FUNCTION|STUB|INLINED)\b/.test(l)).join('\n');
+    const body = (t, r) => t.split('\n').slice(r.start, r.end).join('\n');
+    for (const [file, text] of Object.entries(files)) {
+      const now = functionRegions(text)?.get(id);
+      if (!now) continue;
+      const before = this.repo.show(head, file);
+      const old = before === null ? null : functionRegions(before)?.get(id);
+      if (old && body(before, old) === body(text, now)) return ' (already on main)';
+      // Same body as an existing definition, only annotated now.
+      if (before !== null && strip(before).includes(strip(body(text, now)))) return ' (annotation added to existing code)';
+      return '';
+    }
+    return '';
   }
 
   /**

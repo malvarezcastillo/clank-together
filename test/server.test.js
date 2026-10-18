@@ -522,6 +522,38 @@ test('renaming an account keeps its tokens working', async () => {
   assert.throws(() => ctx.accounts.rename('renamed', 'TakenName', null), /taken/);
 });
 
+test('a function that no longer passes at merge goes back alone; the rest merges', async () => {
+  delete ctx.merger.pump; // an earlier test stubbed it on the instance
+  const author = await activeUser('sbauthor');
+  const v = ctx.store.currentVersion();
+  const x = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x40e000, size: 8, unit: 'src/sb.cpp' }).symbol.id;
+  const y = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x40e040, size: 8, unit: 'src/sb.cpp' }).symbol.id;
+  ctx.tasks.generate();
+  let yStatus = STATUS.EXACT;
+  const real = ctx.verifier.check;
+  ctx.verifier.check = async (files) => {
+    const text = files['src/sb.cpp'] ?? '';
+    const functions = [];
+    if (text.includes('int fx()')) functions.push({ id: x, status: STATUS.EXACT, score: 1, file: 'src/sb.cpp', codeHash: 'hx', relocations: [], size: { ours: 8, original: 8 } });
+    if (text.includes('int fy()')) functions.push({ id: y, status: yStatus, score: yStatus === STATUS.EXACT ? 1 : 0.4, file: 'src/sb.cpp', codeHash: 'hy', relocations: [], size: { ours: 8, original: 8 } });
+    return { check: { annotationErrors: [], units: [{ file: 'src/sb.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions }] }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: ['src/sb.cpp'] };
+  };
+  try {
+    const claim = await call('POST', '/api/tasks/claim-batch', { unit: 'src/sb.cpp' }, author);
+    const files = { 'src/sb.cpp': `// FUNCTION: ${x}\nint fx() { return 1; }\n// FUNCTION: ${y}\nint fy() { return 2; }\n` };
+    const sub = await call('POST', '/api/batches', { taskIds: claim.body.tasks.map((t) => t.task), baseCommit: ctx.repo.head(), files }, author);
+    await waitFor(async () => !['queued', 'verifying'].includes(ctx.store.get('SELECT state FROM batches WHERE id = ?', sub.body.batchId).state));
+    yStatus = STATUS.MISMATCH; // main changed beneath it
+    ctx.store.run('DELETE FROM batch_checks WHERE batch_id = ?', sub.body.batchId); // force a fresh compile at merge
+    await ctx.merger.pump();
+    assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', y).state, 'needs_cleanup', 'the failing function goes back');
+    await ctx.merger.pump();
+    assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', x).state, 'done', 'the other one merges');
+  } finally {
+    ctx.verifier.check = real;
+  }
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in
