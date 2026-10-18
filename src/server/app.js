@@ -543,7 +543,7 @@ export function createApp(ctx) {
     const kind = String(body.kind ?? '');
     if (!['function', 'global', 'vtable', 'string'].includes(kind)) throw new HttpError(400, 'kind must be function, global, vtable or string');
     const addr = typeof body.addr === 'string' ? Number.parseInt(body.addr, 16) : Number(body.addr);
-    if (!Number.isInteger(addr) || addr <= 0 || addr > 0xffffffff) throw new HttpError(400, 'addr must be a hex string like "0x5f1c30"');
+    if (!Number.isSafeInteger(addr) || addr <= 0) throw new HttpError(400, 'addr must be a hex string like "0x1400e5d50"');
     const pe = ctx.getPe();
     if (!pe.sectionForVa(addr)) throw new HttpError(400, `0x${hex(addr)} is not inside the target image`);
     if (kind === 'function' && !pe.isCode(addr)) throw new HttpError(400, 'functions must be in an executable section');

@@ -111,7 +111,9 @@ export class Verifier {
   // header (remote checks: quick feedback; the submission's verification still checks them all).
   // lint: false skips the preprocessed-output lint (code that already passed it, e.g. on merge).
   // onlyUnits: compile exactly these units (a merge recompiling what changed since verification).
-  async check(files, jobName, { allUnits = false, timeoutMs = null, dependents = true, lint = true, onlyUnits = null } = {}) {
+  // targets: the functions being judged; the units that emit them are compiled too (a header's inline
+  // function exists only in units that use it; a Win32/ copy is compiled out of the x64 build).
+  async check(files, jobName, { allUnits = false, timeoutMs = null, dependents = true, lint = true, onlyUnits = null, targets = null } = {}) {
     const changedHeaders = Object.keys(files).filter((f) => !isUnit(f));
     const submittedUnits = Object.keys(files).filter(isUnit);
     const units = new Set(onlyUnits ?? submittedUnits);
@@ -134,6 +136,19 @@ export class Verifier {
           lintUnits.add(deps[0]);
           units.add(deps[0]);
         }
+      }
+    }
+
+    if (targets?.length && !onlyUnits && !allUnits) {
+      let unknown = 0;
+      for (const id of targets) {
+        const at = this.store.get('SELECT file FROM func_status WHERE symbol_id = ?', id)?.file;
+        if (at && isUnit(at)) units.add(at);
+        else unknown++;
+      }
+      // Never compiled before and defined in a changed header: any includer may be the one.
+      if (unknown && !dependents && changedHeaders.length) {
+        for (const h of changedHeaders) for (const r of this.store.all('SELECT unit FROM unit_deps WHERE header = ?', h)) units.add(r.unit);
       }
     }
 
@@ -315,7 +330,7 @@ export class Verifier {
     // Stages 1-3: one compile for the whole batch, then every function on its own.
     // Verify fast: the submitted units (enough to judge and route every submitted function). The
     // units that only include a changed header are compiled when the batch merges.
-    const { check, rec, changedHeaders } = await this.check(merged.files, `batch-${batch.id}`, { dependents: false });
+    const { check, rec, changedHeaders } = await this.check(merged.files, `batch-${batch.id}`, { dependents: false, targets: attempts.map((a) => a.symbol_id) });
     const targets = new Set(attempts.map((a) => a.symbol_id));
     const outside = this.changedOutside(check, merged.files, targets, batch.user_id);
     let failed = 0;

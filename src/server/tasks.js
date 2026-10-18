@@ -348,7 +348,11 @@ export class Tasks {
 
   allowedPaths(symbol) {
     const headers = this.project.headerGlobs;
-    return symbol.unit ? [symbol.unit, ...headers] : [`${this.project.sourceDirs[0]}/**`, ...headers];
+    // Also the unit the function is compiled from on main, when that is another file (a header's
+    // inline function, or the x64 file next to a Win32/ copy).
+    const at = this.store.get('SELECT file FROM func_status WHERE symbol_id = ?', symbol.id)?.file;
+    const own = [symbol.unit, at].filter((f, i, a) => f && a.indexOf(f) === i);
+    return own.length ? [...own, ...headers] : [`${this.project.sourceDirs[0]}/**`, ...headers];
   }
 
   /** Everything an agent needs to work on a task. */

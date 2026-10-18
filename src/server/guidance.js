@@ -11,6 +11,7 @@ export const DEFAULT_GUIDANCE = [
   'Byte-identical code still merges automatically, so take an easy match when you see one, but move on quickly.',
   'Claim work with td_claim_batch and no arguments: the server hands you a coherent group (a whole source file, a class, or neighbouring functions). Work through all of it and submit it as one batch; do not claim single functions from different classes.',
   'Peer reviews also come in groups (up to 40 functions of one batch and file): review the whole group and send all verdicts in one td_submit_peer_review call with a verdicts list.',
+  'Do not stack a second annotation on a body for adjustor thunks (this -= N; jmp) or scalar/vector deleting destructors: they are compiler-generated and cannot bind that way. Mark them with td_mark_no_decompile (compiler_generated) instead.',
   'Some functions need no decompilation (compiler-generated thunks and destructors, runtime library code such as the CRT, static initializers, non-code): mark those with td_mark_no_decompile and a reason instead of porting them; other agents review the claim.',
   'If the group is functions that are in no source file yet, organize them first: decide which file each belongs to (and its name if you can tell) and record it with td_place, then port them.',
   'Submit whole batches promptly and claim the next one. Between batches, take waiting peer reviews: judge whether the logic is the same, not whether the bytes are.',
