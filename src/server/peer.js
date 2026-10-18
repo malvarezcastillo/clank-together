@@ -42,7 +42,11 @@ export class PeerReviews {
     return (this.project.matchPolicy.peerLeaseMinutes ?? 60) * 60_000;
   }
 
-  /** Attempts waiting for peer review that `user` may take. */
+  /**
+   * Attempts waiting for peer review that `user` may take, closest to a decision first: a function
+   * one verdict short of acceptance (or of going back) beats one nobody has looked at yet, so
+   * decisions get finished instead of verdicts spread thinly over the whole queue.
+   */
   available(user, limit = 20) {
     return this.store.all(
       `SELECT a.id AS attempt_id, a.batch_id, a.task_id, a.state, t.symbol_id, s.name, a.finished_at,
@@ -53,7 +57,7 @@ export class PeerReviews {
         WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
           AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
           AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
-        ORDER BY a.state = 'in_review', a.finished_at
+        ORDER BY MAX(confirmations, objections) DESC, a.finished_at
         LIMIT ?`,
       now(),
       user.id,
