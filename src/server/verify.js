@@ -51,6 +51,10 @@ export class Verifier {
     this.stopped = false;
     this.store.run(`UPDATE batches SET state = 'queued' WHERE state = 'verifying'`);
     this.store.run(`UPDATE attempts SET state = 'queued' WHERE state = 'verifying'`);
+    // Queue order needs every batch's size (batches from before sizes were recorded).
+    for (const b of this.store.all(`SELECT id, files_json FROM batches WHERE state = 'queued' AND cost IS NULL`)) {
+      this.store.run('UPDATE batches SET cost = ? WHERE id = ?', this.tasks.compileCost(Object.keys(JSON.parse(b.files_json))), b.id);
+    }
     // Attempts from before batches existed become batches of one.
     for (const a of this.store.all(`SELECT * FROM attempts WHERE state = 'queued' AND batch_id IS NULL`)) {
       const b = this.store.run(
