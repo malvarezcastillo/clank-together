@@ -1,6 +1,7 @@
 #!/bin/sh
 # Deploys the committed HEAD to the coordinator without taking the site down (deploy/update.sh).
 #   tools/deploy.sh [--td]
+# TD_KEEP_WORKER=1 tools/deploy.sh leaves the worker as it is (see deploy/update.sh).
 # --td also publishes the td binaries from dist/ (node tools/build-td/build.mjs) for download and
 # self-update. TD_HOST names the ssh host (default: td-server).
 set -eu
@@ -30,5 +31,5 @@ ssh "$HOST" "set -e
     chmod 0755 \$D/td-linux-x64
     echo 'td binaries published'
   fi
-  sh \"\$d/deploy/update.sh\" \"\$d\"
+  TD_KEEP_WORKER='${TD_KEEP_WORKER:-}' sh \"\$d/deploy/update.sh\" \"\$d\"
   rm -rf \"\$d\""

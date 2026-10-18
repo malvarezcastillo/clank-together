@@ -383,6 +383,10 @@ test('remote checks are queued in the database and run by the worker', async () 
     check: { annotationErrors: [], units: [{ file: 'src/rc.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions: [] }] },
     rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] },
   });
+  // No worker running: refused at once instead of waiting.
+  const paused = await call('POST', '/api/check', { baseCommit: ctx.repo.head(), files: { 'src/rc.cpp': 'int rc() { return 0; }\n' } }, user);
+  assert.equal(paused.status, 503);
+  assert.match(paused.body.error, /paused for maintenance/);
   ctx.checks.start();
   try {
     const r = await call('POST', '/api/check', { baseCommit: ctx.repo.head(), files: { 'src/rc.cpp': 'int rc() { return 0; }\n' } }, user);

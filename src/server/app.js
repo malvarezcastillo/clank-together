@@ -15,7 +15,7 @@ import { Originals } from './original.js';
 import { downloadsDir, installPs1, installSh } from './install.js';
 import { ServerGhidra } from './ghidra.js';
 import { functionRegions } from './split.js';
-import { CheckQueue } from './checks.js';
+import { CheckQueue, WorkerUnavailable } from './checks.js';
 import { withGuidance } from './guidance.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { PEImage } from '../shared/pe.js';
@@ -494,7 +494,7 @@ export function createApp(ctx) {
 
   const checkLimiter = new RateLimiter(config.checksPerHour ?? 60, 3600_000);
 
-  router.on('POST', '/api/check', async ({ req }) => {
+  router.on('POST', '/api/check', async ({ req, res }) => {
     const user = auth(req);
     checkLimiter.check(user.id);
     const body = await readJson(req);
@@ -506,10 +506,12 @@ export function createApp(ctx) {
     if (!repo.isAncestor(body.baseCommit)) throw new HttpError(409, 'your base commit is not part of main; run td sync');
     const merged = repo.mergeOntoHead(body.baseCommit, body.files);
     if (merged.conflicts.length) return { gate: 'conflict', conflicts: merged.conflicts };
+    const gone = new AbortController();
+    res.on('close', () => res.writableFinished || gone.abort());
     try {
-      return guided(await ctx.checks.run(user.id, merged.files));
+      return guided(await ctx.checks.run(user.id, merged.files, { signal: gone.signal }));
     } catch (e) {
-      throw new HttpError(503, e.message);
+      throw new HttpError(503, e.message, e instanceof WorkerUnavailable ? { retryAfterSeconds: 120 } : undefined);
     }
   });
 

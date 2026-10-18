@@ -1,6 +1,7 @@
 #!/bin/sh
 # Updates the coordinator's code without taking the site down. Run as root on the server:
 #   sh deploy/update.sh <unpacked-source-dir>
+# TD_KEEP_WORKER=1 leaves the worker alone (during maintenance with the worker stopped).
 #
 # The new release is copied and syntax-checked next to the running one; nothing changes for the
 # running site until then. /opt/togetherdecomp is a symlink that switches to the new release in
@@ -67,8 +68,13 @@ else
   systemctl is-active --quiet togetherdecomp.service || { journalctl -u togetherdecomp -n 20 --no-pager; exit 1; }
   # The worker finishes its running verification, merge or check before it stops (no work is
   # redone), then starts on the new release. That can take minutes, so don't wait for it here.
-  echo "== the worker restarts once its running work is done"
-  systemctl restart --no-block togetherdecomp-worker.service
+  if [ -n "${TD_KEEP_WORKER:-}" ]; then
+    # Maintenance (e.g. a rebuild with the worker stopped): leave it; it runs the new code when started.
+    echo "== worker left as it is (TD_KEEP_WORKER)"
+  else
+    echo "== the worker restarts once its running work is done"
+    systemctl restart --no-block togetherdecomp-worker.service
+  fi
 fi
 
 # Keep the last three releases for a quick rollback (ln -sfn <release> /opt/togetherdecomp).
