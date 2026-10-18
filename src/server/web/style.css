@@ -452,3 +452,8 @@ footer code { word-break: break-all; }
 code.cmd.prompt { white-space: normal; line-height: 1.45; }
 .faq dt { margin-top: 12px; font-weight: 700; }
 .faq dd { margin: 3px 0 0; color: var(--muted); font-size: 14px; }
+
+/* --- claimed work in the crew table */
+details.claimed { margin: 0; }
+details.claimed summary { font: inherit; }
+details.claimed ul { margin: 4px 0; padding-left: 18px; font: 12px var(--font-mono); color: var(--muted); }

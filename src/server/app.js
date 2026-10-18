@@ -546,8 +546,31 @@ export function createApp(ctx) {
 
   router.on('GET', '/api/admin/users', ({ req, query }) => {
     auth(req, { role: 'admin', session: true });
-    return { roles: ROLES, users: accounts.listUsers(query.get('status') ?? undefined) };
+    return { roles: ROLES, users: accounts.listUsers(query.get('status') ?? undefined), work: claimedWork() };
   });
+
+  // What each user currently holds, by name: leased tasks grouped by unit, peer reviews, submitted batches in flight.
+  function claimedWork() {
+    const work = {};
+    const names = new Map(store.all('SELECT id, name FROM users').map((u) => [u.id, u.name]));
+    const of = (id) => (work[names.get(id)] ??= { units: [], tasks: 0, expires: null, peerReviews: 0, batches: 0, lastTokenUse: null });
+    for (const r of store.all(
+      `SELECT t.lease_user AS user_id, s.unit, COUNT(*) AS n, MIN(t.lease_expires) AS expires
+         FROM tasks t JOIN symbols s ON s.id = t.symbol_id
+        WHERE t.state = 'leased' GROUP BY t.lease_user, s.unit ORDER BY n DESC`,
+    )) {
+      const w = of(r.user_id);
+      w.units.push({ unit: r.unit ?? '(no unit)', tasks: r.n });
+      w.tasks += r.n;
+      w.expires = w.expires === null ? r.expires : Math.min(w.expires, r.expires);
+    }
+    for (const r of store.all(`SELECT reviewer_id, COUNT(DISTINCT attempt_id) AS n FROM peer_leases WHERE expires_at > ? GROUP BY reviewer_id`, Date.now()))
+      of(r.reviewer_id).peerReviews = r.n;
+    for (const r of store.all(`SELECT user_id, COUNT(*) AS n FROM batches WHERE state IN ('queued', 'verifying', 'open', 'merging') GROUP BY user_id`))
+      of(r.user_id).batches = r.n;
+    for (const r of store.all(`SELECT user_id, MAX(last_used_at) AS t FROM api_tokens GROUP BY user_id`)) if (r.t) of(r.user_id).lastTokenUse = r.t;
+    return work;
+  }
 
   const ADMIN_ACTIONS = {
     approve: (name, admin) => accounts.approve(name, admin.id),

@@ -235,7 +235,7 @@ async function adminAction(name, action, body) {
 }
 
 async function loadUsers() {
-  const { users, roles } = await api('/api/admin/users');
+  const { users, roles, work = {} } = await api('/api/admin/users');
   const box = $('users');
   box.replaceChildren();
   const pending = users.filter((u) => u.status === 'pending');
@@ -259,7 +259,7 @@ async function loadUsers() {
   box.append(el('h3', 'Accounts'));
   box.append(
     table(
-      ['User', 'Role', 'Status', 'Active tokens', 'Approved', ''],
+      ['User', 'Role', 'Status', 'Claimed work', 'Active tokens', 'Approved', ''],
       others.map((u) => {
         const select = el('select');
         roles.forEach((r) => {
@@ -275,10 +275,28 @@ async function loadUsers() {
             ? button('Revoke', () => confirm(`Revoke ${u.name}? All their tokens and sessions stop working immediately.`) && adminAction(u.name, 'revoke'), 'danger')
             : button('Reinstate', () => adminAction(u.name, 'reinstate'));
         if (u.name === me.name) action.disabled = true;
-        return [u.name, select, status(u.status), u.active_tokens, `${date(u.approved_at)}${u.approved_by ? ` by ${u.approved_by}` : ''}`, action];
+        return [u.name, select, status(u.status), claimedWork(work[u.name]), u.active_tokens, `${date(u.approved_at)}${u.approved_by ? ` by ${u.approved_by}` : ''}`, action];
       }),
     ),
   );
+}
+
+// Summary of what a user holds right now; the units it covers open below it.
+function claimedWork(w) {
+  const time = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const seen = w?.lastTokenUse ? el('div', `agent last seen ${date(w.lastTokenUse)}`, 'hint') : null;
+  const parts = [];
+  if (w?.tasks) parts.push(`${w.tasks} function${w.tasks > 1 ? 's' : ''} in ${w.units.length} unit${w.units.length > 1 ? 's' : ''}`);
+  if (w?.peerReviews) parts.push(`${w.peerReviews} peer review${w.peerReviews > 1 ? 's' : ''}`);
+  if (w?.batches) parts.push(`${w.batches} batch${w.batches > 1 ? 'es' : ''} being checked`);
+  if (!parts.length) return [el('span', 'nothing', 'muted'), ...(seen ? [seen] : [])];
+  if (!w.tasks) return [el('span', parts.join(' · ')), ...(seen ? [seen] : [])];
+  const d = el('details', null, 'claimed');
+  d.append(el('summary', parts.join(' · ')));
+  const list = el('ul');
+  for (const u of w.units) list.append(el('li', `${u.unit} (${u.tasks})`));
+  d.append(list, el('div', `lease expires ${time(w.expires)} unless the agent heartbeats`, 'hint'));
+  return [d, ...(seen ? [seen] : [])];
 }
 
 // --- review
