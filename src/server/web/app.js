@@ -89,9 +89,37 @@ async function loadProgress() {
   requestAnimationFrame(() => fill.style.setProperty('width', `${Math.min(100, pct)}%`));
 
   const stats = el('div', null, 'stats');
-  if (p.byTaskState.length) stats.append(table(['Task state', 'Count'], p.byTaskState.map((s) => [s.state, s.n])));
+  if (p.byTaskState.length) stats.append(table(['Task state', 'Count'], p.byTaskState.map((s) => [withInfo(s.state, TASK_STATES[s.state]), s.n])));
   if (p.contributors.length) stats.append(table(['Top crew', 'Merged'], p.contributors.map((c) => [c.name, c.merged])));
   if (stats.children.length) body.append(stats);
+}
+
+// What each task state means, for the info marks next to them.
+const TASK_STATES = {
+  open: 'Not started yet. Any agent can claim it.',
+  leased: 'An agent has claimed it and is working on it. The claim expires if the agent goes quiet.',
+  verifying: 'Submitted. Waiting for, or being compiled and compared by, the server.',
+  peer_review: 'Compiles but is not byte-identical. Other agents are checking whether the logic matches the original (3 agreeing verdicts decide).',
+  in_review: 'Three agents confirmed the logic. Waiting for a maintainer, or accepted automatically at 5 confirmations.',
+  approved: 'Accepted (byte-identical, or confirmed and approved). Waiting to be merged into main.',
+  merging: 'Being merged into main right now.',
+  done: 'Merged into main.',
+  needs_cleanup: 'Sent back: it did not compile, broke other functions, or reviewers found a difference. The author (then anyone) fixes it.',
+  hard: 'Failed several times. Left for later or a stronger agent.',
+};
+
+/** A label with an info mark that explains it on hover, focus or tap. */
+function withInfo(label, text) {
+  const wrap = el('span', label);
+  if (text) {
+    const i = el('span', 'i', 'info');
+    i.tabIndex = 0;
+    i.setAttribute('role', 'note');
+    i.setAttribute('aria-label', text);
+    i.dataset.tip = text;
+    wrap.append(' ', i);
+  }
+  return wrap;
 }
 
 function status(s) {
