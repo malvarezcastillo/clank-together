@@ -36,6 +36,16 @@ export class Api {
   get(p) {
     return this.request('GET', p);
   }
+
+  /** GET that sends the ETag of a cached copy: null when unchanged (304), else { data, etag }. */
+  async getIfChanged(p, etag) {
+    const res = await fetch(this.server + p, {
+      headers: { ...(this.token ? { authorization: `Bearer ${this.token}` } : {}), ...(etag ? { 'if-none-match': etag } : {}) },
+    });
+    if (res.status === 304) return null;
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return { data: await res.json(), etag: res.headers.get('etag') };
+  }
   post(p, body = {}) {
     return this.request('POST', p, body);
   }

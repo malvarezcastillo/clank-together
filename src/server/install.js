@@ -99,7 +99,7 @@ mkdir -p "$BIN"
 command -v git >/dev/null 2>&1 || { echo 'git is required: install it (e.g. sudo apt install git) and run this line again' >&2; exit 1; }
 
 echo 'Downloading td...'
-curl -fsSL "$SERVER/download/td-linux-x64" -o "$BIN/td.part"
+curl -fsSL --compressed "$SERVER/download/td-linux-x64" -o "$BIN/td.part"
 echo "${sha}  $BIN/td.part" | sha256sum -c - >/dev/null || { rm -f "$BIN/td.part"; echo 'td download failed its checksum check' >&2; exit 1; }
 mv "$BIN/td.part" "$BIN/td"
 chmod +x "$BIN/td"

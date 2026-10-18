@@ -120,10 +120,15 @@ async function computeEnvDigest(ws, toolchain) {
 }
 
 export async function refreshSymbols(ws) {
-  const snap = await api(ws).get('/api/symbols');
-  fs.writeFileSync(ws.symbolsFile, JSON.stringify(snap));
+  // The symbol table is large and changes in bursts; download it only when it changed.
+  const etagFile = ws.symbolsFile + '.etag';
+  const known = fs.existsSync(ws.symbolsFile) && fs.existsSync(etagFile) ? fs.readFileSync(etagFile, 'utf8') : null;
+  const r = await api(ws).getIfChanged('/api/symbols', known);
+  if (!r) return JSON.parse(fs.readFileSync(ws.symbolsFile, 'utf8'));
+  fs.writeFileSync(ws.symbolsFile, JSON.stringify(r.data));
+  if (r.etag) fs.writeFileSync(etagFile, r.etag);
   ws._symbols = null;
-  return snap;
+  return r.data;
 }
 
 /** Fast-forwards the clone to the server's main and refreshes the symbol snapshot. */

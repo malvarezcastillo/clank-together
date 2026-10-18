@@ -554,6 +554,32 @@ test('a function that no longer passes at merge goes back alone; the rest merges
   }
 });
 
+test('the symbol table is only sent when it changed; downloads come compressed when accepted', async () => {
+  const token = await activeUser('trafficker');
+  const auth = { authorization: `Bearer ${token}` };
+  const first = await fetch(base + '/api/symbols', { headers: auth });
+  assert.equal(first.status, 200);
+  const etag = first.headers.get('etag');
+  assert.ok(etag);
+  await first.json();
+  const again = await fetch(base + '/api/symbols', { headers: { ...auth, 'if-none-match': etag } });
+  assert.equal(again.status, 304, 'unchanged: nothing sent');
+
+  const dir = path.join(ctx.config.dataDir, 'downloads');
+  fs.mkdirSync(dir, { recursive: true });
+  const bin = Buffer.alloc(200_000, 7);
+  fs.writeFileSync(path.join(dir, 'td-linux-x64'), bin);
+  fs.writeFileSync(path.join(dir, 'td-linux-x64.gz'), (await import('node:zlib')).gzipSync(bin));
+  const zipped = await fetch(base + '/download/td-linux-x64', { headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(zipped.headers.get('content-encoding'), 'gzip');
+  assert.ok(Number(zipped.headers.get('content-length')) < 10_000);
+  assert.deepEqual(Buffer.from(await zipped.arrayBuffer()), bin, 'fetch unpacks it to the same bytes');
+  const plain = await fetch(base + '/download/td-linux-x64', { headers: { 'accept-encoding': 'identity' } });
+  assert.equal(plain.headers.get('content-encoding'), null);
+  assert.equal(Number(plain.headers.get('content-length')), bin.length);
+  await plain.arrayBuffer();
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

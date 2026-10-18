@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { Store, now } from './db.js';
@@ -178,11 +179,20 @@ export function createApp(ctx) {
     return undefined;
   });
 
-  router.on('GET', '/api/symbols', ({ query }) => {
+  // The whole symbol table (over a megabyte): sent only when it changed since the client's copy.
+  router.on('GET', '/api/symbols', ({ req, res, query }) => {
     const v = query.get('version') ? store.get('SELECT * FROM versions WHERE id = ?', query.get('version')) : store.currentVersion();
     if (!v) throw new HttpError(404, 'unknown version');
     const rows = [...store.symbolMap(v.id).values()].map((s) => [s.id, s.kind, s.addr, s.size, s.name, s.decorated, s.library ? 1 : 0, s.unit]);
-    return { version: v.id, head: repo.head(), columns: ['id', 'kind', 'addr', 'size', 'name', 'decorated', 'library', 'unit'], symbols: rows };
+    const body = JSON.stringify({ version: v.id, columns: ['id', 'kind', 'addr', 'size', 'name', 'decorated', 'library', 'unit'], symbols: rows });
+    const etag = `"${crypto.createHash('sha1').update(body).digest('hex')}"`;
+    const headers = { etag, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' };
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      return void res.end();
+    }
+    res.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' });
+    res.end(body);
   });
 
   // Public: who is on the project and what their agents are doing right now. No token labels or
@@ -714,7 +724,7 @@ export function createApp(ctx) {
         res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
         return res.end(script);
       }
-      if (req.method === 'GET' && url.pathname.startsWith('/download/')) return serveDownload(url.pathname.slice(10), res);
+      if (req.method === 'GET' && url.pathname.startsWith('/download/')) return serveDownload(url.pathname.slice(10), req, res);
       if (req.method === 'GET' && !url.pathname.startsWith('/api/')) return serveStatic(url.pathname, res);
       const m = router.match(req.method, url.pathname);
       if (!m) throw new HttpError(404, 'not found');
@@ -735,14 +745,26 @@ export function createApp(ctx) {
 // Public downloads of the td binaries (tools/build-td output copied to <dataDir>/downloads).
 const DOWNLOADS = new Set(['td-windows-x64.exe', 'td-linux-x64', 'SHA256SUMS']);
 let downloadsRoot = null;
-function serveDownload(name, res) {
+function serveDownload(name, req, res) {
   const file = DOWNLOADS.has(name) && downloadsRoot ? path.join(downloadsRoot, name) : null;
   if (!file || !fs.existsSync(file)) {
     res.writeHead(404, { 'content-type': 'text/plain' });
     return res.end('not found');
   }
-  res.writeHead(200, { 'content-type': name === 'SHA256SUMS' ? 'text/plain' : 'application/octet-stream', 'content-length': fs.statSync(file).size, 'content-disposition': `attachment; filename="${name}"`, 'x-content-type-options': 'nosniff' });
-  fs.createReadStream(file).pipe(res);
+  // A compressed copy (made when the binaries are published) for clients that accept gzip: td's
+  // self-update and the Linux installer; about a third of the size.
+  const gz = file + '.gz';
+  const zipped = /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? '')) && fs.existsSync(gz) && fs.statSync(gz).mtimeMs >= fs.statSync(file).mtimeMs;
+  const sent = zipped ? gz : file;
+  res.writeHead(200, {
+    'content-type': name === 'SHA256SUMS' ? 'text/plain' : 'application/octet-stream',
+    'content-length': fs.statSync(sent).size,
+    'content-disposition': `attachment; filename="${name}"`,
+    'x-content-type-options': 'nosniff',
+    vary: 'accept-encoding',
+    ...(zipped ? { 'content-encoding': 'gzip' } : {}),
+  });
+  fs.createReadStream(sent).pipe(res);
 }
 
 const STATIC = { '/': 'index.html', '/review': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg' };

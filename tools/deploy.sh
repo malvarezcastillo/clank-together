@@ -29,6 +29,8 @@ ssh "$HOST" "set -e
       install -o togetherdecomp -g togetherdecomp -m 0644 /tmp/\$f \$D/\$f.new && mv \$D/\$f.new \$D/\$f && rm -f /tmp/\$f
     done
     chmod 0755 \$D/td-linux-x64
+    # Compressed copies for clients that accept gzip (td self-update, the Linux installer).
+    for f in td-windows-x64.exe td-linux-x64; do gzip -9 -k -f \$D/\$f && chown togetherdecomp:togetherdecomp \$D/\$f.gz; done
     echo 'td binaries published'
   fi
   TD_KEEP_WORKER='${TD_KEEP_WORKER:-}' sh \"\$d/deploy/update.sh\" \"\$d\"

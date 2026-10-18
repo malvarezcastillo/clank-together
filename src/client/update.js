@@ -9,6 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 const CHECK_EVERY_MS = 3600_000;
+const STALL_MS = 60_000;
 const STATE_DIR = path.join(os.homedir(), '.clank');
 const STATE_FILE = path.join(STATE_DIR, 'update.json');
 const ASSET = process.platform === 'win32' ? 'td-windows-x64.exe' : 'td-linux-x64';
@@ -68,9 +69,19 @@ export async function maybeUpdate({ server, force = false, log = (m) => process.
     if (!want || want === (await ownHash(exe, state))) return writeState(state), null;
 
     log(`td: downloading an update from ${base} ...`);
-    const bin = await fetch(`${base}/download/${ASSET}`, { signal: AbortSignal.timeout(600_000) });
-    if (!bin.ok) return writeState(state), null;
-    const data = Buffer.from(await bin.arrayBuffer());
+    // Slow connections take as long as they need; only a download that stalls is given up.
+    const stall = new AbortController();
+    let timer = setTimeout(() => stall.abort(), STALL_MS);
+    const bin = await fetch(`${base}/download/${ASSET}`, { signal: stall.signal });
+    if (!bin.ok) return clearTimeout(timer), writeState(state), null;
+    const parts = [];
+    for await (const chunk of bin.body) {
+      parts.push(chunk);
+      clearTimeout(timer);
+      timer = setTimeout(() => stall.abort(), STALL_MS);
+    }
+    clearTimeout(timer);
+    const data = Buffer.concat(parts);
     if (crypto.createHash('sha256').update(data).digest('hex') !== want) {
       log('td: the update failed its checksum check and was not installed');
       return writeState(state), null;
