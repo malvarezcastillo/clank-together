@@ -207,6 +207,19 @@ CREATE TABLE IF NOT EXISTS batch_checks (
   check_json TEXT NOT NULL
 );
 
+-- Functions that reached main although a peer reviewer said "different": kept for a human to look
+-- at later (e.g. once everything is decompiled).
+CREATE TABLE IF NOT EXISTS later_review (
+  id INTEGER PRIMARY KEY,
+  symbol_id TEXT NOT NULL REFERENCES symbols(id),
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  merged_commit TEXT,
+  objections INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  cleared_by INTEGER REFERENCES users(id),
+  cleared_at INTEGER
+);
+
 -- Remote checks, queued by the web process and run by the worker process.
 CREATE TABLE IF NOT EXISTS check_jobs (
   id INTEGER PRIMARY KEY,

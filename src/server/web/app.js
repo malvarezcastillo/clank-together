@@ -369,9 +369,31 @@ async function loadCrew() {
 // --- review
 
 async function loadQueue() {
-  const q = await api('/api/review/queue');
+  const [q, later] = await Promise.all([api('/api/review/queue'), api('/api/review/later').catch(() => [])]);
   const body = $('queue-body');
   body.replaceChildren();
+  if (later.length) {
+    // Merged although a peer objected: for a closer look once there is time.
+    const d = el('details', null, 'fold');
+    d.append(
+      el('summary', `Flagged for later review (${later.length}): merged although a peer said "different"`),
+      table(
+        ['Function', 'Name', 'Author', 'Objections', 'Merged', ''],
+        later.map((l) => [l.symbol_id, l.name || '', l.author, l.objections, (l.merged_commit || '').slice(0, 10), [
+          button('Open', () => openAttempt(l.attempt_id)),
+          button('Reviewed', async () => {
+            try {
+              await post(`/api/review/later/${l.id}/clear`);
+              await loadQueue();
+            } catch (e) {
+              alert(e.message);
+            }
+          }),
+        ]]),
+      ),
+    );
+    body.append(d);
+  }
   if (!q.length) return body.append(el('p', 'Nothing waiting for review. Byte-identical work merges on its own; this queue holds functions in peer review and the ones peers confirmed.', 'muted'));
   const canSkipPeers = atLeast('maintainer');
   const ready = q.filter((a) => a.state === 'in_review');
@@ -431,7 +453,7 @@ function queueBatches(body, items, skipsPeers) {
       const working = a.peer_working ? ` · ${a.peer_working} reviewing` : '';
       if (a.state === 'peer_review') return `${a.peer_same} same · ${a.peer_different} different${working}`;
       // Waiting for a human: more peers can still accept it (5 agreeing, no objection).
-      return a.peer_different ? `${a.peer_same} same · ${a.peer_different} different: contested, you decide` : `${a.peer_same} same · accepts itself at 5${working}`;
+      return `${a.peer_same} same · accepts itself at 5${a.peer_different ? ` · ${a.peer_different} different: flagged for later` : ''}${working}`;
     };
     body.append(
       table(

@@ -7,8 +7,8 @@
 // many "same" verdicts send it on to human review, that many "different" ones send it back to its
 // author with their reasons. With mixed verdicts, further reviewers are let in until one side
 // gets there. A function stays open for more reviewers while it waits for a human: with
-// `peerAutoAccept` (default 5) "same" verdicts and no "different" at all it is accepted without
-// human review.
+// `peerAutoAccept` (default 5) "same" verdicts it is accepted without human review. If anyone said
+// "different", it is merged all the same and kept in later_review for a human (merge.js).
 
 import { HttpError } from './http.js';
 import { now } from './db.js';
@@ -65,10 +65,9 @@ export class PeerReviews {
       .slice(0, limit);
   }
 
-  // A function waiting for a human takes further reviewers toward auto-acceptance, unless someone
-  // already found a difference (then the human decides).
+  // A function waiting for a human takes further reviewers toward auto-acceptance.
   openForAutoAccept(r) {
-    return this.autoAccept > this.required && r.objections === 0 && r.confirmations + r.in_progress < this.autoAccept;
+    return this.autoAccept > this.required && r.confirmations + r.in_progress < this.autoAccept;
   }
 
   /**
@@ -182,12 +181,12 @@ export class PeerReviews {
       const same = counts.same + (verdict === 'same' ? 1 : 0);
       const different = counts.different + (verdict === 'different' ? 1 : 0);
       if (a.state === 'in_review') {
-        // Already waiting for a human: enough agreeing peers and no objection accept it.
-        if (same >= this.autoAccept && different === 0) {
+        // Already waiting for a human: enough agreeing peers accept it (objections are kept for later).
+        if (same >= this.autoAccept) {
           this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
           this.store.run(`UPDATE attempts SET state = 'approved' WHERE id = ?`, attemptId);
           this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), a.task_id);
-          this.store.event('auto_accepted', null, { attempt: attemptId, same });
+          this.store.event('auto_accepted', null, { attempt: attemptId, same, different });
           return { state: 'approved', same, different, required: this.required };
         }
         return { state: 'in_review', same, different, required: this.required };
@@ -205,8 +204,8 @@ export class PeerReviews {
         return { state: 'needs_cleanup', same, different, required: this.required };
       }
       if (same >= this.required) {
-        // Leases toward auto-acceptance stay; the others end here.
-        if (!(this.autoAccept > this.required && different === 0)) this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
+        // Leases toward auto-acceptance stay.
+        if (!(this.autoAccept > this.required)) this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
         this.store.run(`UPDATE attempts SET state = 'in_review' WHERE id = ?`, attemptId);
         this.store.run(`UPDATE tasks SET state = 'in_review', updated_at = ? WHERE id = ?`, now(), a.task_id);
         return { state: 'in_review', same, different, required: this.required };

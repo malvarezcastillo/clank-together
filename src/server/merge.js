@@ -282,7 +282,7 @@ export class Merger {
       (peers.length ? `\nPeer-reviewed-by: ${peers.join(', ')}` : '') +
       (reviewers.length ? `\nReviewed-by: ${reviewers.join(', ')}` : '') +
       (!reviewers.length && !confirmedIds.size ? '\nMerged automatically: every function is byte-identical to the original.' : '') +
-      (!reviewers.length && confirmedIds.size ? `\nAccepted without human review: at least ${this.peers?.autoAccept ?? 5} peers confirmed the logic and none objected.` : '') +
+      (!reviewers.length && confirmedIds.size ? `\nAccepted without human review: at least ${this.peers?.autoAccept ?? 5} peers confirmed the logic.` : '') +
       '\n';
     const commit = this.repo.commitFiles(merged.files, message, `${author} <${author.replace(/[^A-Za-z0-9_.-]/g, '_')}@users.clank-together.invalid>`);
 
@@ -294,6 +294,13 @@ export class Merger {
       }
       this.store.run(`UPDATE batches SET state = 'merged', merged_commit = ? WHERE id = ?`, commit, batch.id);
       this.store.run('DELETE FROM batch_checks WHERE batch_id = ?', batch.id);
+      // Merged although a peer said "different": kept for a human to look at later.
+      for (const a of attempts) {
+        const objections = this.store.get(`SELECT COUNT(*) AS n FROM peer_reviews WHERE attempt_id = ? AND verdict = 'different'`, a.id).n;
+        if (objections) {
+          this.store.run('INSERT INTO later_review (symbol_id, attempt_id, merged_commit, objections, created_at) VALUES (?, ?, ?, ?, ?)', a.symbol_id, a.id, commit, objections, now());
+        }
+      }
       this.store.event('merged', batch.user_id, { batch: batch.id, functions: attempts.length, commit });
       if (split) {
         this.rebaseRemainder(split, merged.files, commit);

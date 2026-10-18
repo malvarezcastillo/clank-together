@@ -412,7 +412,7 @@ test('a header batch is verified on its own units and merged with every includer
   }
 });
 
-test('five agreeing peers and no objection accept a function without human review', async () => {
+test('five agreeing peers accept a function without human review, also over an objection', async () => {
   await activeUser('aaauthor');
   const author = ctx.accounts.byName('aaauthor');
   const peers = [];
@@ -441,8 +441,8 @@ test('five agreeing peers and no objection accept a function without human revie
   await review(contested.attempt, peers[0], 'different');
   for (let i = 1; i <= 3; i++) await review(contested.attempt, peers[i], 'same');
   assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', contested.attempt).state, 'in_review');
-  const more = await call('POST', '/api/peer-reviews/claim', { attemptId: contested.attempt }, peers[4]);
-  assert.equal(more.status, 409, 'an objection leaves the decision to a human');
+  assert.equal((await review(contested.attempt, peers[4], 'same')).state, 'in_review');
+  assert.equal((await review(contested.attempt, peers[5], 'same')).state, 'approved', 'five "same" accept it over one objection (flagged for later at merge)');
 
   for (const x of [clean, contested]) {
     ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE id = ?`, x.attempt);
@@ -668,11 +668,14 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
 
   // Round 2: the author fixes B (new fingerprint) and resubmits it; three peers confirm.
   bHash = 'hash-b-2';
+  const objector = await activeUser('bpeer4');
   const taskOfB = claim.body.tasks.find((t) => t.symbol === b).task;
   assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOfB }, author)).status, 200);
   const s2 = await call('POST', '/api/batches', { taskIds: [taskOfB], baseCommit: ctx.repo.head(), files: { 'src/batch.cpp': source } }, author);
   const r2 = Object.fromEntries((await settle(s2.body.batchId)).functions.map((f) => [f.symbol, f]));
   assert.equal(r2[b].state, 'peer_review', 'changed code gets reviewed again');
+  await call('POST', '/api/peer-reviews/claim', { attemptId: r2[b].attemptId }, objector);
+  await call('POST', `/api/peer-reviews/${r2[b].attemptId}/verdict`, { verdict: 'different', reason: 'the loop bound looks off by one to me' }, objector);
   for (const t of peers) {
     await call('POST', '/api/peer-reviews/claim', { attemptId: r2[b].attemptId }, t);
     await call('POST', `/api/peer-reviews/${r2[b].attemptId}/verdict`, { verdict: 'same', reason: 'now checks the flag first like the original' }, t);
@@ -693,6 +696,7 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   assert.equal(merged.state, 'merged', JSON.stringify(merged));
   assert.match(ctx.repo.git(['log', '-1', '--format=%B']), new RegExp(`Decompile ${b}[\\s\\S]*Peer-reviewed-by`));
   assert.equal(ctx.store.get('SELECT confirmed FROM func_status WHERE symbol_id = ?', b).confirmed, 1);
+  assert.equal(ctx.store.get('SELECT objections FROM later_review WHERE attempt_id = ?', r2[b].attemptId)?.objections, 1, 'merged over an objection: flagged for later review');
   assert.equal(ctx.store.get('SELECT code_hash FROM func_status WHERE symbol_id = ?', a).code_hash, 'hash-a');
 
   // Carry-over: an unchanged, peer-confirmed function keeps its verdicts in a resubmission.

@@ -571,6 +571,23 @@ export function createApp(ctx) {
     );
   });
 
+  // Functions merged although a peer said "different", for a human to look at later.
+  router.on('GET', '/api/review/later', ({ req }) => {
+    auth(req, { role: 'reviewer', session: true });
+    return store.all(
+      `SELECT l.id, l.symbol_id, s.name, l.attempt_id, l.objections, l.merged_commit, l.created_at, u.name AS author
+         FROM later_review l JOIN symbols s ON s.id = l.symbol_id JOIN attempts a ON a.id = l.attempt_id JOIN users u ON u.id = a.user_id
+        WHERE l.cleared_at IS NULL ORDER BY l.id`,
+    );
+  });
+
+  router.on('POST', '/api/review/later/:id/clear', ({ req, params }) => {
+    const user = auth(req, { role: 'reviewer', session: true });
+    const r = store.run('UPDATE later_review SET cleared_by = ?, cleared_at = ? WHERE id = ? AND cleared_at IS NULL', user.id, Date.now(), intParam(params.id));
+    if (!r.changes) throw new HttpError(404, 'nothing to clear');
+    return { ok: true };
+  });
+
   router.on('POST', '/api/attempts/:id/review', async ({ req, params }) => {
     const user = auth(req, { role: 'reviewer', session: true });
     const body = await readJson(req, 16 * 1024);
