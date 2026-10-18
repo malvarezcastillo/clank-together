@@ -648,6 +648,51 @@ test('the review list skips fully leased functions before applying its limit', a
   }
 });
 
+test('"no decompile" claims are peer reviewed; accepted ones are skipped and not counted', async () => {
+  delete ctx.merger.pump;
+  const author = await activeUser('ndauthor');
+  const peers = [];
+  for (let i = 1; i <= 5; i++) peers.push(await activeUser(`ndpeer${i}`));
+  const v = ctx.store.currentVersion();
+  const mk = (addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8, unit: 'src/nd.cpp' }).symbol.id;
+  const thunk = mk(0x411000);
+  const real = mk(0x411040);
+  ctx.tasks.generate();
+  const taskOf = (sym) => ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id;
+  for (const sym of [thunk, real]) assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOf(sym) }, author)).status, 200);
+
+  const bad = await call('POST', '/api/tasks/no-decompile', { items: [{ taskId: taskOf(thunk), category: 'whatever', reason: 'it is a thunk, add rcx then jmp' }] }, author);
+  assert.equal(bad.status, 400);
+  const r = await call('POST', '/api/tasks/no-decompile', {
+    items: [
+      { taskId: taskOf(thunk), category: 'compiler_generated', reason: 'this-adjustor thunk: add rcx, 0x38 then jmp to the method' },
+      { taskId: taskOf(real), category: 'not_code', reason: 'looks like padding to me honestly' },
+    ],
+  }, author);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const [ta, ra] = r.body.claims.map((c) => c.attemptId);
+
+  // Reviewers see the claim, not code.
+  const claim = await call('POST', '/api/peer-reviews/claim', { attemptId: ta }, peers[0]);
+  assert.equal(claim.body.functions.find((f) => f.attemptId === ta).claim.category, 'compiler_generated');
+
+  const verdict = async (attempt, token, v) => {
+    await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, token);
+    return (await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: v, reason: v === 'same' ? 'the original is exactly add rcx and jmp, a thunk' : 'this is real code with branches and calls' }, token)).body;
+  };
+  for (const t of peers) await verdict(ta, t, 'same');
+  for (const t of peers.slice(0, 3)) await verdict(ra, t, 'different');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', ta).state, 'approved', 'five agreeing accept the claim');
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', real).state, 'needs_cleanup', 'rejected claim: port it after all');
+
+  const before = (await call('GET', '/api/progress', null, author)).body.functions;
+  await ctx.merger.pump();
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', thunk).state, 'skipped');
+  assert.equal(ctx.store.get('SELECT skip_reason FROM symbols WHERE id = ?', thunk).skip_reason, 'compiler_generated');
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, real);
+  assert.ok(before >= 1);
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

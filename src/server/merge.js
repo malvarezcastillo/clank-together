@@ -106,8 +106,29 @@ export class Merger {
    * approved part of a batch whose other functions still wait for review, so finished work
    * doesn't wait for the slowest function of its batch.
    */
+  /**
+   * Accepted "no decompile" claims need no merge: the function is skipped (no task, not counted in
+   * progress). Kept for later review when a peer objected, like code.
+   */
+  finishSkips() {
+    const done = this.store.all(`SELECT a.*, t.symbol_id FROM attempts a JOIN tasks t ON t.id = a.task_id WHERE a.kind = 'skip' AND a.state = 'approved'`);
+    if (!done.length) return;
+    this.store.tx(() => {
+      for (const a of done) {
+        this.store.run(`UPDATE attempts SET state = 'merged' WHERE id = ?`, a.id);
+        this.store.run(`UPDATE tasks SET state = 'skipped', lease_user = NULL, updated_at = ? WHERE id = ?`, now(), a.task_id);
+        this.store.run('UPDATE symbols SET skip_reason = ? WHERE id = ?', a.skip_category, a.symbol_id);
+        const objections = this.store.get(`SELECT COUNT(*) AS n FROM peer_reviews WHERE attempt_id = ? AND verdict = 'different'`, a.id).n;
+        if (objections) this.store.run('INSERT INTO later_review (symbol_id, attempt_id, merged_commit, objections, created_at) VALUES (?, ?, NULL, ?, ?)', a.symbol_id, a.id, objections, now());
+        this.store.event('skipped', a.user_id, { attempt: a.id, symbol: a.symbol_id, category: a.skip_category });
+      }
+    });
+    this.log.info(`${done.length} function(s) accepted as needing no decompilation`);
+  }
+
   /** Starts merges while a lane is free; resolves when the merges it started are done. */
   async pump() {
+    if (!this.stopped) this.finishSkips();
     const started = [];
     while (!this.stopped && this.running < MERGE_SLOTS) {
       const pick = this.next(this.runningBig > 0);

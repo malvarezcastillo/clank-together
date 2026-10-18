@@ -15,12 +15,14 @@ import { now } from './db.js';
 import { untrusted } from './tasks.js';
 import { hex } from '../shared/annotations.js';
 import { settleBatch } from './batches.js';
+import { SKIP_CATEGORIES } from './tasks.js';
 
 // How many functions one review claim covers.
 const REVIEW_GROUP = 40;
 
 export const PEER_INSTRUCTIONS = [
   'You hold every function listed under functions. Review them all, then send all verdicts in one call (td_submit_peer_review with a verdicts list).',
+  'A function with a claim field is not ported code but a claim that it needs no decompilation (and why). Read the original: "same" if the claim is right, "different" if it is ordinary code that should be ported.',
   'Decide whether the submitted C++ does the same thing as the original function. It is not byte-identical; your judgment is what counts.',
   'Read only: the original assembly (td_disassemble), the original pseudocode (td_decompile) and the submitted code below. Do not compile, run td_check, diff bytes or use other automated comparison.',
   'Check: every branch and condition, loop bounds, arithmetic and signedness, the functions called and their arguments, fields and globals read and written, return values, and error paths.',
@@ -130,7 +132,7 @@ export class PeerReviews {
   /** One function to review: where the original is and how to read it. */
   functionInfo(attemptId, v) {
     const row = this.store.get(
-      `SELECT a.id, s.id AS symbol, s.name, ad.addr, ad.size FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
+      `SELECT a.id, a.kind, a.skip_category, a.notes, s.id AS symbol, s.name, ad.addr, ad.size FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
          LEFT JOIN symbol_addresses ad ON ad.symbol_id = s.id AND ad.version_id = ? WHERE a.id = ?`,
       v.id,
       attemptId,
@@ -143,6 +145,7 @@ export class PeerReviews {
       size: row.size,
       annotation: `// FUNCTION: ${row.symbol}`,
       read: [`td_disassemble ${row.symbol}`, `td_decompile ${row.symbol}`],
+      ...(row.kind === 'skip' && { claim: { noDecompile: true, category: row.skip_category, meaning: SKIP_CATEGORIES[row.skip_category], reason: untrusted(row.notes) } }),
     };
   }
 

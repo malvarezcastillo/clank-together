@@ -242,7 +242,8 @@ export function createApp(ctx) {
   }));
 
   router.on('GET', '/api/progress', () => cached('progress', 20_000, () => {
-    const total = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE s.kind = 'function' AND s.library = 0`);
+    // Functions accepted as needing no decompilation (thunks, runtime library, ...) do not count.
+    const total = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE s.kind = 'function' AND s.library = 0 AND s.skip_reason IS NULL`);
     const byStatus = store.all(`SELECT fs.status, COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 GROUP BY fs.status`);
     const byTaskState = store.all('SELECT state, COUNT(*) AS n FROM tasks GROUP BY state');
     const contributors = store.all(`SELECT u.name, COUNT(*) AS merged FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.state = 'merged' GROUP BY u.id ORDER BY merged DESC LIMIT 20`);
@@ -361,6 +362,13 @@ export function createApp(ctx) {
       alsoClaimed: others,
       note: groupNote(ids.length, tasks.lastGroup),
     });
+  });
+
+  // "No decompile": held functions claimed to need no source; peer reviewed like code.
+  router.on('POST', '/api/tasks/no-decompile', async ({ req }) => {
+    const user = auth(req);
+    const body = await readJson(req, 128 * 1024);
+    return guided(tasks.markNoDecompile(user, body.items));
   });
 
   // Organize before porting: put held functions that are in no source file yet into files.
@@ -517,6 +525,8 @@ export function createApp(ctx) {
       files: store.attemptFiles(a),
       mergedFiles: isReviewer ? batchResult.mergedFiles ?? result?.mergedFiles ?? null : undefined,
       reviews: store.all('SELECT r.action, r.comment, r.created_at, u.name AS reviewer FROM reviews r JOIN users u ON u.id = r.reviewer_id WHERE r.attempt_id = ?', a.id),
+      kind: a.kind,
+      claim: a.kind === 'skip' ? { category: a.skip_category, reason: a.notes } : undefined,
       peerReviews: peers.verdicts(a.id),
       peerRequired: peers.required,
       targetSource: targetSource(result?.feedback?.target?.id, batchResult.mergedFiles ?? store.attemptFiles(a)),

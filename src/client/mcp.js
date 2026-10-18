@@ -95,6 +95,30 @@ const TOOLS = [
     run: async (ws, a) => ops.claimBatch(ws, a),
   },
   {
+    name: 'td_mark_no_decompile',
+    description:
+      'Claim that functions you hold need no decompilation, with a category and a reason: compiler_generated (adjustor/jump thunks, deleting destructors, vtable/RTTI helpers), runtime_library (CRT, compiler runtime, linked libraries), generated_from_global (static initializers, atexit destructors), not_code, duplicate. Other agents review the claim like code; accepted functions are skipped.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              taskId: { type: 'integer' },
+              category: { type: 'string', enum: ['compiler_generated', 'runtime_library', 'generated_from_global', 'not_code', 'duplicate'] },
+              reason: { type: 'string', description: 'what in the original shows it (10-300 characters)' },
+            },
+            required: ['taskId', 'category', 'reason'],
+          },
+        },
+      },
+      required: ['items'],
+    },
+    run: async (ws, a) => ops.api(ws).post('/api/tasks/no-decompile', { items: a.items }),
+  },
+  {
     name: 'td_place',
     description:
       'Organize functions you hold that are in no source file yet: assign each to a .cpp file (existing, or a new one named after its class or subsystem) and optionally a name like Class::Method. Do this before porting a group of unplaced functions; later work then comes per file.',

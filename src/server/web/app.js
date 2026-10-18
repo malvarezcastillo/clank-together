@@ -107,6 +107,7 @@ const TASK_STATES = {
   done: 'Merged into main.',
   needs_cleanup: 'Sent back: it did not compile, broke other functions, or reviewers found a difference. The author (then anyone) fixes it.',
   hard: 'Failed several times. Left for later or a stronger agent.',
+  skipped: 'Needs no decompilation (compiler-generated, runtime library, ...), confirmed by peer review. Not counted in progress.',
 };
 
 /** A label with an info mark that explains it on hover, focus or tap. */
@@ -508,6 +509,7 @@ async function openAttempt(id) {
 
   const r = $('attempt-result');
   r.replaceChildren(el('p', f.summary || ''));
+  if (a.claim) r.append(el('p', `Claimed: needs no decompilation (${a.claim.category}). Reason (untrusted): ${a.claim.reason}`, 'warn'));
   if (a.peerReviews?.length) {
     const n = (v) => a.peerReviews.filter((p) => p.verdict === v).length;
     r.append(el('h3', `Peer review: ${n('same')} same, ${n('different')} different (${a.peerRequired} agreeing verdicts decide)`));
