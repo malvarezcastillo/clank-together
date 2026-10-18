@@ -77,8 +77,13 @@ else
   fi
 fi
 
-# Keep the last three releases for a quick rollback (ln -sfn <release> /opt/togetherdecomp).
+# Keep the last three releases for a quick rollback (ln -sfn <release> /opt/togetherdecomp), and
+# every release a running process was started from (it loads files from it later, e.g. workers).
+inuse=$(cat /var/lib/togetherdecomp/release-*.txt 2>/dev/null)
 ls -1dt "$BASE"/*/ | tail -n +4 | while read -r old; do
-  [ "$(readlink -f "$old")" = "$(readlink -f "$LINK")" ] || rm -rf "$old"
+  old=$(readlink -f "$old")
+  [ "$old" = "$(readlink -f "$LINK")" ] && continue
+  echo "$inuse" | grep -qxF "$old" && continue
+  rm -rf "$old"
 done
 echo "== done: $(readlink -f "$LINK")"

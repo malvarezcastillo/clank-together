@@ -23,12 +23,19 @@ export function functionRegions(text) {
   }
   const out = new Map();
   for (const g of groups.values()) {
-    const end = bodyEnd(lines, g.targetLine - 1);
+    // A definition runs to its closing brace; an annotated declaration to its semicolon.
+    const end = bodyEnd(lines, g.targetLine - 1) ?? declarationEnd(lines, g.targetLine - 1);
     if (end === null) return null;
     const region = { start: g.start, end, ids: g.ids };
     for (const id of g.ids) out.set(id, region);
   }
   return out;
+}
+
+// Index of the line after the one that ends a declaration (its semicolon) starting at `from`.
+function declarationEnd(lines, from) {
+  for (let i = from; i < Math.min(lines.length, from + 20); i++) if (lines[i].replace(/\/\/.*$/, '').includes(';')) return i + 1;
+  return null;
 }
 
 // Index of the line after the brace that closes the body starting at or after line `from`.

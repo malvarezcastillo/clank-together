@@ -37,3 +37,12 @@ test('withoutFunctions restores pending functions from the base, or drops new on
   // One definition shared by a pending and a finished function can't be split.
   assert.equal(withoutFunctions({ 'a.cpp': file }, ['fn_00002'], () => null), null);
 });
+
+test('an annotated declaration is a region of its own instead of stopping the split', () => {
+  const text = '// STUB: fn_00010\nvoid declared(int a);\n\n// FUNCTION: fn_00011\nint defined() {\n  return 1;\n}\n';
+  const r = functionRegions(text);
+  assert.deepEqual([r.get('fn_00010').start, r.get('fn_00010').end], [0, 2]);
+  assert.deepEqual([r.get('fn_00011').start, r.get('fn_00011').end], [3, 7]);
+  const out = withoutFunctions({ 'a.cpp': text }, ['fn_00011'], () => null);
+  assert.equal(out['a.cpp'], '// STUB: fn_00010\nvoid declared(int a);\n\n');
+});

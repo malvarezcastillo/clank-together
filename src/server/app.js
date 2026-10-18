@@ -771,6 +771,10 @@ export async function startServer(dataDir, { role = 'all' } = {}) {
   if (!['all', 'web', 'worker'].includes(role)) throw new Error(`unknown role ${role}; use web, worker or all`);
   const ctx = openServer(dataDir);
   ctx.runsWorker = role !== 'web';
+  // deploy/update.sh keeps the releases running processes were started from.
+  try {
+    fs.writeFileSync(path.join(ctx.config.dataDir, `release-${role}.txt`), path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..') + '\n');
+  } catch {}
   const stops = [];
   if (role !== 'web') {
     ctx.tasks.generate();

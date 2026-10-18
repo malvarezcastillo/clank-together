@@ -250,6 +250,10 @@ export class Merger {
       }
     }
     const targets = new Set(attempts.map((a) => a.symbol_id));
+    // The batch a split part came from holds the other functions of these files (still in review,
+    // their source put back as on main); shared changes in the file may change their compiled code.
+    // That is not a change to functions someone else holds; their status is measured again.
+    if (parentId) for (const a of batchAttempts(this.store, parentId)) targets.add(a.symbol_id);
     const outside = this.verifier.changedOutside(check, merged.files, targets);
     const confirmedIds = new Set();
     const results = [];
