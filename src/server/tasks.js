@@ -91,7 +91,7 @@ export class Tasks {
 
   /** How many tasks (functions) one account may hold at once, single claims and batches together. */
   get maxLeased() {
-    return this.config.maxLeasedTasks ?? 200;
+    return this.config.maxLeasedTasks ?? 500;
   }
 
   /**
@@ -105,7 +105,7 @@ export class Tasks {
   claimNext(user, limit = 50) {
     return this.store.tx(() => {
       const held = this.leasesOf(user.id).length;
-      const room = Math.min(Math.max(1, limit | 0), 200, this.maxLeased - held);
+      const room = Math.min(Math.max(1, limit | 0), this.maxLeased - held);
       if (room <= 0) throw new HttpError(409, `you already hold ${held} tasks; submit or release some first`);
       const seed = this.bestOpen(user);
       if (!seed) throw new HttpError(404, 'no open tasks');
@@ -199,7 +199,7 @@ export class Tasks {
     if (!unit && (start == null || end == null)) return this.claimNext(user, limit);
     return this.store.tx(() => {
       const held = this.leasesOf(user.id).length;
-      const room = Math.min(Math.max(1, limit | 0), 200, this.maxLeased - held);
+      const room = Math.min(Math.max(1, limit | 0), this.maxLeased - held);
       if (room <= 0) throw new HttpError(409, `you already hold ${held} tasks; submit or release some first`);
       const v = this.store.currentVersion();
       const ph = CLAIMABLE.map(() => '?').join(',');
@@ -290,7 +290,7 @@ export class Tasks {
   submitBatch(user, { taskIds, baseCommit, files, notes = null, agentMeta = null, envDigest = null }) {
     const ids = [...new Set((taskIds ?? []).map(Number))];
     if (!ids.length) throw new HttpError(400, 'taskIds must list the tasks this submission covers');
-    if (ids.length > 200) throw new HttpError(400, 'at most 200 tasks per submission');
+    if (ids.length > this.maxLeased) throw new HttpError(400, `at most ${this.maxLeased} tasks per submission`);
     return this.store.tx(() => {
       for (const id of ids) this.requireLease(user, id);
       // Keep the verification queue moving: a few batches waiting per account at a time.
