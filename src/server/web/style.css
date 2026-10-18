@@ -530,3 +530,6 @@ details.fold[open] > summary { margin-bottom: 6px; }
   z-index: 10;
 }
 .info:hover::after, .info:focus::after { opacity: 1; }
+
+/* --- progress: both measures */
+.gauge-counts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 24px; margin: 2px 0; font: 14px var(--font-mono); }

@@ -10,7 +10,7 @@ import { reconcile } from '../shared/reconcile.js';
 import { STATUS } from '../shared/compare.js';
 import { listSources, isUnit } from '../shared/project.js';
 import { now } from './db.js';
-import { returnBatch, batchAttempts } from './batches.js';
+import { returnBatch, batchAttempts, settleBatch } from './batches.js';
 import { analyzeInWorkers } from './analyze.js';
 
 // A batch whose verification compiles more units than this is big (it changes a widely used header).
@@ -245,7 +245,10 @@ export class Verifier {
    * part of the submission: a submission may only change the functions it holds the lease for.
    * Unknown on main (no fingerprint yet, e.g. before the first rebuild) is not counted.
    */
-  changedOutside(check, files, targets) {
+  // With `userId`, only functions someone else is working on count (held by another account, or in
+  // another account's submission on its way to main). Other neighbours may change: their status is
+  // measured again, and the regression check still protects whatever already matches.
+  changedOutside(check, files, targets, userId = null) {
     const fileSet = new Set(Object.keys(files));
     const seen = new Map();
     for (const u of check.units) for (const f of u.functions) if (fileSet.has(f.file) && !targets.has(f.id) && f.codeHash) seen.set(f.id, f);
@@ -255,7 +258,17 @@ export class Verifier {
       if (!main) out.push({ id, file: f.file, why: 'new or newly annotated' });
       else if (main.code_hash && main.code_hash !== f.codeHash) out.push({ id, file: f.file, why: 'compiled code changed' });
     }
-    return out;
+    if (userId == null) return out;
+    return out.filter((o) => this.workedOnByOthers(o.id, userId));
+  }
+
+  workedOnByOthers(symbolId, userId) {
+    return !!this.store.get(
+      `SELECT 1 FROM tasks t WHERE t.symbol_id = ? AND (
+         (t.state = 'leased' AND t.lease_user != ?)
+         OR EXISTS (SELECT 1 FROM attempts a WHERE a.task_id = t.id AND a.user_id != ? AND a.state IN ('queued', 'verifying', 'peer_review', 'in_review', 'approved', 'merging')))`,
+      symbolId, userId, userId,
+    );
   }
 
   /**
@@ -304,10 +317,18 @@ export class Verifier {
     // units that only include a changed header are compiled when the batch merges.
     const { check, rec, changedHeaders } = await this.check(merged.files, `batch-${batch.id}`, { dependents: false });
     const targets = new Set(attempts.map((a) => a.symbol_id));
-    const outside = this.changedOutside(check, merged.files, targets);
+    const outside = this.changedOutside(check, merged.files, targets, batch.user_id);
     let failed = 0;
+    let withdrawn = 0;
     for (const a of attempts) {
       const ev = this.evaluate({ check, rec, targetId: a.symbol_id, files: merged.files, changedHeaders, outside });
+      // Held but not written: no annotation for it anywhere in the submission. Not a failure; it
+      // goes back to the author's claim.
+      if (!ev.feedback.target && !Object.values(submitted).some((text) => new RegExp(`//\\s*(FUNCTION|STUB)\\s*:\\s*${a.symbol_id}\\b`).test(String(text)))) {
+        this.withdraw(a);
+        withdrawn++;
+        continue;
+      }
       ev.feedback.headCommit = this.repo.head();
       if (attempts.length > 1) ev.feedback.batch = { id: batch.id, functions: attempts.length };
       if (batch.env_digest && this.config.envDigest && batch.env_digest !== this.config.envDigest) {
@@ -325,7 +346,18 @@ export class Verifier {
       now(), JSON.stringify({ mergedFiles: merged.files, check: summarizeCheck(check), changedHeaders, outside }), batch.id,
     );
     this.rememberCheck(batch.id, { check, rec, changedHeaders });
-    if (failed) returnBatch(this.store, batch.id, `${failed} of ${attempts.length} functions need work; see each function's feedback`);
+    // Failing functions went back one by one (finish); the rest of the batch carries on and its
+    // approved part merges without them. Only a batch with nothing left on its way is over.
+    if (failed || withdrawn) settleBatch(this.store, batch.id, `${failed} of ${attempts.length} functions need work${withdrawn ? `, ${withdrawn} were not written` : ''}; see each function's feedback`);
+  }
+
+  // A function submitted without any code for it: back into its author's claim, as if not submitted.
+  withdraw(attempt) {
+    const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
+    this.store.tx(() => {
+      this.store.run(`UPDATE attempts SET state = 'withdrawn', finished_at = ?, result_json = ? WHERE id = ?`, now(), JSON.stringify({ feedback: { summary: 'not written: no annotation for it in the submission; it stays in your claim' } }), attempt.id);
+      this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, updated_at = ? WHERE id = ?`, attempt.user_id, expires, now(), attempt.task_id);
+    });
   }
 
   /** Routes a check result: rejected, needs_cleanup or in_review. */

@@ -693,6 +693,61 @@ test('"no decompile" claims are peer reviewed; accepted ones are skipped and not
   assert.ok(before >= 1);
 });
 
+test('verification: unwritten functions stay claimed, failing ones go back alone, neighbours may change', async () => {
+  delete ctx.merger.pump;
+  const author = await activeUser('pvauthor');
+  const other = await activeUser('pvother');
+  const v = ctx.store.currentVersion();
+  const mk = (addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8, unit: 'src/pv.cpp' }).symbol.id;
+  const good = mk(0x412000);
+  const broken = mk(0x412040);
+  const unwritten = mk(0x412080);
+  const neighbour = mk(0x4120c0);
+  const guarded = mk(0x412100);
+  ctx.tasks.generate();
+  const taskOf = (sym) => ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id;
+  for (const sym of [good, broken, unwritten]) assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOf(sym) }, author)).status, 200);
+  const fn = (id, status, hash) => ({ id, status, score: status === STATUS.EXACT ? 1 : 0.5, file: 'src/pv.cpp', codeHash: hash, relocations: [], size: { ours: 8, original: 8 } });
+  let guardedHash = 'g1';
+  const real = ctx.verifier.check;
+  ctx.verifier.check = async (files) => {
+    const text = files['src/pv.cpp'] ?? '';
+    const functions = [];
+    if (text.includes('int good()')) functions.push(fn(good, STATUS.EXACT, 'h-good'));
+    // broken is annotated but does not compile into anything: a real failure.
+    if (text.includes('int nb()')) functions.push(fn(neighbour, STATUS.MISMATCH, 'h-nb-changed'));
+    if (text.includes('int gd()')) functions.push(fn(guarded, STATUS.MISMATCH, guardedHash));
+    if (text.includes('int uw()')) functions.push(fn(unwritten, STATUS.EXACT, 'h-uw'));
+    return { check: { annotationErrors: [], units: [{ file: 'src/pv.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions }] }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: ['src/pv.cpp'] };
+  };
+  try {
+    // The neighbour changed and nobody holds it: allowed now.
+    ctx.store.run('INSERT OR REPLACE INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, code_hash) VALUES (?, ?, ?, 0.5, ?, 0, ?)', neighbour, 'src/pv.cpp', 'mismatch', 'x', 'h-nb-old');
+    const files = { 'src/pv.cpp': `// FUNCTION: ${good}\nint good() { return 1; }\n// FUNCTION: ${broken}\n#if 0\nint br() { return 2; }\n#endif\n// FUNCTION: ${neighbour}\nint nb() { return 3; }\n` };
+    const sub = await call('POST', '/api/batches', { taskIds: [good, broken, unwritten].map(taskOf), baseCommit: ctx.repo.head(), files }, author);
+    assert.equal(sub.status, 200, JSON.stringify(sub.body));
+    await waitFor(async () => !['queued', 'verifying'].includes(ctx.store.get('SELECT state FROM batches WHERE id = ?', sub.body.batchId).state));
+    const state = (sym) => ctx.store.get('SELECT state, lease_user FROM tasks WHERE symbol_id = ?', sym);
+    assert.equal(state(good).state, 'approved', 'the good one goes on, changing an unheld neighbour is fine');
+    assert.equal(state(broken).state, 'needs_cleanup', 'the failing one goes back alone');
+    assert.deepEqual([state(unwritten).state, state(unwritten).lease_user], ['leased', ctx.accounts.byName('pvauthor').id], 'not written: still claimed, no failure');
+    assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', sub.body.batchId).state, 'open');
+
+    // Changing a function another account holds is still refused.
+    ctx.tasks.generate();
+    assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOf(guarded) }, other)).status, 200);
+    ctx.store.run('INSERT OR REPLACE INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, code_hash) VALUES (?, ?, ?, 0.5, ?, 0, ?)', guarded, 'src/pv.cpp', 'mismatch', 'x', 'g0');
+    const sub2 = await call('POST', '/api/batches', { taskIds: [taskOf(unwritten)], baseCommit: ctx.repo.head(), files: { 'src/pv.cpp': `// FUNCTION: ${unwritten}\nint uw() { return 1; }\n// FUNCTION: ${guarded}\nint gd() { return 4; }\n` } }, author);
+    await waitFor(async () => !['queued', 'verifying'].includes(ctx.store.get('SELECT state FROM batches WHERE id = ?', sub2.body.batchId).state));
+    const fb = JSON.parse(ctx.store.get('SELECT result_json FROM attempts WHERE batch_id = ?', sub2.body.batchId).result_json).feedback;
+    assert.match(fb.summary, /changes functions it does not hold/);
+  } finally {
+    ctx.verifier.check = real;
+    for (const sym of [good, broken, unwritten, neighbour, guarded]) ctx.store.run(`UPDATE tasks SET state = 'done', lease_user = NULL WHERE symbol_id = ?`, sym);
+    ctx.store.run(`UPDATE batches SET state = 'superseded' WHERE user_id = ?`, ctx.accounts.byName('pvauthor').id);
+  }
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

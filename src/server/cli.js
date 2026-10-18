@@ -11,6 +11,7 @@ import { openServer, startServer, DEFAULT_CONFIG } from './app.js';
 import { Store, now } from './db.js';
 import { Accounts } from './accounts.js';
 import { agentGuidance, setAgentGuidance, resetAgentGuidance } from './guidance.js';
+import { productivity, formatProductivity } from './stats.js';
 import { PEImage } from '../shared/pe.js';
 
 const TEMPLATE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'template');
@@ -32,6 +33,7 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   user token <name> [label]              create an API token for an account
   version add <id> <exe> [--current]     register a target executable version
   version set-current <id>
+  stats [json] [--hours N]               pipeline productivity (submitted, merged, losses, reviews)
   guidance show|set <text>|off|reset     policy note sent to agents with every work response
   version label <id> <text>              readable name shown on the website
   version map <newId> <csv> --from <oldId>
@@ -71,6 +73,7 @@ async function main() {
       current: { type: 'boolean', default: false },
       version: { type: 'string' },
       from: { type: 'string' },
+      hours: { type: 'string', default: '24' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -81,6 +84,13 @@ async function main() {
 
   if (cmd === 'init') return init(dataDir);
   if (cmd === 'start') return startServer(dataDir, { role: sub ?? 'all' });
+
+  if (cmd === 'stats') {
+    // Pipeline productivity (see docs/productivity.md).
+    const store = new Store(path.join(dataDir, 'td.sqlite'));
+    const p = productivity(store, Number(values.hours) || 24);
+    return console.log(sub === 'json' ? JSON.stringify(p, null, 2) : formatProductivity(p));
+  }
 
   if (cmd === 'guidance') {
     // Reaches running agents on their next call; no restart needed.

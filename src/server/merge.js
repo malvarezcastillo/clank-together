@@ -249,7 +249,7 @@ export class Merger {
   noSplit(batch, reason) {
     this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.noSplit', ?) WHERE id = ?`, reason, batch.id);
     // With a function sent back it can never merge as a whole, so it all goes back.
-    if (this.store.get(`SELECT 1 FROM attempts WHERE batch_id = ? AND state IN ('needs_cleanup', 'rejected', 'returned')`, batch.id)) {
+    if (this.store.get(`SELECT 1 FROM attempts WHERE batch_id = ? AND state IN ('needs_cleanup', 'rejected', 'returned', 'withdrawn')`, batch.id)) {
       returnBatch(this.store, batch.id, `a function of this batch was sent back and the rest cannot be merged without it: ${reason}`);
       return this.log.info(`batch ${batch.id} returned: ${reason}`);
     }
@@ -299,7 +299,7 @@ export class Merger {
     // their source put back as on main); shared changes in the file may change their compiled code.
     // That is not a change to functions someone else holds; their status is measured again.
     if (parentId) for (const a of batchAttempts(this.store, parentId)) targets.add(a.symbol_id);
-    const outside = this.verifier.changedOutside(check, merged.files, targets);
+    const outside = this.verifier.changedOutside(check, merged.files, targets, batch.user_id);
     const confirmedIds = new Set();
     const results = [];
     for (const a of attempts) {

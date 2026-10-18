@@ -85,7 +85,20 @@ async function loadProgress() {
   meter.append(fill);
   gauge.append(meter);
   const conf = p.confirmed?.n ?? 0;
-  gauge.append(el('p', p.functions ? `${exact.n} of ${p.functions} functions match byte for byte${conf ? `, ${conf} more confirmed by peer review` : ''}${p.peerQueue ? ` · ${p.peerQueue} waiting for peer review` : ''}.` : 'No target loaded yet. The machines are warming up.', 'gauge-caption'));
+  if (!p.functions) gauge.append(el('p', 'No target loaded yet. The machines are warming up.', 'gauge-caption'));
+  else {
+    // Both measures: functions (many small ones are done) and bytes of code (how much of the binary).
+    const share = (a, b) => `${b ? ((a / b) * 100).toFixed(2) : '0.00'}%`;
+    const kb = (n) => `${(n / 1024).toLocaleString(undefined, { maximumFractionDigits: 0 })} KB`;
+    const counts = el('div', null, 'gauge-counts');
+    counts.append(
+      el('div', `Functions: ${exact.n.toLocaleString()} of ${p.functions.toLocaleString()} byte-identical (${share(exact.n, p.functions)})`),
+      el('div', `Code: ${kb(exact.bytes)} of ${kb(p.bytes)} byte-identical (${share(exact.bytes, p.bytes)})`),
+    );
+    gauge.append(counts);
+    const extra = [conf ? `${conf.toLocaleString()} more confirmed by peer review` : '', p.peerQueue ? `${p.peerQueue.toLocaleString()} waiting for peer review` : ''].filter(Boolean);
+    if (extra.length) gauge.append(el('p', extra.join(' · '), 'gauge-caption'));
+  }
   body.append(gauge);
   requestAnimationFrame(() => fill.style.setProperty('width', `${Math.min(100, pct)}%`));
 
