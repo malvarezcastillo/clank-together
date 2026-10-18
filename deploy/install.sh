@@ -5,6 +5,9 @@ set -eu
 
 HOST="${1:?usage: install.sh <public-hostname>}"
 NODE_VERSION=v22.21.0
+GHIDRA_VERSION=11.2.1
+GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2.1_build/ghidra_11.2.1_PUBLIC_20241105.zip
+GHIDRA_SHA256=ce4db5117da0fbaf8f33863fec4f40902f754f06b68945a59fb1c0f9b1bc461c
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 APP=/opt/togetherdecomp
 DATA=/var/lib/togetherdecomp
@@ -12,7 +15,8 @@ DATA=/var/lib/togetherdecomp
 echo "== packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q git curl ca-certificates nftables caddy docker.io xz-utils >/dev/null
+# binutils: objdump disassembles original functions for /api/original before a Ghidra export exists.
+apt-get install -y -q git curl ca-certificates nftables caddy docker.io xz-utils binutils >/dev/null
 
 echo "== node $NODE_VERSION"
 if [ "$(/opt/node/bin/node --version 2>/dev/null || true)" != "$NODE_VERSION" ]; then
@@ -22,6 +26,19 @@ if [ "$(/opt/node/bin/node --version 2>/dev/null || true)" != "$NODE_VERSION" ];
   (cd "$tmp" && grep " node-$NODE_VERSION-linux-x64.tar.xz\$" SHASUMS256.txt | sed 's/node-.*/node.tar.xz/' | sha256sum -c -)
   rm -rf /opt/node && mkdir -p /opt/node
   tar -xJf "$tmp/node.tar.xz" -C /opt/node --strip-components=1
+  rm -rf "$tmp"
+fi
+
+echo "== ghidra $GHIDRA_VERSION (server-side project and pseudocode)"
+# The JDK, not just the runtime: Ghidra compiles its .java scripts.
+apt-get install -y -q openjdk-21-jdk-headless unzip >/dev/null
+GHIDRA_HOME="/opt/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC"
+if [ ! -x "$GHIDRA_HOME/support/analyzeHeadless" ]; then
+  tmp=$(mktemp -d)
+  curl -fsSL "$GHIDRA_URL" -o "$tmp/ghidra.zip"
+  echo "$GHIDRA_SHA256  $tmp/ghidra.zip" | sha256sum -c - >/dev/null
+  mkdir -p /opt/ghidra
+  unzip -q -o "$tmp/ghidra.zip" -d /opt/ghidra
   rm -rf "$tmp"
 fi
 
@@ -53,13 +70,14 @@ if [ ! -f "$DATA/server.json" ]; then
 fi
 # Production settings, keeping anything else already configured.
 UIDGID="$(id -u togetherdecomp):$(id -g togetherdecomp)"
-runuser -u togetherdecomp -- $NODE -e '
+runuser -u togetherdecomp -- env GHIDRA_HOME="$GHIDRA_HOME" $NODE -e '
 const fs = require("fs"); const [file, host, user] = process.argv.slice(1);
 const c = JSON.parse(fs.readFileSync(file, "utf8"));
 c.listen = { host: "127.0.0.1", port: 8080 };
 c.publicUrl = "https://" + host;
 c.trustProxy = true;
 c.allowUnsandboxedRunners = false;
+c.ghidraHome = process.env.GHIDRA_HOME || c.ghidraHome || null;
 for (const r of Object.values(c.runners || {})) if (r.type === "docker") r.user = user;
 fs.writeFileSync(file, JSON.stringify(c, null, 2) + "\n");
 ' "$DATA/server.json" "$HOST" "$UIDGID"

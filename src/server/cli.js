@@ -37,6 +37,8 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   symbols load <symbols.json>            import symbols with fixed IDs and per-version addresses
   symbols units <csv>                    assign functions to translation units (csv: start,end,file)
   symbols library <id...>                mark symbols as library code (no tasks)
+  originals import <jsonl> [--version V] assembly + pseudocode of the original (ExportOriginals.java)
+  ghidra build | refresh                 the server's Ghidra project (download, pseudocode); refresh also runs after merges
   rebuild                                compile all of main and refresh match status
   tasks generate                         create tasks for functions that have none
 `;
@@ -237,6 +239,25 @@ async function main() {
       console.log(`marked ${rest.length} symbols as library code`);
       return;
     }
+  }
+
+  if (cmd === 'ghidra' && (sub === 'build' || sub === 'refresh')) {
+    // The server's Ghidra project (needs ghidraHome in server.json and a JDK 21).
+    const ctx = openServer(dataDir);
+    if (!ctx.ghidra.enabled) throw new Error('set ghidraHome in server.json to a Ghidra 11.2.1 installation');
+    ctx.store.setMeta('ghidra.commit', ctx.repo.head());
+    const info = sub === 'build' ? await ctx.ghidra.build() : await ctx.ghidra.refresh();
+    console.log(JSON.stringify(info, null, 2));
+    return;
+  }
+
+  if (cmd === 'originals' && sub === 'import') {
+    // ghidra_scripts/ExportOriginals.java output, for the current version unless --version is given.
+    const ctx = openServer(dataDir);
+    const v = values.version ?? ctx.store.currentVersion()?.id;
+    const n = await ctx.originals.import(v, rest[0]);
+    console.log(`imported ${n} functions for ${v}`);
+    return;
   }
 
   if (cmd === 'tasks' && sub === 'generate') {

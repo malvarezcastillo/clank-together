@@ -1,6 +1,7 @@
 // Compares compiled functions (COFF object + listing) against the original
 // executable, using the symbol database to locate each annotated function.
 
+import crypto from 'node:crypto';
 import { insnAt, normalizePath } from './listing.js';
 import { FUNCTION_KINDS, hex } from './annotations.js';
 
@@ -309,6 +310,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     status,
     score: Math.round(score * 10000) / 10000,
     size: { ours: ours.length, original: origSize ?? null },
+    codeHash: codeHash(ours, proc),
     diffRegions: sameLength ? diffRegions(diffs, ours, orig, proc) : [],
     relocations: relocResults.filter((r) => !r.ok || r.unresolved),
     // Where the original points is only meaningful when the code lines up.
@@ -382,4 +384,24 @@ export function lcsRatio(a, b) {
     [prev, cur] = [cur, prev];
   }
   return (2 * prev[b.length]) / (a.length + b.length);
+}
+
+/**
+ * Fingerprint of our compiled code, to tell whether a function changed between two builds:
+ * the bytes (relocated fields are zero in an object file) with __LINE__ immediates zeroed, so
+ * editing lines above a function does not count as changing it.
+ */
+export function codeHash(bytes, proc) {
+  const b = Buffer.from(bytes);
+  const insns = proc?.insns ?? [];
+  for (let k = 0; k < insns.length; k++) {
+    const insn = insns[k];
+    if (!insn.srcLine) continue;
+    const end = Math.min(b.length, k + 1 < insns.length ? insns[k + 1].offset : b.length);
+    for (let p = insn.offset + 1; p + 2 <= end; p++) {
+      if (p + 4 <= end && b.readUInt32LE(p) === insn.srcLine) b.fill(0, p, p + 4);
+      else if (p + 2 === end && b.readUInt16LE(p) === insn.srcLine) b.fill(0, p, p + 2);
+    }
+  }
+  return crypto.createHash('sha1').update(b).digest('hex').slice(0, 20);
 }

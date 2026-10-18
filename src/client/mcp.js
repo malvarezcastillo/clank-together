@@ -4,7 +4,6 @@
 import readline from 'node:readline';
 import { Workspace } from './workspace.js';
 import * as ops from './ops.js';
-import * as ghidra from './ghidra.js';
 import { hex } from '../shared/annotations.js';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -33,9 +32,9 @@ const TOOLS = [
   },
   {
     name: 'td_heartbeat',
-    description: 'Extend the lease on a task you are still working on.',
-    inputSchema: { type: 'object', properties: { taskId: int('task id') }, required: ['taskId'] },
-    run: async (ws, a) => ops.api(ws).post(`/api/tasks/${a.taskId}/heartbeat`),
+    description: 'Extend your leases while you are still working (all of them, or one taskId). Leases expire after two hours otherwise.',
+    inputSchema: { type: 'object', properties: { taskId: int('task id; omit for all') } },
+    run: async (ws, a) => (a.taskId ? ops.api(ws).post(`/api/tasks/${a.taskId}/heartbeat`) : ops.api(ws).post('/api/tasks/heartbeat-all')),
   },
   {
     name: 'td_release_task',
@@ -47,13 +46,13 @@ const TOOLS = [
     name: 'td_decompile',
     description: 'Ghidra decompiler output for a function in the original executable (by symbol ID, name or hex address). A starting point only; the result must be rewritten into matching C++.',
     inputSchema: { type: 'object', properties: { symbol: str('fn_00123, a name, or 0x401000') }, required: ['symbol'] },
-    run: async (ws, a) => ghidra.decompile(ws, resolveAddr(ws, a.symbol)),
+    run: async (ws, a) => ops.original(ws, a.symbol, 'c'),
   },
   {
     name: 'td_disassemble',
     description: 'Disassembly of a function in the original executable, the ground truth to match.',
     inputSchema: { type: 'object', properties: { symbol: str('fn_00123, a name, or 0x401000') }, required: ['symbol'] },
-    run: async (ws, a) => ghidra.disassemble(ws, resolveAddr(ws, a.symbol)),
+    run: async (ws, a) => ops.original(ws, a.symbol, 'asm'),
   },
   {
     name: 'td_lookup_symbol',
@@ -82,9 +81,24 @@ const TOOLS = [
   },
   {
     name: 'td_submit',
-    description: 'Submit your work on a leased task for server verification. Defaults to all changed files the task allows. Ends the lease.',
-    inputSchema: { type: 'object', properties: { taskId: int('task id'), files: { type: 'array', items: { type: 'string' } }, notes: str('short notes for reviewers and later agents') }, required: ['taskId'] },
-    run: async (ws, a) => ops.submit(ws, a.taskId, { files: a.files, notes: a.notes, agentMeta: { client: 'td-mcp' } }),
+    description: 'Submit your work for server verification, as one batch: every task you hold (default) or the given taskIds, with all changed files they allow. Byte-identical functions are merged automatically; others go to peer review. Ends the leases. Do not wait for the result: claim the next work right away and check results later.',
+    inputSchema: {
+      type: 'object',
+      properties: { taskIds: { type: 'array', items: { type: 'integer' }, description: 'tasks to submit; default: all you hold' }, taskId: int('a single task (same as taskIds: [id])'), files: { type: 'array', items: { type: 'string' } }, notes: str('short notes for reviewers and later agents') },
+    },
+    run: async (ws, a) => ops.submit(ws, a.taskIds ?? (a.taskId ? [a.taskId] : []), { files: a.files, notes: a.notes, agentMeta: { client: 'td-mcp' } }),
+  },
+  {
+    name: 'td_claim_batch',
+    description: 'Claim many functions at once: every open function of a source file (unit), or of an address range of the current version, up to limit (default 50). Work through them in the file, td_check, then td_submit them together. Much cheaper than one function at a time.',
+    inputSchema: { type: 'object', properties: { unit: str('repo-relative source file, e.g. Engine/Source/FrameXML/LoadXML.cpp'), start: str('range start, hex'), end: str('range end, hex (exclusive)'), limit: int('max functions, default 50') } },
+    run: async (ws, a) => ops.claimBatch(ws, a),
+  },
+  {
+    name: 'td_get_batch',
+    description: 'State of a submitted batch, per function (approved, peer_review, in_review, needs_cleanup, merged...).',
+    inputSchema: { type: 'object', properties: { batchId: int('batch id') }, required: ['batchId'] },
+    run: async (ws, a) => ops.api(ws).get(`/api/batches/${a.batchId}`),
   },
   {
     name: 'td_get_result',
@@ -132,12 +146,6 @@ const TOOLS = [
   },
 ];
 
-function resolveAddr(ws, q) {
-  const s = ws.findSymbol(q);
-  if (s?.addr != null) return s.addr;
-  if (/^0x[0-9a-f]+$/i.test(q)) return Number.parseInt(q, 16);
-  throw new Error(`unknown symbol ${q}`);
-}
 
 export function startMcp(dir) {
   const ws = Workspace.find(dir);
@@ -163,7 +171,7 @@ export function startMcp(dir) {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
           capabilities: { tools: {} },
           serverInfo: { name: 'clank-together', version: '0.1.0' },
-          instructions: 'Tools for a collaborative matching decompilation. Read AGENTS.md in the workspace root first. Workflow: td_claim_task -> td_disassemble/td_decompile -> write C++ in the task file with the given annotation -> td_check until exact -> td_submit -> td_get_result. Also review the work of others: td_list_peer_reviews -> td_claim_peer_review -> read the original and the submission (no compiling or diffing) -> td_submit_peer_review.',
+          instructions: INSTRUCTIONS,
         });
       }
       case 'ping':
@@ -185,3 +193,17 @@ export function startMcp(dir) {
     }
   });
 }
+
+// What every connected agent is told when it starts. Work continues until the user stops it.
+const INSTRUCTIONS = [
+  'Clank Together: a collaborative matching decompilation. Read AGENTS.md in the workspace first.',
+  'Work continuously until the user tells you to stop; do not wait for confirmation between tasks.',
+  'Loop: td_claim_batch (a whole unit: every open function of one source file) or td_claim_task ->',
+  'read the originals (td_disassemble, td_decompile) -> write the C++ with the given annotations ->',
+  'td_check until as many functions as possible are byte-identical -> td_submit (everything you hold) ->',
+  'immediately claim the next work. Do not wait for verification; look at results later with td_get_batch / td_get_result',
+  'and fix what came back (needs_cleanup).',
+  'Between batches, take a peer review when one is waiting: td_list_peer_reviews -> td_claim_peer_review ->',
+  'read the original and the submission only (no compiling or diffing) -> td_submit_peer_review for every function.',
+  'Call td_heartbeat every hour or so while working on a big batch.',
+].join(' ');

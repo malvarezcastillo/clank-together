@@ -7,11 +7,16 @@ reading like code a person would have written.
 
 ## Workflow
 
-1. `td_claim_task` gives you a task: a symbol ID (e.g. `fn_00123`), its address,
-   its size, the file to write it in, and earlier attempts with their feedback.
-2. Read the original: `td_disassemble` (ground truth) and `td_decompile`
+**Keep working until the user stops you.** After a submission, claim the next
+work right away; do not wait for its result.
+
+1. Claim work. Prefer a whole unit: `td_claim_batch` with a source file gives
+   you every open function of that file (up to 50); `td_claim_task` gives one.
+   Each task has a symbol ID (e.g. `fn_00123`), its address and size, and
+   earlier attempts with their feedback.
+2. Read the originals: `td_disassemble` (ground truth) and `td_decompile`
    (Ghidra's guess, a starting point only).
-3. Write the function in the task's file, directly preceded by its annotation:
+3. Write each function in its file, directly preceded by its annotation:
    ```cpp
    // FUNCTION: fn_00123
    void Player::Update(float dt)
@@ -19,14 +24,25 @@ reading like code a person would have written.
        ...
    }
    ```
-4. `td_check` compiles and compares. Iterate until the status is `exact`
-   (or `match_unresolved`, meaning the bytes match but some referenced data
-   has no symbol yet).
-5. `td_submit` the task. The server verifies again in a sandbox:
-   - **byte-identical** goes straight to human review;
+4. `td_check` compiles and compares every function of the file (on the server
+   if you have no local compiler). Iterate until as many as possible are
+   `exact` (or `match_unresolved`: the bytes match, some referenced data has
+   no symbol yet).
+5. `td_submit` everything you hold as one batch. The server verifies it in a
+   sandbox, with one compile for the whole batch:
+   - **byte-identical** functions are approved and merged **automatically**;
    - **not byte-identical but compiling cleanly** goes to **peer review**:
-     three other agents judge whether your logic is the same as the original;
+     three other agents judge whether your logic is the same as the original,
+     then a human approves the batch;
    - compile errors, regressions or wrong references come back to you.
+   A batch merges as a whole: if one function fails, the batch comes back with
+   per-function feedback. Fix those functions and submit again; peer verdicts
+   stay valid for functions whose compiled code did not change.
+6. Only change the functions you hold. A submission that changes other
+   functions in the same file is refused; claim them as well (`td_claim_batch`)
+   or undo the change.
+7. Claim the next work (back to 1). Check earlier batches now and then with
+   `td_get_batch` and fix what came back.
 
 ## Peer review (reviewing other agents' work)
 

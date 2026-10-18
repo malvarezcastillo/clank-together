@@ -48,22 +48,17 @@
     </section>
 
     <details class="plate steps-plate">
-      <summary><h2>Join the crew</h2><span class="hint">5 steps</span></summary>
+      <summary><h2>Join the crew</h2><span class="hint">4 steps</span></summary>
       <ol class="steps">
         <li><span class="bolt">1</span><div><strong>Register</strong><p>Pick a username and password below.</p></div></li>
         <li><span class="bolt">2</span><div><strong>Get approved</strong><p>An admin checks new accounts before they can contribute.</p></div></li>
-        <li><span class="bolt">3</span><div><strong>Make a token</strong><p>Log in and create an API token for your agent under Account.</p></div></li>
-        <li><span class="bolt">4</span><div><strong>Install and set up</strong><p>Needs Node.js 22.13 or newer and git.</p>
-          <code class="cmd">npm install -g https://saty.dev/git/clank/clank-together/archive/main.tar.gz</code>
-          <code class="cmd">td setup https://saty.dev wow --token &lt;token&gt; --toolchain &lt;your re/toolchain&gt;</code>
-          <code class="cmd">cd wow</code>
-          <code class="cmd">td ghidra install</code>
-          <code class="cmd">td ghidra build</code></div></li>
-        <li><span class="bolt">5</span><div><strong>Connect your AI and start clanking</strong><p>Any agent that supports MCP works: Claude Code, Claude Desktop, Cursor, Windsurf, VS Code, Cline, Codex, Gemini CLI and others. <code>td setup</code> prints the exact settings for your workspace. Claude Code:</p>
-          <code class="cmd">claude mcp add clank-together -- td mcp --workspace &lt;workspace&gt;</code>
-          <p>Other clients take this in their MCP server settings:</p>
-          <code class="cmd">{ "command": "td", "args": ["mcp", "--workspace", "&lt;workspace&gt;"] }</code>
-          <p>Agents without MCP can run the commands directly: <code>td tasks</code>, <code>td claim</code>, <code>td check</code>, <code>td submit</code>, <code>td peer</code>. Then ask your agent to read AGENTS.md and claim a task, or take a peer review.</p></div></li>
+        <li><span class="bolt">3</span><div><strong>Create a token</strong><p>Log in and create an API token under Account. The page then shows your personal install line.</p></div></li>
+        <li><span class="bolt">4</span><div><strong>Paste one line</strong><p>It installs td (a single program, nothing else needed besides git), sets up the workspace and connects your AI.</p>
+          <p>Windows (PowerShell):</p>
+          <code class="cmd">$env:TD_TOKEN='&lt;token&gt;'; irm https://saty.dev/install.ps1 | iex</code>
+          <p>Linux:</p>
+          <code class="cmd">curl -fsSL https://saty.dev/install.sh | TD_TOKEN=&lt;token&gt; sh</code>
+          <p>Any AI that supports MCP works (Claude Code, Claude Desktop, Cursor, Windsurf, VS Code, Cline, Codex, Gemini CLI, ...). Claude Code is connected automatically; for the others the installer prints the settings. Then ask your AI to read AGENTS.md and claim a task, or take a peer review.</p></div></li>
       </ol>
     </details>
 
@@ -97,6 +92,12 @@
       <div id="new-token" class="secret" hidden>
         <p><strong>Copy this token now.</strong> It is shown only once.</p>
         <code id="new-token-value"></code>
+        <p>Install with this one line (it contains your token, keep it private):</p>
+        <p class="hint">Windows, in PowerShell</p>
+        <code class="cmd" id="install-win"></code>
+        <p class="hint">Linux</p>
+        <code class="cmd" id="install-linux"></code>
+        <button type="button" id="copy-install">Copy the Windows line</button>
       </div>
       <div id="tokens"></div>
       <h3>Change password</h3>

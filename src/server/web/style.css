@@ -395,3 +395,6 @@ footer code { word-break: break-all; }
   .gear-a, .gear-b, .meter .fill { animation: none; }
   .meter .fill { transition: none; }
 }
+
+.batch-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 18px 0 4px; }
+.batch-head button { margin-left: auto; }

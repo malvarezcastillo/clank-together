@@ -10,6 +10,7 @@ import { HttpError } from './http.js';
 import { now } from './db.js';
 import { untrusted } from './tasks.js';
 import { hex } from '../shared/annotations.js';
+import { returnBatch } from './batches.js';
 
 export const PEER_INSTRUCTIONS = [
   'Decide whether the submitted C++ does the same thing as the original function. It is not byte-identical; your judgment is what counts.',
@@ -36,7 +37,7 @@ export class PeerReviews {
   /** Attempts waiting for peer review that `user` may take. */
   available(user, limit = 20) {
     return this.store.all(
-      `SELECT a.id AS attempt_id, a.task_id, t.symbol_id, s.name, a.finished_at,
+      `SELECT a.id AS attempt_id, a.batch_id, a.task_id, t.symbol_id, s.name, a.finished_at,
               (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
               (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
          FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
@@ -51,28 +52,56 @@ export class PeerReviews {
     ).filter((r) => r.confirmations + r.in_progress < this.required);
   }
 
-  /** Leases one review (a given attempt, or the oldest available) and returns its context. */
+  /**
+   * Leases a review (a given attempt, or the oldest available) together with every other function
+   * of the same batch that waits for this reviewer, and returns the context of all of them.
+   */
   claim(user, attemptId = null) {
     return this.store.tx(() => {
       const options = this.available(user, 200);
       const pick = attemptId ? options.find((o) => o.attempt_id === attemptId) : options[0];
       if (!pick) throw new HttpError(attemptId ? 409 : 404, attemptId ? 'this attempt is not open for your review (yours, already reviewed, or enough reviewers)' : 'no attempts are waiting for peer review');
-      this.store.run(
-        `INSERT INTO peer_leases (attempt_id, reviewer_id, expires_at) VALUES (?, ?, ?)
-         ON CONFLICT(attempt_id, reviewer_id) DO UPDATE SET expires_at = excluded.expires_at`,
-        pick.attempt_id, user.id, now() + this.leaseMs,
-      );
-      this.store.event('peer_claim', user.id, { attempt: pick.attempt_id });
-      return this.context(pick.attempt_id);
+      const group = pick.batch_id ? options.filter((o) => o.batch_id === pick.batch_id) : [pick];
+      for (const o of group) {
+        this.store.run(
+          `INSERT INTO peer_leases (attempt_id, reviewer_id, expires_at) VALUES (?, ?, ?)
+           ON CONFLICT(attempt_id, reviewer_id) DO UPDATE SET expires_at = excluded.expires_at`,
+          o.attempt_id, user.id, now() + this.leaseMs,
+        );
+      }
+      this.store.event('peer_claim', user.id, { attempt: pick.attempt_id, functions: group.length });
+      return this.context(pick.attempt_id, group.map((o) => o.attempt_id));
     });
+  }
+
+  /** One function to review: where the original is and how to read it. */
+  functionInfo(attemptId, v) {
+    const row = this.store.get(
+      `SELECT a.id, s.id AS symbol, s.name, ad.addr, ad.size FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
+         LEFT JOIN symbol_addresses ad ON ad.symbol_id = s.id AND ad.version_id = ? WHERE a.id = ?`,
+      v.id,
+      attemptId,
+    );
+    return {
+      attemptId: row.id,
+      symbol: row.symbol,
+      name: row.name,
+      addr: row.addr != null ? '0x' + hex(row.addr) : null,
+      size: row.size,
+      annotation: `// FUNCTION: ${row.symbol}`,
+      read: [`td_disassemble ${row.symbol}`, `td_decompile ${row.symbol}`],
+    };
   }
 
   release(user, attemptId) {
     this.store.run('DELETE FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ?', attemptId, user.id);
   }
 
-  /** What a reviewer sees: the function to compare against and the submitted code, nothing machine-judged. */
-  context(attemptId) {
+  /**
+   * What a reviewer sees: the functions to compare against and the submitted code, nothing
+   * machine-judged. `attemptIds`: the functions of the batch this review covers.
+   */
+  context(attemptId, attemptIds = null) {
     const a = this.store.get('SELECT * FROM attempts WHERE id = ?', attemptId);
     if (!a) throw new HttpError(404, 'no such attempt');
     const t = this.store.get('SELECT * FROM tasks WHERE id = ?', a.task_id);
@@ -82,12 +111,16 @@ export class PeerReviews {
       v.id,
       t.symbol_id,
     );
-    const result = a.result_json ? JSON.parse(a.result_json) : {};
+    const batch = a.batch_id ? this.store.get('SELECT * FROM batches WHERE id = ?', a.batch_id) : null;
+    const batchResult = batch?.result_json ? JSON.parse(batch.result_json) : {};
+    const ids = attemptIds ?? (a.batch_id ? this.store.all(`SELECT id FROM attempts WHERE batch_id = ? AND state = 'peer_review' ORDER BY id`, a.batch_id).map((r) => r.id) : [a.id]);
     return {
       attemptId: a.id,
       required: this.required,
       confirmations: this.store.get(`SELECT COUNT(*) AS n FROM peer_reviews WHERE attempt_id = ? AND verdict = 'same'`, a.id).n,
       instructions: PEER_INSTRUCTIONS,
+      // Every function this review covers (one batch); give one verdict per attemptId.
+      functions: (ids.length ? ids : [a.id]).map((id) => this.functionInfo(id, v)),
       original: {
         symbol: s.id,
         name: s.name,
@@ -98,7 +131,7 @@ export class PeerReviews {
       },
       submission: {
         annotation: `// FUNCTION: ${s.id}`,
-        files: result.mergedFiles ?? JSON.parse(a.files_json),
+        files: batchResult.mergedFiles ?? this.store.attemptFiles(a),
         notes: untrusted(a.notes),
       },
       leaseExpires: this.store.get('SELECT expires_at FROM peer_leases WHERE attempt_id = ? ORDER BY expires_at DESC LIMIT 1', a.id)?.expires_at ?? null,
@@ -135,6 +168,8 @@ export class PeerReviews {
           `UPDATE tasks SET state = 'needs_cleanup', cleanup_cycles = cleanup_cycles + 1, preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`,
           a.user_id, now() + 6 * 3600_000, now(), a.task_id,
         );
+        // The batch merges as a whole, so it goes back with this function; confirmed ones keep their verdicts.
+        returnBatch(this.store, a.batch_id, `a peer review found a difference in ${a.task_id}`);
         return { state: 'needs_cleanup', confirmations: taken };
       }
       const confirmations = taken + 1;

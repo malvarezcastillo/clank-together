@@ -6,7 +6,7 @@ import path from 'node:path';
 import { CoffObject } from './coff.js';
 import { parseListing, normalizePath } from './listing.js';
 import { compareObject } from './compare.js';
-import { lintAnnotations } from './annotations.js';
+import { lintAnnotations, hex } from './annotations.js';
 import { lintPreprocessed } from './lint.js';
 import { compileUnits, prepareJobDir } from './build.js';
 import { scanAnnotations } from './project.js';
@@ -68,4 +68,31 @@ export function functionResults(check) {
 
 export function jobDirFor(base, name) {
   return path.join(base, name.replace(/[^A-Za-z0-9_-]/g, '_'));
+}
+
+/** `files`: the files the user asked about; annotation problems elsewhere in the repo are not theirs. */
+export function summarizeCheck(result, rec, files = null) {
+  return {
+    annotationErrors: files ? result.annotationErrors.filter((e) => files.has(e.file)) : result.annotationErrors,
+    units: result.units.map((u) => ({
+      file: u.file,
+      compiled: u.compiled,
+      log: u.compiled ? undefined : u.log,
+      lintErrors: u.lintErrors,
+      errors: u.errors,
+      unannotated: u.unannotated,
+      functions: u.functions.map((f) => ({
+        id: f.id,
+        name: f.demangled,
+        addr: f.addr != null ? '0x' + hex(f.addr) : null,
+        status: f.status,
+        score: f.score,
+        size: f.size,
+        diffRegions: f.diffRegions?.slice(0, 12),
+        relocations: f.relocations,
+      })),
+    })),
+    referenceConflicts: rec.conflicts,
+    unknownReferences: rec.unknown.map((x) => ({ symbol: x.decorated, addr: '0x' + hex(x.addr) })),
+  };
 }

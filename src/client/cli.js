@@ -2,11 +2,13 @@
 // `td` - contributor CLI for Clank Together.
 
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { Workspace } from './workspace.js';
 import * as ops from './ops.js';
 import * as ghidra from './ghidra.js';
 import { startMcp } from './mcp.js';
+import { maybeUpdate } from './update.js';
 import { hex } from '../shared/annotations.js';
 
 const HELP = `td - Clank Together contributor client
@@ -18,17 +20,23 @@ Setup
        [--toolchain <toolchain root>]         compiler layout of the project (e.g. re/toolchain)
        [--vc <VC dir>] [--sdk <SDK dir>] [--image <docker image>]
   td sync                                     pull main and refresh the symbol database snapshot
-  td ghidra install | build | sync            pinned Ghidra: install, (re)build the project, re-apply symbols
+  td ghidra download                          the server's Ghidra project (names applied, refreshed after merges)
+  td ghidra install | build | sync            pinned Ghidra: install it, analyze locally, re-apply symbols
+  td update                                   update td now (it also checks by itself once an hour)
+  td connect [--workspace <dir>]              connect your AI (registers with Claude Code, prints MCP settings)
   td mcp [--workspace <dir>]                  run the MCP server for your agent (stdio)
 
 Work
   td tasks [--state S] [--limit N]            list claimable tasks
   td claim [taskId]                           claim a task, prints its context
+  td claim --unit <file> [--limit N]          claim every open function of a source file (a batch)
+  td claim --range <start>-<end> [--limit N]  claim every open function of an address range
   td task <taskId>                            show a task's context
   td check [files...]                         compile + compare locally (default: changed files)
-  td submit <taskId> [files...] [--notes T]   submit for server verification
+  td submit [taskId...] [--notes T]           submit everything you hold (or these tasks) as one batch
+  td batch <batchId>                          state of a submitted batch, per function
   td result <attemptId>                       show a verification result
-  td heartbeat <taskId> | td release <taskId>
+  td heartbeat [taskId] | td release <taskId> extend your leases (all without an id)
   td config [ghidraHome|server <value>]       show or change workspace settings
   td symbol <id|name|0xaddr>                  look up a symbol
   td symbol new <kind> <0xaddr> [--name N]    get a stable ID for a new global/vtable/string/function
@@ -59,6 +67,29 @@ function printCheck(r) {
   for (const c of r.referenceConflicts) console.log(`conflict: ${c.message ?? c}`);
 }
 
+/** How an MCP client starts us: the td binary itself, or node + this script when run from source. */
+async function launcher() {
+  const sea = await import('node:sea').catch(() => null);
+  return sea?.isSea?.() ? { command: process.execPath, args: [] } : { command: process.execPath, args: [path.resolve(process.argv[1])] };
+}
+
+/**
+ * Registers the MCP server with Claude Code when it is installed, and prints the settings
+ * for every other MCP client.
+ */
+async function connect(dir) {
+  const ws = Workspace.find(dir);
+  const l = await launcher();
+  const args = [...l.args, 'mcp', '--workspace', ws.dir];
+  const claude = spawnSync(process.platform === 'win32' ? 'claude.cmd' : 'claude', ['mcp', 'add', '--scope', 'user', 'clank-together', '--', l.command, ...args], { encoding: 'utf8', shell: process.platform === 'win32' });
+  if (claude.status === 0) console.log('Claude Code: connected (MCP server "clank-together"). Start claude and ask it to read AGENTS.md and claim a task.');
+  else console.log('Claude Code: not found, or already connected (claude mcp list shows it).');
+  console.log(`\nOther MCP clients (Claude Desktop, Cursor, Windsurf, VS Code, Cline, Codex, Gemini CLI, ...): add this to their MCP server settings:
+${JSON.stringify({ mcpServers: { 'clank-together': { command: l.command, args } } }, null, 2)}
+
+Agents without MCP can run the td commands directly: td tasks, td claim, td check, td submit, td peer ...`);
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -74,8 +105,12 @@ async function main() {
       state: { type: 'string' },
       limit: { type: 'string', default: '20' },
       notes: { type: 'string' },
+      unit: { type: 'string' },
+      range: { type: 'string' },
+      files: { type: 'string' },
       reason: { type: 'string' },
       json: { type: 'boolean', default: false },
+      force: { type: 'boolean', default: false },
       workspace: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -83,22 +118,24 @@ async function main() {
   const [cmd, ...args] = positionals;
   if (!cmd || values.help) return print(HELP);
 
+  // Self-update (standalone binary only): at most once an hour, never fatal.
+  const serverHint = cmd === 'setup' ? args[0] : (() => { try { return Workspace.find(values.workspace ?? process.cwd()).config.server; } catch { return null; } })();
+  const updated = await maybeUpdate({ server: serverHint, force: cmd === 'update' });
+  if (updated) process.stderr.write(`${updated}\n`);
+  if (cmd === 'update') return print(updated ?? 'td is up to date');
+
   if (cmd === 'setup') {
     const [server, dir] = args;
     if (!server || !dir) throw new Error('usage: td setup <server-url> <dir> --token <API token from the website>');
     const ws = await ops.setup({ server, dir, token: values.token, exe: values.exe, toolchain: values.toolchain, runner: values.runner, vc: values.vc, sdk: values.sdk, image: values.image });
+    const remote = ws.config.runners?.[ws.project.toolchain]?.type === 'remote';
     console.log(`\nworkspace ready at ${ws.dir}
-next:
-  cd ${path.relative(process.cwd(), ws.dir) || '.'}
-  td ghidra install && td ghidra build      (one-time, takes a while)
-  td check src/...                          (self-test once there is code)
-connect your agent (any MCP client works):
-  Claude Code:   claude mcp add clank-together -- node "${path.resolve(process.argv[1])}" mcp --workspace "${ws.dir}"
-  other clients (Cursor, Windsurf, VS Code, Cline, Claude Desktop, ...), in their MCP server settings:
-${JSON.stringify({ mcpServers: { 'clank-together': { command: 'node', args: [path.resolve(process.argv[1]), 'mcp', '--workspace', ws.dir] } } }, null, 2).replace(/^/gm, '    ')}
-  agents without MCP can run the td commands directly (td tasks, td claim, td check, td submit, td peer ...).`);
+  compiling: ${remote ? "on the server (no local compiler needed); add one later with td setup ... --toolchain <dir>" : 'locally'}
+  original code: ${ws.config.ghidraHome ? 'local Ghidra' : "from the server; a local Ghidra is optional (td ghidra install && td ghidra build)"}
+connect your AI with:  td connect --workspace "${ws.dir}"`);
     return;
   }
+  if (cmd === 'connect') return connect(values.workspace ?? process.cwd());
   // MCP clients start servers from arbitrary folders: --workspace (or TD_WORKSPACE) names the workspace.
   if (cmd === 'mcp') return startMcp(values.workspace ?? process.env.TD_WORKSPACE ?? process.cwd());
 
@@ -112,12 +149,20 @@ ${JSON.stringify({ mcpServers: { 'clank-together': { command: 'node', args: [pat
         console.log(`#${String(t.id).padEnd(6)} ${t.symbol_id} ${t.addr} size ${String(t.size ?? '?').padEnd(6)} d${t.difficulty} ${t.state.padEnd(13)} best ${(t.best_score * 100).toFixed(0)}% ${t.name ?? ''} ${t.unit ?? ''}`);
       }
       return;
-    case 'claim':
+    case 'claim': {
+      // td claim [taskId] | td claim --unit <file> | td claim --range 0x140001000-0x140002000 [--limit N]
+      if (values.unit || values.range) {
+        const [start, end] = values.range ? values.range.split('-') : [];
+        return print(await ops.claimBatch(ws, { unit: values.unit ? ops.relPath(ws, values.unit) : undefined, start, end, limit: Number(values.limit) || 50 }));
+      }
       return print(await client.post('/api/tasks/claim', { taskId: args[0] ? Number(args[0]) : undefined }));
+    }
     case 'task':
       return print(await client.get(`/api/tasks/${args[0]}`));
     case 'heartbeat':
-      return print(await client.post(`/api/tasks/${args[0]}/heartbeat`));
+      return print(args[0] ? await client.post(`/api/tasks/${args[0]}/heartbeat`) : await client.post('/api/tasks/heartbeat-all'));
+    case 'batch':
+      return print(await client.get(`/api/batches/${args[0]}`));
     case 'release':
       return print(await client.post(`/api/tasks/${args[0]}/release`));
     case 'check': {
@@ -125,8 +170,11 @@ ${JSON.stringify({ mcpServers: { 'clank-together': { command: 'node', args: [pat
       return values.json ? print(r) : printCheck(r);
     }
     case 'submit': {
-      const [taskId, ...files] = args;
-      return print(await ops.submit(ws, Number(taskId), { files: files.map((f) => ops.relPath(ws, f)), notes: values.notes, agentMeta: { client: 'td-cli' } }));
+      // td submit                 everything you hold, as one batch
+      // td submit <taskId>... [--files a.cpp,b.h]
+      const ids = args.filter((x) => /^\d+$/.test(x)).map(Number);
+      const files = values.files ? values.files.split(',').map((f) => ops.relPath(ws, f)) : [];
+      return print(await ops.submit(ws, ids, { files, notes: values.notes, agentMeta: { client: 'td-cli' } }));
     }
     case 'result': {
       const r = await client.get(`/api/attempts/${args[0]}`);
@@ -166,13 +214,15 @@ ${JSON.stringify({ mcpServers: { 'clank-together': { command: 'node', args: [pat
       if (args[0] === 'install') return print(`Ghidra installed at ${await ghidra.installGhidra(ws)}`);
       if (args[0] === 'build') return void (await ghidra.buildGhidraProject(ws), print('Ghidra project built'));
       if (args[0] === 'sync') return void (await ghidra.syncGhidraProject(ws), print('symbols applied'));
-      throw new Error('usage: td ghidra install|build|sync');
+      if (args[0] === 'download') {
+        const r = await ghidra.downloadGhidraProject(ws, { force: values.force });
+        return print(r.updated ? `Ghidra project of ${r.info.version} downloaded${ws.config.ghidraHome ? '' : ' (open it with Ghidra 11.2.1, or run td ghidra install)'}` : 'the Ghidra project is up to date');
+      }
+      throw new Error('usage: td ghidra install|download|build|sync');
     case 'decompile':
     case 'disasm': {
-      const s = ws.findSymbol(args[0]);
-      const a = s?.addr ?? (/^0x/i.test(args[0] ?? '') ? Number.parseInt(args[0], 16) : null);
-      if (a == null) throw new Error(`unknown symbol ${args[0]}`);
-      return print(cmd === 'decompile' ? await ghidra.decompile(ws, a) : await ghidra.disassemble(ws, a));
+      // Local Ghidra if configured, otherwise the server's export.
+      return print(await ops.original(ws, args[0], cmd === 'decompile' ? 'c' : 'asm'));
     }
     default:
       print(HELP);

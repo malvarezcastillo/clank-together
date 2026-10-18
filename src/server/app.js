@@ -11,10 +11,14 @@ import { Tasks } from './tasks.js';
 import { Verifier } from './verify.js';
 import { Merger } from './merge.js';
 import { PeerReviews } from './peer.js';
+import { Originals } from './original.js';
+import { downloadsDir, installPs1, installSh } from './install.js';
+import { ServerGhidra } from './ghidra.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
-import { DEFAULT_LIMITS } from '../shared/lint.js';
+import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
+import { summarizeCheck } from '../shared/check.js';
 import { hex } from '../shared/annotations.js';
 
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'web');
@@ -30,6 +34,8 @@ export const DEFAULT_CONFIG = {
   runners: { msvc2010: { type: 'docker', image: 'togetherdecomp/msvc2010:1', memory: '1g', cpus: 1 } },
   allowUnsandboxedRunners: false,
   pushRemote: null,
+  ghidraHome: null,
+  ghidraRefreshMinutes: 30,
   distributeTarget: false,
   gitCloneUrl: null,
   gitWebUrl: null,
@@ -66,16 +72,20 @@ export function openServer(dataDir, { log = console } = {}) {
   }
 
   const tasks = new Tasks({ store, config, repo, project });
-  const verifier = new Verifier({ store, config, repo, project, tasks, getPe, log });
   const peers = new PeerReviews({ store, project });
+  const verifier = new Verifier({ store, config, repo, project, tasks, getPe, peers, log });
   const merger = new Merger({ store, config, repo, project, tasks, verifier, getPe, peers, log });
   const accounts = new Accounts(store);
-  return { config, store, repo, project, tasks, verifier, merger, getPe, accounts, peers };
+  const originals = new Originals({ store });
+  const ghidra = new ServerGhidra({ config, store, originals, log });
+  merger.onMerged = (commit) => ghidra.scheduleRefresh(commit);
+  return { config, store, repo, project, tasks, verifier, merger, getPe, accounts, peers, originals, ghidra };
 }
 
 export function createApp(ctx) {
   const { config, store, repo, project, tasks, merger, accounts, peers } = ctx;
   const router = new Router();
+  downloadsRoot = downloadsDir(config);
   const submitLimiter = new RateLimiter(config.submitsPerHour, 3600_000);
   const symbolLimiter = new RateLimiter(120, 3600_000);
   const authFailLimiter = new RateLimiter(60, 600_000);
@@ -203,7 +213,8 @@ export function createApp(ctx) {
 
   router.on('GET', '/api/me', ({ req }) => {
     const user = auth(req);
-    return { name: user.name, role: user.role, via: user.via, leases: tasks.leasesOf(user.id) };
+    const leases = tasks.leasesOf(user.id);
+    return { name: user.name, role: user.role, via: user.via, leases, leasedAllowedPaths: leases.length ? tasks.allowedPathsForTasks(leases) : [] };
   });
 
   router.on('POST', '/api/me/password', async ({ req }) => {
@@ -265,22 +276,85 @@ export function createApp(ctx) {
     submitLimiter.check(user.id);
     const taskId = intParam(params.id);
     const body = await readJson(req);
-    const t = tasks.requireLease(user, taskId);
+    const r = submitBatch(user, [taskId], body);
+    return { attemptId: r.attempts[0].attemptId, batchId: r.batchId, state: 'queued' };
+  });
+
+  /** Validates a submission body and queues it as one batch for the given tasks. */
+  const submitBatch = (user, taskIds, body) => {
     if (typeof body.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(body.baseCommit)) throw new HttpError(400, 'baseCommit must be a full commit hash');
     if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
-    const notes = body.notes ? String(body.notes).slice(0, DEFAULT_LIMITS.maxNotesBytes) : null;
-    const meta = body.agentMeta ? JSON.stringify(body.agentMeta).slice(0, 1000) : null;
-    const id = store.tx(() => {
-      const r = store.run(
-        `INSERT INTO attempts (task_id, user_id, base_commit, files_json, notes, agent_meta, env_digest, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
-        t.id, user.id, body.baseCommit, JSON.stringify(body.files), notes, meta, body.envDigest ? String(body.envDigest).slice(0, 200) : null, now(),
-      );
-      store.run(`UPDATE tasks SET state = 'verifying', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), t.id);
-      store.event('submit', user.id, { task: t.id, attempt: Number(r.lastInsertRowid) });
-      return Number(r.lastInsertRowid);
+    const r = tasks.submitBatch(user, {
+      taskIds,
+      baseCommit: body.baseCommit,
+      files: body.files,
+      notes: body.notes ? String(body.notes).slice(0, DEFAULT_LIMITS.maxNotesBytes) : null,
+      agentMeta: body.agentMeta ? JSON.stringify(body.agentMeta).slice(0, 1000) : null,
+      envDigest: body.envDigest ? String(body.envDigest).slice(0, 200) : null,
     });
     ctx.verifier.pump();
-    return { attemptId: id, state: 'queued' };
+    return r;
+  };
+
+  // Bulk work: claim every open function of a unit (source file) or an address range, submit the
+  // file once. Verified with one compile; merged as a whole.
+  router.on('POST', '/api/tasks/claim-batch', async ({ req }) => {
+    const user = auth(req);
+    const body = await readJson(req, 4096);
+    const hexOrNull = (x) => (x == null ? null : typeof x === 'string' ? Number.parseInt(x, 16) : Number(x));
+    const ids = tasks.claimBatch(user, { unit: body.unit ? String(body.unit) : null, start: hexOrNull(body.start), end: hexOrNull(body.end), limit: body.limit ? Number(body.limit) : 50 });
+    const v = store.currentVersion();
+    const ph = ids.map(() => '?').join(',');
+    const rows = store.all(
+      `SELECT t.id AS task, s.id AS symbol, s.name, s.unit, a.addr, a.size, t.state, t.best_score FROM tasks t JOIN symbols s ON s.id = t.symbol_id
+         LEFT JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ? WHERE t.id IN (${ph}) ORDER BY a.addr`,
+      v.id, ...ids,
+    );
+    return {
+      tasks: rows.map((r) => ({ ...r, addr: r.addr != null ? '0x' + hex(r.addr) : null, annotation: `// FUNCTION: ${r.symbol}` })),
+      allowedPaths: tasks.allowedPathsForTasks(ids),
+      baseCommit: repo.head(),
+      note: 'Write or fix every function, check, then submit them together (td submit --all). Context of one task: GET /api/tasks/<id>.',
+    };
+  });
+
+  router.on('POST', '/api/batches', async ({ req }) => {
+    const user = auth(req);
+    submitLimiter.check(user.id);
+    const body = await readJson(req, 8 * 1024 * 1024);
+    const r = submitBatch(user, (body.taskIds ?? []).map((x) => intParam(x)), body);
+    return { ...r, state: 'queued' };
+  });
+
+  router.on('GET', '/api/batches/:id', ({ req, params }) => {
+    auth(req);
+    const b = store.get('SELECT b.*, u.name AS author FROM batches b JOIN users u ON u.id = b.user_id WHERE b.id = ?', intParam(params.id));
+    if (!b) throw new HttpError(404, 'no such batch');
+    const result = b.result_json ? JSON.parse(b.result_json) : {};
+    const attempts = store.all(
+      `SELECT a.id, a.task_id, t.symbol_id, s.name, a.state, a.score, a.result_json FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id WHERE a.batch_id = ? ORDER BY a.id`,
+      b.id,
+    );
+    return {
+      id: b.id,
+      author: b.author,
+      state: b.state,
+      baseCommit: b.base_commit,
+      mergedCommit: b.merged_commit,
+      returned: result.returned ?? null,
+      mergeFailure: result.mergeFailure ?? null,
+      changedHeaders: result.changedHeaders ?? [],
+      changedOutside: result.outside ?? [],
+      functions: attempts.map((a) => {
+        const fb = a.result_json ? JSON.parse(a.result_json).feedback : null;
+        return { attemptId: a.id, taskId: a.task_id, symbol: a.symbol_id, name: a.name, state: a.state, score: a.score, summary: fb?.summary ?? null, status: fb?.target?.status ?? null };
+      }),
+    };
+  });
+
+  router.on('POST', '/api/tasks/heartbeat-all', ({ req }) => {
+    const user = auth(req);
+    return tasks.heartbeatAll(user);
   });
 
   router.on('GET', '/api/attempts/:id', ({ req, params }) => {
@@ -288,6 +362,8 @@ export function createApp(ctx) {
     const a = store.get('SELECT a.*, u.name AS author FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.id = ?', intParam(params.id));
     if (!a) throw new HttpError(404, 'no such attempt');
     const result = a.result_json ? JSON.parse(a.result_json) : null;
+    const batch = a.batch_id ? store.get('SELECT result_json FROM batches WHERE id = ?', a.batch_id) : null;
+    const batchResult = batch?.result_json ? JSON.parse(batch.result_json) : {};
     const isReviewer = hasRole(user, 'reviewer');
     return {
       id: a.id,
@@ -300,10 +376,11 @@ export function createApp(ctx) {
       finishedAt: a.finished_at,
       notes: a.notes,
       feedback: result?.feedback ?? null,
-      mergeFailure: result?.mergeFailure ?? null,
-      changedHeaders: result?.changedHeaders ?? [],
-      files: JSON.parse(a.files_json),
-      mergedFiles: isReviewer ? result?.mergedFiles ?? null : undefined,
+      batchId: a.batch_id,
+      mergeFailure: batchResult.mergeFailure ?? result?.mergeFailure ?? null,
+      changedHeaders: batchResult.changedHeaders ?? result?.changedHeaders ?? [],
+      files: store.attemptFiles(a),
+      mergedFiles: isReviewer ? batchResult.mergedFiles ?? result?.mergedFiles ?? null : undefined,
       reviews: store.all('SELECT r.action, r.comment, r.created_at, u.name AS reviewer FROM reviews r JOIN users u ON u.id = r.reviewer_id WHERE r.attempt_id = ?', a.id),
       peerReviews: peers.verdicts(a.id),
       peerRequired: peers.required,
@@ -332,6 +409,67 @@ export function createApp(ctx) {
       throw new HttpError(409, `0x${hex(addr)} is already ${r.symbol.id} (${r.symbol.kind})`);
     }
     return { id: r.symbol.id, kind: r.symbol.kind, created: r.created, annotation: `// ${{ function: 'FUNCTION', global: 'GLOBAL', vtable: 'VTABLE', string: 'STRING' }[kind]}: ${r.symbol.id}` };
+  });
+
+  // --- the original function (assembly, pseudocode) for contributors without a local Ghidra.
+  // Derived from the exe, so approved accounts only, like the exe itself.
+  router.on('GET', '/api/original/:symbol', async ({ req, params }) => {
+    auth(req);
+    return ctx.originals.get(params.symbol);
+  });
+
+  // --- the server's Ghidra project of the current version (td ghidra download). Derived from the
+  // exe, so approved accounts only.
+  router.on('GET', '/api/ghidra-project', ({ req }) => {
+    auth(req);
+    const info = ctx.ghidra.info();
+    if (!info) throw new HttpError(404, 'no Ghidra project has been built on this server yet');
+    return { ...info, download: `${config.publicUrl}/api/ghidra-project/download` };
+  });
+
+  router.on('GET', '/api/ghidra-project/download', ({ req, res }) => {
+    auth(req);
+    const file = ctx.ghidra.packagePath();
+    if (!file || !fs.existsSync(file)) throw new HttpError(404, 'no Ghidra project has been built on this server yet');
+    res.writeHead(200, { 'content-type': 'application/gzip', 'content-length': fs.statSync(file).size, 'content-disposition': 'attachment; filename="ghidra-project.tar.gz"' });
+    fs.createReadStream(file).pipe(res);
+    return undefined;
+  });
+
+  // --- remote check: compile and compare in the server's sandbox without submitting
+  // (contributors without a local MSVC toolchain). Same static gate as a submission.
+
+  const checkLimiter = new RateLimiter(config.checksPerHour ?? 60, 3600_000);
+  let checksRunning = 0;
+  const checkWaiters = [];
+  const withCheckSlot = async (fn) => {
+    const max = config.remoteCheckConcurrency ?? 2;
+    if (checksRunning >= max) await new Promise((r) => checkWaiters.push(r));
+    checksRunning++;
+    try {
+      return await fn();
+    } finally {
+      checksRunning--;
+      checkWaiters.shift()?.();
+    }
+  };
+
+  router.on('POST', '/api/check', async ({ req }) => {
+    const user = auth(req);
+    checkLimiter.check(user.id);
+    const body = await readJson(req);
+    if (typeof body.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(body.baseCommit)) throw new HttpError(400, 'baseCommit must be a full commit hash');
+    if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
+    const allowed = [...project.sourceDirs.map((d) => `${d}/**`)];
+    const lintErrors = lintSubmission(body.files, { allowedPaths: allowed, limits: project.lintLimits, allowedPragmas: project.allowedPragmas });
+    if (lintErrors.length) return { gate: 'rejected', lintErrors };
+    if (!repo.isAncestor(body.baseCommit)) throw new HttpError(409, 'your base commit is not part of main; run td sync');
+    const merged = repo.mergeOntoHead(body.baseCommit, body.files);
+    if (merged.conflicts.length) return { gate: 'conflict', conflicts: merged.conflicts };
+    return withCheckSlot(async () => {
+      const { check, rec } = await ctx.verifier.check(merged.files, `check-${user.id}-${Date.now()}`);
+      return { gate: 'ok', head: repo.head(), ...summarizeCheck(check, rec, new Set(Object.keys(merged.files))) };
+    });
   });
 
   // --- peer review (agents, API token or session)
@@ -369,7 +507,7 @@ export function createApp(ctx) {
   router.on('GET', '/api/review/queue', ({ req }) => {
     const user = auth(req, { role: 'reviewer', session: true });
     return store.all(
-      `SELECT a.id, a.task_id, a.score, a.created_at, a.finished_at, u.name AS author, t.symbol_id, s.name,
+      `SELECT a.id, a.batch_id, a.task_id, a.score, a.created_at, a.finished_at, u.name AS author, t.symbol_id, s.name,
               (SELECT COUNT(*) FROM reviews r WHERE r.attempt_id = a.id AND r.action = 'approve') AS approvals,
               (SELECT COUNT(*) FROM reviews r WHERE r.attempt_id = a.id AND r.reviewer_id = ?) AS reviewed_by_me
          FROM attempts a JOIN users u ON u.id = a.user_id JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
@@ -383,6 +521,15 @@ export function createApp(ctx) {
     const body = await readJson(req, 16 * 1024);
     const r = merger.review(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null);
     if (r.state === 'approved') setImmediate(() => merger.pump());
+    return r;
+  });
+
+  // One click for a whole batch: every function of it that waits for a human.
+  router.on('POST', '/api/batches/:id/review', async ({ req, params }) => {
+    const user = auth(req, { role: 'reviewer', session: true });
+    const body = await readJson(req, 16 * 1024);
+    const r = merger.reviewBatch(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null);
+    setImmediate(() => merger.pump());
     return r;
   });
 
@@ -425,6 +572,13 @@ export function createApp(ctx) {
       if (url.pathname.startsWith('/repo.git/')) {
         return serveGit(req, res, { projectRoot: config.dataDir, subPath: '/repo' + url.pathname.slice('/repo.git'.length), query: url.searchParams });
       }
+      if (req.method === 'GET' && (url.pathname === '/install.ps1' || url.pathname === '/install.sh')) {
+        const script = url.pathname.endsWith('.ps1') ? installPs1(config, project) : installSh(config, project);
+        if (!script) throw new HttpError(503, 'the td binaries are not published on this server yet');
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+        return res.end(script);
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/download/')) return serveDownload(url.pathname.slice(10), res);
       if (req.method === 'GET' && !url.pathname.startsWith('/api/')) return serveStatic(url.pathname, res);
       const m = router.match(req.method, url.pathname);
       if (!m) throw new HttpError(404, 'not found');
@@ -440,6 +594,19 @@ export function createApp(ctx) {
     }
   };
   return http.createServer(handler);
+}
+
+// Public downloads of the td binaries (tools/build-td output copied to <dataDir>/downloads).
+const DOWNLOADS = new Set(['td-windows-x64.exe', 'td-linux-x64', 'SHA256SUMS']);
+let downloadsRoot = null;
+function serveDownload(name, res) {
+  const file = DOWNLOADS.has(name) && downloadsRoot ? path.join(downloadsRoot, name) : null;
+  if (!file || !fs.existsSync(file)) {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    return res.end('not found');
+  }
+  res.writeHead(200, { 'content-type': name === 'SHA256SUMS' ? 'text/plain' : 'application/octet-stream', 'content-length': fs.statSync(file).size, 'content-disposition': `attachment; filename="${name}"`, 'x-content-type-options': 'nosniff' });
+  fs.createReadStream(file).pipe(res);
 }
 
 const STATIC = { '/': 'index.html', '/review': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg' };

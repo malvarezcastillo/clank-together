@@ -180,10 +180,22 @@ $('token-form').addEventListener('submit', async (e) => {
     const t = await post('/api/me/tokens', formData(e.target));
     e.target.reset();
     $('new-token-value').textContent = t.token;
+    const origin = location.origin;
+    $('install-win').textContent = `$env:TD_TOKEN='${t.token}'; irm ${origin}/install.ps1 | iex`;
+    $('install-linux').textContent = `curl -fsSL ${origin}/install.sh | TD_TOKEN=${t.token} sh`;
     $('new-token').hidden = false;
     await loadTokens();
   } catch (err) {
     alert(err.message);
+  }
+});
+
+$('copy-install').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText($('install-win').textContent);
+    $('copy-install').textContent = 'Copied';
+  } catch {
+    $('copy-install').textContent = 'Select the line and copy it';
   }
 });
 
@@ -264,13 +276,41 @@ async function loadQueue() {
   const q = await api('/api/review/queue');
   const body = $('queue-body');
   body.replaceChildren();
-  if (!q.length) return body.append(el('p', 'Nothing waiting for review.', 'muted'));
-  body.append(
-    table(
-      ['Attempt', 'Symbol', 'Name', 'Author', 'Score', 'Approvals', ''],
-      q.map((a) => [`#${a.id}`, a.symbol_id, a.name || '', a.author, `${(a.score * 100).toFixed(1)}%`, a.approvals, button(a.reviewed_by_me ? 'Reviewed' : 'Open', () => openAttempt(a.id))]),
-    ),
-  );
+  if (!q.length) return body.append(el('p', 'Nothing waiting for review. Byte-identical work merges on its own; this queue only holds peer-confirmed functions.', 'muted'));
+  // One block per batch: the functions three peers confirmed, approved together with one click.
+  const batches = new Map();
+  for (const a of q) {
+    const key = a.batch_id ?? `a${a.id}`;
+    if (!batches.has(key)) batches.set(key, []);
+    batches.get(key).push(a);
+  }
+  for (const [key, items] of batches) {
+    const head = el('div', null, 'batch-head');
+    head.append(el('strong', typeof key === 'number' ? `Batch #${key}` : `Attempt #${items[0].id}`), el('span', ` by ${items[0].author} · ${items.length} function${items.length > 1 ? 's' : ''} confirmed by peers`, 'muted'));
+    if (typeof key === 'number') {
+      head.append(
+        button(
+          'Approve batch',
+          async () => {
+            try {
+              await api(`/api/batches/${key}/review`, { method: 'POST', body: JSON.stringify({ action: 'approve' }) });
+              await loadQueue();
+            } catch (e) {
+              alert(e.message);
+            }
+          },
+          'primary',
+        ),
+      );
+    }
+    body.append(head);
+    body.append(
+      table(
+        ['Attempt', 'Symbol', 'Name', 'Score', 'Approvals', ''],
+        items.map((a) => [`#${a.id}`, a.symbol_id, a.name || '', `${(a.score * 100).toFixed(1)}%`, a.approvals, button(a.reviewed_by_me ? 'Reviewed' : 'Open', () => openAttempt(a.id))]),
+      ),
+    );
+  }
 }
 
 async function openAttempt(id) {

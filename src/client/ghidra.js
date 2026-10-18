@@ -13,7 +13,22 @@ import { hex } from '../shared/annotations.js';
 import { loadToolchainLock } from '../shared/project.js';
 import { Api } from './api.js';
 
-const SCRIPTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'ghidra_scripts');
+const SCRIPT_NAMES = ['ApplySymbols.java', 'DecompileAt.java', 'DisassembleAt.java', 'ExportFunctions.java', 'ExportOriginals.java'];
+
+/**
+ * The Ghidra scripts: next to the sources when run from a checkout or npm install; extracted
+ * into the workspace when td runs as a single executable (they are embedded as assets).
+ */
+async function scriptsDir(ws) {
+  const sea = await import('node:sea').catch(() => null);
+  if (sea?.isSea?.()) {
+    const dir = path.join(ws.tdDir, 'ghidra_scripts');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of SCRIPT_NAMES) fs.writeFileSync(path.join(dir, name), sea.getAsset(name, 'utf8'));
+    return dir;
+  }
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'ghidra_scripts');
+}
 const PROJECT_NAME = 'td';
 const PROGRAM = 'target.exe';
 
@@ -33,7 +48,7 @@ async function runHeadless(ws, args, timeoutMs) {
   const exe = headless(ws);
   const projDir = path.join(ws.tdDir, 'ghidra');
   fs.mkdirSync(projDir, { recursive: true });
-  const full = [projDir, PROJECT_NAME, ...args, '-scriptPath', SCRIPTS_DIR];
+  const full = [projDir, PROJECT_NAME, ...args, '-scriptPath', await scriptsDir(ws)];
   // .bat files need a shell on Windows.
   const r = os.platform() === 'win32' ? await run('cmd.exe', ['/d', '/s', '/c', exe, ...full], { timeoutMs }) : await run(exe, full, { timeoutMs });
   if (r.code !== 0) throw new Error(`Ghidra failed (exit ${r.code}):\n${r.output.slice(-4000)}`);
@@ -103,4 +118,29 @@ export function decompile(ws, addr) {
 
 export function disassemble(ws, addr) {
   return query(ws, 'DisassembleAt.java', ['0x' + hex(addr)]);
+}
+
+/**
+ * Downloads the server's Ghidra project (built and refreshed on the server, with the shared symbol
+ * names) into the workspace, replacing the local one. Nothing happens when it is up to date.
+ */
+export async function downloadGhidraProject(ws, { force = false } = {}) {
+  const client = new Api(ws.config.server, ws.config.token);
+  const info = await client.get('/api/ghidra-project');
+  if (!force && ws.config.ghidraPackage === info.sha256 && fs.existsSync(path.join(ws.tdDir, 'ghidra', `${PROJECT_NAME}.gpr`))) {
+    return { updated: false, info };
+  }
+  const tgz = path.join(ws.tdDir, 'ghidra-project.tar.gz');
+  console.error(`downloading the Ghidra project of ${info.version} (${(info.size / 1048576).toFixed(0)} MB)...`);
+  await client.download(info.download, tgz, info.sha256);
+  const projDir = path.join(ws.tdDir, 'ghidra');
+  fs.rmSync(projDir, { recursive: true, force: true });
+  fs.mkdirSync(projDir, { recursive: true });
+  const tar = os.platform() === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'tar.exe') : 'tar';
+  const r = await run(tar, ['-xzf', tgz, '-C', projDir], { timeoutMs: 1800_000 });
+  if (r.code !== 0) throw new Error(`could not unpack the Ghidra project: ${r.output}`);
+  fs.rmSync(tgz, { force: true });
+  ws.config.ghidraPackage = info.sha256;
+  ws.save();
+  return { updated: true, info };
 }

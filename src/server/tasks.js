@@ -75,10 +75,46 @@ export class Tasks {
     return this.store.all(`SELECT id FROM tasks WHERE lease_user = ? AND state = 'leased'`, userId).map((r) => r.id);
   }
 
+  /** How many tasks (functions) one account may hold at once, single claims and batches together. */
+  get maxLeased() {
+    return this.config.maxLeasedTasks ?? 200;
+  }
+
+  /**
+   * Claims several tasks at once: every claimable function of a unit (source file) or of an
+   * address range in the current version, up to `limit`. They are submitted together as a batch.
+   */
+  claimBatch(user, { unit = null, start = null, end = null, limit = 50 } = {}) {
+    if (!unit && (start == null || end == null)) throw new HttpError(400, 'give a unit (source file) or an address range (start, end)');
+    return this.store.tx(() => {
+      const held = this.leasesOf(user.id).length;
+      const room = Math.min(Math.max(1, limit | 0), 200, this.maxLeased - held);
+      if (room <= 0) throw new HttpError(409, `you already hold ${held} tasks; submit or release some first`);
+      const v = this.store.currentVersion();
+      const ph = CLAIMABLE.map(() => '?').join(',');
+      const where = unit ? 's.unit = ?' : 'a.addr >= ? AND a.addr < ?';
+      const args = unit ? [unit] : [start, end];
+      const rows = this.store.all(
+        `SELECT t.id FROM tasks t JOIN symbols s ON s.id = t.symbol_id
+           JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ?
+          WHERE t.state IN (${ph}) AND ${where}
+            AND (t.preferred_user IS NULL OR t.preferred_user = ? OR t.preferred_until < ?)
+          ORDER BY a.addr LIMIT ?`,
+        v.id, ...CLAIMABLE, ...args, user.id, now(), room,
+      );
+      if (!rows.length) throw new HttpError(404, unit ? `no claimable tasks in ${unit}` : 'no claimable tasks in that range');
+      const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
+      const head = this.repo.head();
+      for (const r of rows) this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, head, now(), r.id);
+      this.store.event('claim_batch', user.id, { tasks: rows.length, unit, start, end });
+      return rows.map((r) => r.id);
+    });
+  }
+
   claim(user, taskId) {
     return this.store.tx(() => {
-      const max = this.config.maxLeasesPerUser ?? 3;
-      if (this.leasesOf(user.id).length >= max) throw new HttpError(409, `you already hold ${max} leases; submit or release one first`);
+      const max = this.maxLeased;
+      if (this.leasesOf(user.id).length >= max) throw new HttpError(409, `you already hold ${max} tasks; submit or release some first`);
       let t;
       if (taskId) {
         t = this.get(taskId);
@@ -114,10 +150,57 @@ export class Tasks {
     return expires;
   }
 
+  /** Extends every lease the account holds (an agent working through a batch). */
+  heartbeatAll(user) {
+    const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
+    const r = this.store.run(`UPDATE tasks SET lease_expires = ?, updated_at = ? WHERE lease_user = ? AND state = 'leased'`, expires, now(), user.id);
+    return { leases: Number(r.changes), leaseExpires: expires };
+  }
+
   release(user, taskId) {
     const t = this.requireLease(user, taskId);
     this.reopen(t.id);
     this.store.event('release', user.id, { task: t.id });
+  }
+
+  /**
+   * One submission for one or more leased tasks: the files once, an attempt per task. Verified
+   * with a single compile and merged as a whole (see Verifier.verifyBatch, Merger).
+   */
+  submitBatch(user, { taskIds, baseCommit, files, notes = null, agentMeta = null, envDigest = null }) {
+    const ids = [...new Set((taskIds ?? []).map(Number))];
+    if (!ids.length) throw new HttpError(400, 'taskIds must list the tasks this submission covers');
+    if (ids.length > 200) throw new HttpError(400, 'at most 200 tasks per submission');
+    return this.store.tx(() => {
+      for (const id of ids) this.requireLease(user, id);
+      const b = this.store.run(
+        `INSERT INTO batches (user_id, base_commit, files_json, notes, agent_meta, env_digest, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,
+        user.id, baseCommit, JSON.stringify(files), notes, agentMeta, envDigest, now(),
+      );
+      const batchId = Number(b.lastInsertRowid);
+      const attempts = [];
+      for (const id of ids) {
+        const r = this.store.run(
+          `INSERT INTO attempts (task_id, user_id, base_commit, files_json, notes, agent_meta, env_digest, state, batch_id, created_at) VALUES (?, ?, ?, '{}', ?, ?, ?, 'queued', ?, ?)`,
+          id, user.id, baseCommit, notes, agentMeta, envDigest, batchId, now(),
+        );
+        attempts.push({ taskId: id, attemptId: Number(r.lastInsertRowid) });
+        this.store.run(`UPDATE tasks SET state = 'verifying', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), id);
+      }
+      this.store.event('submit', user.id, { batch: batchId, tasks: ids.length });
+      return { batchId, attempts };
+    });
+  }
+
+  /** Allowed paths of a set of tasks: their unit files plus the project headers. */
+  allowedPathsForTasks(taskIds) {
+    const out = new Set();
+    for (const id of taskIds) {
+      const t = this.get(id);
+      const sym = this.store.get('SELECT * FROM symbols WHERE id = ?', t.symbol_id);
+      for (const p of this.allowedPaths(sym)) out.add(p);
+    }
+    return [...out];
   }
 
   /** Returns a task to the pool, keeping its attempt history. */
@@ -164,8 +247,8 @@ export class Tasks {
     );
     let bestFiles = null;
     if (t.best_attempt) {
-      const best = this.store.get('SELECT files_json FROM attempts WHERE id = ?', t.best_attempt);
-      bestFiles = best ? JSON.parse(best.files_json) : null;
+      const best = this.store.get('SELECT * FROM attempts WHERE id = ?', t.best_attempt);
+      bestFiles = best ? this.store.attemptFiles(best) : null;
     }
     const neighbours = sym.unit
       ? this.store.all(

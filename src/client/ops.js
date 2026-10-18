@@ -6,12 +6,13 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Api } from './api.js';
 import { Workspace, sha256File } from './workspace.js';
-import { checkUnits } from '../shared/check.js';
+import { checkUnits, summarizeCheck } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { lintSubmission, matchesAny } from '../shared/lint.js';
 import { isUnit, loadToolchainLock } from '../shared/project.js';
 import { hex } from '../shared/annotations.js';
 import { run } from '../shared/build.js';
+import { rememberServer } from './update.js';
 
 export function api(ws) {
   return new Api(ws.config.server, ws.config.token);
@@ -43,6 +44,7 @@ export async function setup({ server, dir, token, exe, runner, vc, sdk, image, t
   }
   const ws = new Workspace(abs);
   ws.config.server = server.replace(/\/+$/, '');
+  rememberServer(ws.config.server);
   ws.config.token = useToken;
   ws.config.user = me.name;
   fs.mkdirSync(ws.tdDir, { recursive: true });
@@ -60,11 +62,11 @@ export async function setup({ server, dir, token, exe, runner, vc, sdk, image, t
   log(`target verified: sha256 ${info.version.sha256}`);
 
   const lock = loadToolchainLock(abs)[info.toolchain] ?? {};
-  ws.config.runners = { [info.toolchain]: runnerConfig({ runner, vc, sdk, image: image ?? lock.image, toolchain, project: ws.project }) };
+  ws.config.runners = { [info.toolchain]: runnerConfig({ runner, vc, sdk, image: image ?? (runner === 'docker' ? lock.image : undefined), toolchain, project: ws.project }) };
   ws.save();
   await refreshSymbols(ws);
   ws.config.envDigest = await computeEnvDigest(ws, info.toolchain);
-  if (lock.clSha256 && ws.config.envDigest !== lock.clSha256) {
+  if (lock.clSha256 && ws.config.envDigest && ws.config.envDigest !== lock.clSha256) {
     log(`WARNING: your cl.exe (sha256 ${ws.config.envDigest}) is not the pinned one (${lock.clSha256}); results may differ from the server`);
   }
   ws.save();
@@ -90,7 +92,10 @@ function runnerConfig({ runner, vc, sdk, image, toolchain, project }) {
     if (type === 'wine') return { type, clPath, wine: 'wine', toolchainRoot: root, jobs, env: { WINEDEBUG: '-all' } };
     return { type, clPath, toolchainRoot: root, jobs, env: { PATH: `${path.dirname(clPath)};${process.env.PATH ?? ''}` } };
   }
+  // Nothing local given: compile on the server (remote check).
+  if (!runner && !vc && !image) return { type: 'remote' };
   const type = runner ?? (os.platform() === 'win32' && vc ? 'native' : 'docker');
+  if (type === 'remote') return { type };
   if (type === 'docker') {
     if (!image) throw new Error('no docker image configured; pass --image or set it in toolchain.lock.json');
     return { type, image };
@@ -108,6 +113,7 @@ function runnerConfig({ runner, vc, sdk, image, toolchain, project }) {
 async function computeEnvDigest(ws, toolchain) {
   const r = ws.config.runners?.[toolchain];
   if (!r) return null;
+  if (r.type === 'remote') return null; // the server's compiler is the pinned one
   if (r.type !== 'docker') return fs.existsSync(r.clPath) ? sha256File(r.clPath) : null;
   const out = await run('docker', ['run', '--rm', '--network', 'none', r.image, 'sha256sum', '/opt/msvc/bin/cl.exe'], { timeoutMs: 120_000 });
   return /^[0-9a-f]{64}/.exec(out.output)?.[0] ?? null;
@@ -130,7 +136,13 @@ export async function sync(ws) {
     pulled = false;
   }
   const snap = await refreshSymbols(ws);
-  return { head: ws.head(), fastForwarded: pulled, symbols: snap.symbols.length, note: pulled ? null : 'could not fast-forward (local commits or conflicting changes); merge origin/main yourself' };
+  // A newer Ghidra project on the server is only announced (it is a large download).
+  let ghidra = null;
+  try {
+    const g = await api(ws).get('/api/ghidra-project');
+    if (g.sha256 !== ws.config.ghidraPackage) ghidra = `a newer Ghidra project is available (${(g.size / 1048576).toFixed(0)} MB): td ghidra download`;
+  } catch {}
+  return { head: ws.head(), fastForwarded: pulled, symbols: snap.symbols.length, ghidra, note: pulled ? null : 'could not fast-forward (local commits or conflicting changes); merge origin/main yourself' };
 }
 
 /** Compiles and compares locally with the same pipeline the server uses. */
@@ -139,6 +151,8 @@ export async function check(ws, files) {
   const targets = files?.length ? files : ws.changedFiles();
   const units = targets.filter(isUnit);
   if (!units.length) throw new Error('nothing to check: pass .cpp files or modify some');
+  const runner = ws.config.runners?.[project.toolchain];
+  if (!runner || runner.type === 'remote') return remoteCheck(ws, targets);
   const result = await checkUnits({
     repoDir: ws.dir,
     jobDir: path.join(ws.tdDir, 'build'),
@@ -150,50 +164,72 @@ export async function check(ws, files) {
     runners: ws.config.runners,
   });
   const rec = reconcile(result, ws.symbols);
-  return summarize(result, rec, new Set(targets));
+  return summarizeCheck(result, rec, new Set(targets));
 }
 
-/** `files`: the files the user asked about; annotation problems elsewhere in the repo are not theirs. */
-export function summarize(result, rec, files = null) {
-  return {
-    annotationErrors: files ? result.annotationErrors.filter((e) => files.has(e.file)) : result.annotationErrors,
-    units: result.units.map((u) => ({
-      file: u.file,
-      compiled: u.compiled,
-      log: u.compiled ? undefined : u.log,
-      lintErrors: u.lintErrors,
-      errors: u.errors,
-      unannotated: u.unannotated,
-      functions: u.functions.map((f) => ({
-        id: f.id,
-        name: f.demangled,
-        addr: f.addr != null ? '0x' + hex(f.addr) : null,
-        status: f.status,
-        score: f.score,
-        size: f.size,
-        diffRegions: f.diffRegions?.slice(0, 12),
-        relocations: f.relocations,
-      })),
-    })),
-    referenceConflicts: rec.conflicts,
-    unknownReferences: rec.unknown.map((x) => ({ symbol: x.decorated, addr: '0x' + hex(x.addr) })),
-  };
+/**
+ * Compiles and compares on the server (its sandboxed compiler), for contributors without a
+ * local toolchain. Sends the changed files and the commit they are based on; nothing is submitted.
+ */
+async function remoteCheck(ws, targets) {
+  const files = {};
+  for (const f of new Set([...targets, ...ws.changedFiles()])) {
+    const abs = path.join(ws.dir, f);
+    if (fs.existsSync(abs) && /\.(c|cc|cpp|cxx|h|hpp|inl)$/i.test(f)) files[f.replace(/\\/g, '/')] = fs.readFileSync(abs, 'utf8');
+  }
+  const r = await api(ws).post('/api/check', { baseCommit: ws.head(), files });
+  if (r.gate === 'rejected') {
+    const e = new Error('the static gate rejects this code:\n' + r.lintErrors.map((x) => `  ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${x.message}`).join('\n'));
+    e.details = r.lintErrors;
+    throw e;
+  }
+  if (r.gate === 'conflict') throw new Error(`your changes conflict with newer work on main (${r.conflicts.join(', ')}); run td sync and merge`);
+  return { ...r, compiledOn: 'server' };
+}
+
+/**
+ * The original function as text. A local Ghidra (td ghidra install/build) answers locally;
+ * otherwise the server's Ghidra export does.
+ */
+export async function original(ws, query, kind) {
+  if (ws.config.ghidraHome) {
+    const { decompile, disassemble } = await import('./ghidra.js');
+    const s = ws.findSymbol(query);
+    const addr = s?.addr ?? (/^0x[0-9a-f]+$/i.test(query) ? Number.parseInt(query, 16) : null);
+    if (addr == null) throw new Error(`unknown symbol ${query}`);
+    return kind === 'asm' ? disassemble(ws, addr) : decompile(ws, addr);
+  }
+  const r = await api(ws).get(`/api/original/${encodeURIComponent(query)}`);
+  if (kind === 'asm') return r.asm;
+  return r.pseudocode ?? `// no pseudocode for ${r.symbol ?? query} yet (${r.source}); the assembly is available with td disasm`;
 }
 
 /** Submits files for a leased task. Defaults to all changed files the task allows. */
-export async function submit(ws, taskId, { files, notes, agentMeta } = {}) {
-  const ctx = await api(ws).get(`/api/tasks/${taskId}`);
-  const candidates = files?.length ? files : ws.changedFiles().filter((f) => matchesAny(f, ctx.allowedPaths));
-  if (!candidates.length) throw new Error(`no changed files match the task's allowed paths (${ctx.allowedPaths.join(', ')})`);
+/**
+ * Submits work. `taskIds` empty = every task you hold, as one batch (a whole unit you claimed
+ * with claim-batch, or several single tasks). Defaults to all changed files those tasks allow.
+ */
+export async function submit(ws, taskIds = [], { files, notes, agentMeta } = {}) {
+  const me = await api(ws).get('/api/me');
+  const ids = taskIds.length ? taskIds.map(Number) : me.leases;
+  if (!ids.length) throw new Error('you hold no tasks; claim one (td claim) or a whole unit (td claim --unit <file>)');
+  const allowed = taskIds.length ? [...new Set((await Promise.all(ids.map((id) => api(ws).get(`/api/tasks/${id}`)))).flatMap((c) => c.allowedPaths))] : me.leasedAllowedPaths;
+  const candidates = files?.length ? files : ws.changedFiles().filter((f) => matchesAny(f, allowed));
+  if (!candidates.length) throw new Error(`no changed files match the allowed paths of your tasks (${allowed.join(', ')})`);
   const contents = {};
   for (const f of candidates) contents[f.replace(/\\/g, '/')] = fs.readFileSync(path.join(ws.dir, f), 'utf8');
-  const errors = lintSubmission(contents, { allowedPaths: ctx.allowedPaths, limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas });
+  const errors = lintSubmission(contents, { allowedPaths: allowed, limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas });
   if (errors.length) {
     const e = new Error('submission fails the static gate:\n' + errors.map((x) => `  ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${x.message}`).join('\n'));
     e.details = errors;
     throw e;
   }
-  return api(ws).post(`/api/tasks/${taskId}/submit`, { baseCommit: ws.head(), files: contents, notes, agentMeta, envDigest: ws.config.envDigest });
+  return api(ws).post('/api/batches', { taskIds: ids, baseCommit: ws.head(), files: contents, notes, agentMeta, envDigest: ws.config.envDigest });
+}
+
+/** Claims every open function of a unit (source file) or an address range, as one batch. */
+export function claimBatch(ws, { unit, start, end, limit } = {}) {
+  return api(ws).post('/api/tasks/claim-batch', { unit, start, end, limit });
 }
 
 export function relPath(ws, f) {

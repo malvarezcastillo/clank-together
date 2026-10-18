@@ -2,3 +2,4 @@ node_modules/
 *.log
 # Operational notes about the deployment, not part of the tool
 PORTS-TO-FORWARD.md
+dist/

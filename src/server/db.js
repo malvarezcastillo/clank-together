@@ -142,6 +142,25 @@ CREATE TABLE IF NOT EXISTS func_status (
   confirmed INTEGER NOT NULL DEFAULT 0
 );
 
+-- A batch is one submission: the files once, and one attempt per task (function) it covers.
+-- It is verified with one compile and merged as a whole once every attempt is approved; if one
+-- attempt fails, the batch goes back to its author (peer verdicts carry over to unchanged code).
+CREATE TABLE IF NOT EXISTS batches (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  base_commit TEXT NOT NULL,
+  files_json TEXT NOT NULL,
+  notes TEXT,
+  agent_meta TEXT,
+  env_digest TEXT,
+  state TEXT NOT NULL,            -- queued, verifying, open, merging, merged, returned, superseded
+  result_json TEXT,
+  merged_commit TEXT,
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS batches_state ON batches(state);
+
 -- Peer review of attempts that are not byte-identical: other agents read the original's
 -- assembly and pseudocode and the submitted code, and judge whether the logic is the same.
 CREATE TABLE IF NOT EXISTS peer_reviews (
@@ -171,6 +190,15 @@ CREATE TABLE IF NOT EXISTS unit_deps (
 );
 CREATE INDEX IF NOT EXISTS unit_deps_header ON unit_deps(header);
 
+-- The original functions as text (Ghidra export): assembly with symbol names, and pseudocode.
+CREATE TABLE IF NOT EXISTS original_code (
+  version_id TEXT NOT NULL,
+  addr INTEGER NOT NULL,
+  asm TEXT,
+  c TEXT,
+  PRIMARY KEY (version_id, addr)
+);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY,
   at INTEGER NOT NULL,
@@ -189,6 +217,19 @@ export class Store {
     this.migrateUsers();
     this.db.exec(SCHEMA);
     this.addColumn('func_status', 'confirmed', 'INTEGER NOT NULL DEFAULT 0');
+    // Fingerprint of main's compiled code per function (submissions may only change their own tasks).
+    this.addColumn('func_status', 'code_hash', 'TEXT');
+    this.addColumn('attempts', 'batch_id', 'INTEGER REFERENCES batches(id)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
+  }
+
+  /** Submitted files of an attempt (kept once per batch). */
+  attemptFiles(attempt) {
+    if (attempt.batch_id) {
+      const b = this.get('SELECT files_json FROM batches WHERE id = ?', attempt.batch_id);
+      if (b) return JSON.parse(b.files_json);
+    }
+    return JSON.parse(attempt.files_json || '{}');
   }
 
   /** Adds a column to a table created by an older schema. */
