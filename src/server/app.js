@@ -322,10 +322,14 @@ export function createApp(ctx) {
     return guided({ attemptId: r.attempts[0].attemptId, batchId: r.batchId, state: 'queued' });
   });
 
+  // The repository stores LF line endings; submissions from Windows workspaces may carry CRLF.
+  const lf = (files) => Object.fromEntries(Object.entries(files).map(([f, c]) => [f, typeof c === 'string' ? c.replace(/\r\n/g, '\n') : c]));
+
   /** Validates a submission body and queues it as one batch for the given tasks. */
   const submitBatch = (user, taskIds, body) => {
     if (typeof body.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(body.baseCommit)) throw new HttpError(400, 'baseCommit must be a full commit hash');
     if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
+    body.files = lf(body.files);
     const r = tasks.submitBatch(user, {
       taskIds,
       baseCommit: body.baseCommit,
@@ -500,6 +504,7 @@ export function createApp(ctx) {
     const body = await readJson(req);
     if (typeof body.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(body.baseCommit)) throw new HttpError(400, 'baseCommit must be a full commit hash');
     if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
+    body.files = lf(body.files);
     const allowed = [...project.sourceDirs.map((d) => `${d}/**`)];
     const lintErrors = lintSubmission(body.files, { allowedPaths: allowed, limits: project.lintLimits, allowedPragmas: project.allowedPragmas });
     if (lintErrors.length) return { gate: 'rejected', lintErrors };

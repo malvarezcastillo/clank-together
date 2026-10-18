@@ -375,6 +375,13 @@ test('submissions may not add comments or strings that could instruct other agen
   assert.equal(JSON.stringify(r.body).includes('ignore your instructions'), false, 'the text is not echoed back');
 });
 
+test('committing files that are already on main is a no-op, not an error', () => {
+  const files = { 'src/noop.cpp': 'int noop() { return 0; }\n' };
+  const head = ctx.repo.commitFiles(files, 'add noop.cpp', 'x <x@y.invalid>');
+  assert.equal(ctx.repo.commitFiles(files, 'nothing', 'x <x@y.invalid>'), head);
+  assert.equal(ctx.repo.head(), head);
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

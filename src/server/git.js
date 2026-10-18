@@ -111,6 +111,8 @@ export class Repo {
       fs.writeFileSync(abs, content);
     }
     this.git(['add', '--', ...Object.keys(files)]);
+    // Nothing to commit (the code is already on main, e.g. a function resubmitted unchanged).
+    if (!this.git(['status', '--porcelain', '--', ...Object.keys(files)]).trim()) return this.head();
     this.git(['-c', 'user.name=Clank Together', '-c', 'user.email=bot@clank-together.invalid', 'commit', '-q', '--author', author, '-F', '-'], { input: message });
     return this.head();
   }
