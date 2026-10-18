@@ -44,8 +44,9 @@ export class PeerReviews {
 
   /**
    * Attempts waiting for peer review that `user` may take, closest to a decision first: a function
-   * one verdict short of acceptance (or of going back) beats one nobody has looked at yet, so
-   * decisions get finished instead of verdicts spread thinly over the whole queue.
+   * one verdict short of a decision beats one nobody has looked at yet, so decisions get finished
+   * instead of verdicts spread thinly over the whole queue. Functions still in peer review come
+   * before extra confirmations toward auto-acceptance of ones already waiting for a human.
    */
   available(user, limit = 20) {
     return this.store.all(
@@ -57,7 +58,7 @@ export class PeerReviews {
         WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
           AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
           AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
-        ORDER BY MAX(confirmations, objections) DESC, a.finished_at
+        ORDER BY a.state = 'in_review', MAX(confirmations, objections) DESC, a.finished_at
         LIMIT ?`,
       now(),
       user.id,
@@ -83,7 +84,10 @@ export class PeerReviews {
       const options = this.available(user, 200);
       const pick = attemptId ? options.find((o) => o.attempt_id === attemptId) : options[0];
       if (!pick) throw new HttpError(attemptId ? 409 : 404, attemptId ? 'this attempt is not open for your review (yours, already reviewed, or enough reviewers)' : 'no attempts are waiting for peer review');
-      const group = pick.batch_id ? options.filter((o) => o.batch_id === pick.batch_id) : [pick];
+      // The rest of the batch comes along (one read of the shared code), but only functions at
+      // least as far along as the pick: finishing decisions, not first verdicts everywhere.
+      const stage = (o) => (o.state === 'in_review' ? 10 : 0) + Math.max(o.confirmations, o.objections);
+      const group = pick.batch_id ? options.filter((o) => o.batch_id === pick.batch_id && stage(o) >= stage(pick)) : [pick];
       for (const o of group) {
         this.store.run(
           `INSERT INTO peer_leases (attempt_id, reviewer_id, expires_at) VALUES (?, ?, ?)
