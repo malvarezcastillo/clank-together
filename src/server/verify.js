@@ -239,7 +239,7 @@ export class Verifier {
   }
 
   /** Functions that match on main but would no longer match with this change. */
-  regressions(check) {
+  regressions(check, files = {}) {
     const results = new Map([...bestResults(check)].map(([id, b]) => [id, b.f]));
     const compiledFiles = new Set(check.units.map((u) => u.file));
     const out = [];
@@ -252,7 +252,35 @@ export class Verifier {
         out.push({ id: row.symbol_id, file: row.file, was: 'peer-confirmed', now: `changed (score ${(row.score * 100).toFixed(1)}% -> ${(now_.score * 100).toFixed(1)}%)` });
       }
     }
-    return out;
+    return this.withoutHeaderCopies(out, results, files);
+  }
+
+  // A template or inline function defined in a header is emitted by every unit that uses it, and
+  // main keeps its best copy, recorded at one of those units. Editing that unit can drop or vary its
+  // copy while the others stay as they were: no regression unless the header itself changed (and
+  // then "removed" only when its annotation is gone from the header).
+  withoutHeaderCopies(found, results, files) {
+    if (!found.length) return found;
+    const defined = new Map();
+    for (const r of found) if (results.get(r.id)?.file) defined.set(r.id, results.get(r.id).file);
+    const unknown = found.filter((r) => !defined.has(r.id)).map((r) => r.id);
+    if (unknown.length) {
+      try {
+        const out = this.repo.git(['grep', '-o', '-w', '-F', ...unknown.flatMap((id) => ['-e', `FUNCTION: ${id}`]), 'HEAD', '--']);
+        for (const line of out.split('\n')) {
+          const m = /^HEAD:(.+?):FUNCTION: (\S+)$/.exec(line.trim());
+          if (m && !defined.has(m[2])) defined.set(m[2], m[1]);
+        }
+      } catch {
+        // no annotation on main for any of them (git grep exits 1): judged as before
+      }
+    }
+    return found.filter((r) => {
+      const file = defined.get(r.id);
+      if (!file || isUnit(file)) return true;
+      if (typeof files[file] !== 'string') return false;
+      return r.now !== 'removed' || !new RegExp(`FUNCTION: ${r.id}\\b`).test(files[file]);
+    });
   }
 
   /**
@@ -393,7 +421,7 @@ export class Verifier {
     for (const w of annWarnings) feedback.warnings.push(`${w.file}:${w.line} ${w.message}`);
     const failed = check.units.filter((u) => !u.compiled);
     const target = check.units.flatMap((u) => u.functions.map((f) => ({ ...f, file: u.file }))).find((f) => f.id === targetId);
-    const regressions = this.regressions(check);
+    const regressions = this.regressions(check, files);
 
     feedback.target = target ?? null;
     feedback.annotationErrors = annErrors;
