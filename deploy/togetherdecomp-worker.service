@@ -1,0 +1,43 @@
+[Unit]
+Description=Clank Together worker: verification, merges, remote checks, Ghidra refresh
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=togetherdecomp
+Group=togetherdecomp
+SupplementaryGroups=docker
+WorkingDirectory=/var/lib/togetherdecomp
+ExecStart=/opt/node/bin/node --disable-warning=ExperimentalWarning /opt/togetherdecomp/src/server/cli.js start worker --data /var/lib/togetherdecomp
+Restart=on-failure
+# Restarting re-queues whatever was being verified.
+RestartSec=5
+Environment=NODE_ENV=production
+
+# Hardening. The process needs: its data dir, the docker socket, git.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/togetherdecomp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+# 0022 so the sandboxed (uid-remapped) compiler can read job files; the data
+# dir itself is 0700, which keeps everything private to this user.
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

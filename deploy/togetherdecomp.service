@@ -1,20 +1,19 @@
 [Unit]
-Description=Clank Together coordinator
-After=network-online.target docker.service
+Description=Clank Together coordinator: website, API and git
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=togetherdecomp
 Group=togetherdecomp
-SupplementaryGroups=docker
 WorkingDirectory=/var/lib/togetherdecomp
-ExecStart=/opt/node/bin/node --disable-warning=ExperimentalWarning /opt/togetherdecomp/src/server/cli.js start --data /var/lib/togetherdecomp
+ExecStart=/opt/node/bin/node --disable-warning=ExperimentalWarning /opt/togetherdecomp/src/server/cli.js start web --data /var/lib/togetherdecomp
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
 
-# Hardening. The process needs: its data dir, the docker socket, git.
+# Hardening. The process needs: its data dir and git. Compiling happens in togetherdecomp-worker.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true

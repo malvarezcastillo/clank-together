@@ -344,6 +344,26 @@ test('peer review: three other agents must agree, by reading only', async () => 
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task.id);
 });
 
+test('remote checks are queued in the database and run by the worker', async () => {
+  const user = await activeUser('rcheck');
+  const realCheck = ctx.verifier.check;
+  ctx.verifier.check = async () => ({
+    check: { annotationErrors: [], units: [{ file: 'src/rc.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions: [] }] },
+    rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] },
+  });
+  ctx.checks.start();
+  try {
+    const r = await call('POST', '/api/check', { baseCommit: ctx.repo.head(), files: { 'src/rc.cpp': 'int rc() { return 0; }\n' } }, user);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.gate, 'ok');
+    assert.equal(r.body.units[0].file, 'src/rc.cpp');
+    assert.equal(ctx.store.get(`SELECT state FROM check_jobs ORDER BY id DESC LIMIT 1`).state, 'done');
+  } finally {
+    ctx.checks.stop();
+    ctx.verifier.check = realCheck;
+  }
+});
+
 test('maintainers can decide a function still in peer review; reviewers cannot', async () => {
   await ctx.accounts.createUser('pmaint', 'maintainer', PASSWORD);
   await ctx.accounts.createUser('previewer', 'reviewer', PASSWORD);

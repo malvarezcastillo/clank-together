@@ -19,7 +19,7 @@ const HELP = `td-server - Clank Together coordinator
 Usage: td-server <command> [options]   (all commands accept --data <dir>, default ./data)
 
   init                                   create data dir, server.json and the canonical repo
-  start                                  run the coordinator
+  start [web|worker]                     run the coordinator (default: both in one process)
   user add <name> [--role R] [--password-stdin]
                                          create an active account (contributor|reviewer|maintainer|admin);
                                          without --password-stdin a password is generated and printed
@@ -77,7 +77,7 @@ async function main() {
   if (!cmd || values.help) return console.log(HELP);
 
   if (cmd === 'init') return init(dataDir);
-  if (cmd === 'start') return startServer(dataDir);
+  if (cmd === 'start') return startServer(dataDir, { role: sub ?? 'all' });
 
   if (cmd === 'user') {
     const accounts = new Accounts(new Store(path.join(dataDir, 'td.sqlite')));

@@ -84,6 +84,7 @@ fs.writeFileSync(file, JSON.stringify(c, null, 2) + "\n");
 
 echo "== systemd"
 install -m 0644 "$SRC/deploy/togetherdecomp.service" /etc/systemd/system/togetherdecomp.service
+install -m 0644 "$SRC/deploy/togetherdecomp-worker.service" /etc/systemd/system/togetherdecomp-worker.service
 install -m 0644 "$SRC/deploy/nftables-td.nft" /etc/nftables-td.nft
 cat > /etc/systemd/system/td-firewall.service <<'EOF'
 [Unit]
@@ -106,8 +107,8 @@ caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
 systemctl daemon-reload
 systemctl enable --now td-firewall.service
 systemctl restart td-firewall.service
-systemctl enable togetherdecomp.service caddy.service
-systemctl restart togetherdecomp.service caddy.service
+systemctl enable togetherdecomp.service togetherdecomp-worker.service caddy.service
+systemctl restart togetherdecomp.service togetherdecomp-worker.service caddy.service
 sleep 2
 systemctl --no-pager --lines=5 status togetherdecomp.service | head -12
 echo "== done: https://$HOST"

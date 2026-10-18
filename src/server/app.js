@@ -15,11 +15,11 @@ import { Originals } from './original.js';
 import { downloadsDir, installPs1, installSh } from './install.js';
 import { ServerGhidra } from './ghidra.js';
 import { functionRegions } from './split.js';
+import { CheckQueue } from './checks.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
-import { summarizeCheck } from '../shared/check.js';
 import { hex } from '../shared/annotations.js';
 
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'web');
@@ -80,12 +80,15 @@ export function openServer(dataDir, { log = console } = {}) {
   const originals = new Originals({ store });
   const ghidra = new ServerGhidra({ config, store, originals, log });
   merger.onMerged = (commit) => ghidra.scheduleRefresh(commit);
-  return { config, store, repo, project, tasks, verifier, merger, getPe, accounts, peers, originals, ghidra };
+  const checks = new CheckQueue({ store, repo, verifier, config, log });
+  return { config, store, repo, project, tasks, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
 }
 
 export function createApp(ctx) {
   const { config, store, repo, project, tasks, merger, accounts, peers } = ctx;
   const router = new Router();
+  // In a separate web process the worker picks new work up from the database by itself.
+  const runsWorker = ctx.runsWorker ?? true;
   downloadsRoot = downloadsDir(config);
   const submitLimiter = new RateLimiter(config.submitsPerHour, 3600_000);
   const symbolLimiter = new RateLimiter(120, 3600_000);
@@ -293,7 +296,7 @@ export function createApp(ctx) {
       agentMeta: body.agentMeta ? JSON.stringify(body.agentMeta).slice(0, 1000) : null,
       envDigest: body.envDigest ? String(body.envDigest).slice(0, 200) : null,
     });
-    ctx.verifier.pump();
+    if (runsWorker) ctx.verifier.pump();
     return r;
   };
 
@@ -452,19 +455,6 @@ export function createApp(ctx) {
   // (contributors without a local MSVC toolchain). Same static gate as a submission.
 
   const checkLimiter = new RateLimiter(config.checksPerHour ?? 60, 3600_000);
-  let checksRunning = 0;
-  const checkWaiters = [];
-  const withCheckSlot = async (fn) => {
-    const max = config.remoteCheckConcurrency ?? 2;
-    if (checksRunning >= max) await new Promise((r) => checkWaiters.push(r));
-    checksRunning++;
-    try {
-      return await fn();
-    } finally {
-      checksRunning--;
-      checkWaiters.shift()?.();
-    }
-  };
 
   router.on('POST', '/api/check', async ({ req }) => {
     const user = auth(req);
@@ -478,10 +468,11 @@ export function createApp(ctx) {
     if (!repo.isAncestor(body.baseCommit)) throw new HttpError(409, 'your base commit is not part of main; run td sync');
     const merged = repo.mergeOntoHead(body.baseCommit, body.files);
     if (merged.conflicts.length) return { gate: 'conflict', conflicts: merged.conflicts };
-    return withCheckSlot(async () => {
-      const { check, rec } = await ctx.verifier.check(merged.files, `check-${user.id}-${Date.now()}`);
-      return { gate: 'ok', head: repo.head(), ...summarizeCheck(check, rec, new Set(Object.keys(merged.files))) };
-    });
+    try {
+      return await ctx.checks.run(user.id, merged.files);
+    } catch (e) {
+      throw new HttpError(503, e.message);
+    }
   });
 
   // --- peer review (agents, API token or session)
@@ -535,7 +526,7 @@ export function createApp(ctx) {
     const user = auth(req, { role: 'reviewer', session: true });
     const body = await readJson(req, 16 * 1024);
     const r = merger.review(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null);
-    if (r.state === 'approved') setImmediate(() => merger.pump());
+    if (r.state === 'approved' && runsWorker) setImmediate(() => merger.pump());
     return r;
   });
 
@@ -544,7 +535,7 @@ export function createApp(ctx) {
     const user = auth(req, { role: 'reviewer', session: true });
     const body = await readJson(req, 16 * 1024);
     const r = merger.reviewBatch(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null);
-    setImmediate(() => merger.pump());
+    if (runsWorker) setImmediate(() => merger.pump());
     return r;
   });
 
@@ -664,20 +655,36 @@ function serveStatic(pathname, res) {
   fs.createReadStream(path.join(WEB_DIR, file)).pipe(res);
 }
 
-export async function startServer(dataDir) {
+/**
+ * role "web": website, API and git; "worker": verification, merges, remote checks and the Ghidra
+ * refresh; "all": both in one process. The two share only the database and the repository, so
+ * either restarts without interrupting the other.
+ */
+export async function startServer(dataDir, { role = 'all' } = {}) {
+  if (!['all', 'web', 'worker'].includes(role)) throw new Error(`unknown role ${role}; use web, worker or all`);
   const ctx = openServer(dataDir);
-  ctx.tasks.generate();
-  ctx.verifier.start();
-  ctx.merger.start();
-  const sweeper = setInterval(() => { try { ctx.tasks.sweepExpired(); } catch (e) { console.error(`lease sweep: ${e.message}`); } }, 60_000);
-  const server = createApp(ctx);
-  await new Promise((r) => server.listen(ctx.config.listen.port, ctx.config.listen.host, r));
-  console.log(`clank together coordinator listening on http://${ctx.config.listen.host}:${ctx.config.listen.port} (public url ${ctx.config.publicUrl})`);
+  ctx.runsWorker = role !== 'web';
+  const stops = [];
+  if (role !== 'web') {
+    ctx.tasks.generate();
+    ctx.verifier.start();
+    ctx.merger.start();
+    ctx.checks.start();
+    stops.push(() => ctx.verifier.stop(), () => ctx.merger.stop(), () => ctx.checks.stop());
+    console.log(`clank together worker running (${role})`);
+  }
+  let server = null;
+  if (role !== 'worker') {
+    const sweeper = setInterval(() => { try { ctx.tasks.sweepExpired(); } catch (e) { console.error(`lease sweep: ${e.message}`); } }, 60_000);
+    stops.push(() => clearInterval(sweeper));
+    server = createApp(ctx);
+    await new Promise((r) => server.listen(ctx.config.listen.port, ctx.config.listen.host, r));
+    console.log(`clank together coordinator listening on http://${ctx.config.listen.host}:${ctx.config.listen.port} (public url ${ctx.config.publicUrl})`);
+  }
   const shutdown = () => {
-    clearInterval(sweeper);
-    ctx.verifier.stop();
-    ctx.merger.stop();
-    server.close(() => process.exit(0));
+    for (const stop of stops) stop();
+    if (server) server.close(() => process.exit(0));
+    else process.exit(0);
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

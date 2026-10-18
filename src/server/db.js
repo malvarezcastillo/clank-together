@@ -199,6 +199,17 @@ CREATE TABLE IF NOT EXISTS original_code (
   PRIMARY KEY (version_id, addr)
 );
 
+-- Remote checks, queued by the web process and run by the worker process.
+CREATE TABLE IF NOT EXISTS check_jobs (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  files_json TEXT NOT NULL,
+  state TEXT NOT NULL,            -- queued, running, done, failed, abandoned
+  result_json TEXT,
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY,
   at INTEGER NOT NULL,
