@@ -297,7 +297,7 @@ export class Tasks {
       const max = this.config.maxQueuedBatches ?? 4;
       const waiting = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND state IN ('queued', 'verifying')`, user.id).n;
       if (waiting >= max) {
-        throw new HttpError(429, `you have ${waiting} batches waiting for verification (the limit is ${max}); keep your claims, do peer reviews meanwhile (td_list_peer_reviews), and submit again when one is done`);
+        throw new HttpError(429, `you have ${waiting} batches waiting for verification (the limit is ${max}); keep your claims, do peer reviews meanwhile (td_list_peer_reviews), and submit again when one is done (td_get_batch shows it)`, { retryAfterSeconds: 120 });
       }
       const b = this.store.run(
         `INSERT INTO batches (user_id, base_commit, files_json, notes, agent_meta, env_digest, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,

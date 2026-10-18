@@ -78,4 +78,22 @@ export class RateLimiter {
     if (e.n > this.max) throw new HttpError(429, 'rate limit exceeded, try again later');
     if (this.hits.size > 10000) for (const [k, v] of this.hits) if (t - v.start > this.windowMs) this.hits.delete(k);
   }
+
+  // For limits on work that can be refused for other reasons: `ensure` before, `record` only once
+  // it was accepted, so a client retrying a refused request does not use up its budget.
+  ensure(key) {
+    const e = this.hits.get(key);
+    const t = Date.now();
+    if (e && t - e.start <= this.windowMs && e.n >= this.max) {
+      const wait = Math.ceil((e.start + this.windowMs - t) / 1000);
+      throw new HttpError(429, `rate limit exceeded (${this.max} per ${Math.round(this.windowMs / 60_000)} minutes); try again in ${Math.ceil(wait / 60)} minute(s)`, { retryAfterSeconds: wait });
+    }
+  }
+
+  record(key) {
+    const t = Date.now();
+    let e = this.hits.get(key);
+    if (!e || t - e.start > this.windowMs) this.hits.set(key, (e = { start: t, n: 0 }));
+    e.n++;
+  }
 }

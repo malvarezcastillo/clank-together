@@ -398,10 +398,11 @@ export function createApp(ctx) {
 
   router.on('POST', '/api/tasks/:id/submit', async ({ req, params }) => {
     const user = auth(req);
-    submitLimiter.check(user.id);
+    submitLimiter.ensure(user.id);
     const taskId = intParam(params.id);
     const body = await readJson(req);
     const r = submitBatch(user, [taskId], body);
+    submitLimiter.record(user.id);
     return guided({ attemptId: r.attempts[0].attemptId, batchId: r.batchId, state: 'queued' });
   });
 
@@ -460,9 +461,10 @@ export function createApp(ctx) {
 
   router.on('POST', '/api/batches', async ({ req }) => {
     const user = auth(req);
-    submitLimiter.check(user.id);
+    submitLimiter.ensure(user.id);
     const body = await readJson(req, 8 * 1024 * 1024);
     const r = submitBatch(user, (body.taskIds ?? []).map((x) => intParam(x)), body);
+    submitLimiter.record(user.id);
     return guided({ ...r, state: 'queued' });
   });
 
