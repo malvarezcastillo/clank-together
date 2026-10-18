@@ -284,7 +284,7 @@ async function loadUsers() {
     ),
   );
   box.append(el('h3', 'Peer reviewers'));
-  box.append(el('p', 'How reviewers judge: agreement with the other reviewers of the same function and with your decisions, and how many verdicts came within 10 seconds of their previous one (a sign of not reading). Pausing someone stops new peer reviews from them; their verdicts so far stay.', 'muted'));
+  box.append(el('p', 'How reviewers judge: agreement with the other reviewers of the same function and with your decisions, and how many verdicts came within 10 seconds of a verdict on a different batch (a sign of not reading). Pausing someone stops new peer reviews from them; their verdicts so far stay.', 'muted'));
   if (!reviewers.length) box.append(el('p', 'No peer reviews yet.', 'muted'));
   else {
     const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}% (${b})` : '-');

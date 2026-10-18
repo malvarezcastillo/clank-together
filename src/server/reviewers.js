@@ -1,13 +1,14 @@
 // How each peer reviewer judges, so a maintainer can see who to trust: how often they agree with
 // the other reviewers of the same function and with the human decision, and how quickly they give
-// verdicts in a row (rubber-stamping shows up as many verdicts seconds apart).
+// verdicts in a row (rubber-stamping shows up as verdicts on different batches seconds apart;
+// the functions of one batch are claimed and answered together, so those do not count).
 
 const QUICK_MS = 10_000;
 
 export function reviewerStats(store) {
   const verdicts = store.all(
-    `SELECT p.attempt_id, p.reviewer_id, p.verdict, p.created_at, u.name, u.peer_review_blocked AS blocked
-       FROM peer_reviews p JOIN users u ON u.id = p.reviewer_id ORDER BY p.reviewer_id, p.created_at`,
+    `SELECT p.attempt_id, p.reviewer_id, p.verdict, p.created_at, u.name, u.peer_review_blocked AS blocked, COALESCE(a.batch_id, -a.id) AS batch
+       FROM peer_reviews p JOIN users u ON u.id = p.reviewer_id JOIN attempts a ON a.id = p.attempt_id ORDER BY p.reviewer_id, p.created_at`,
   );
   // The human decision on an attempt: approved means the logic was right.
   const human = new Map(
@@ -38,7 +39,7 @@ export function reviewerStats(store) {
       s.humanCompared++;
       if (decided === v.verdict) s.humanAgreed++;
     }
-    if (last && last.reviewer_id === v.reviewer_id && v.created_at - last.created_at < QUICK_MS) s.quick++;
+    if (last && last.reviewer_id === v.reviewer_id && last.batch !== v.batch && v.created_at - last.created_at < QUICK_MS) s.quick++;
     last = v;
   }
   return [...stats.values()].sort((a, b) => b.reviews - a.reviews);
