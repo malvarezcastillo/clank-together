@@ -34,8 +34,10 @@ test('withoutFunctions restores pending functions from the base, or drops new on
   const dropped = withoutFunctions({ 'a.cpp': file }, ['fn_00004'], () => null);
   assert.doesNotMatch(dropped['a.cpp'], /int b\(\)/);
   assert.match(dropped['a.cpp'], /int folded\(\)/);
-  // One definition shared by a pending and a finished function can't be split.
-  assert.equal(withoutFunctions({ 'a.cpp': file }, ['fn_00002'], () => null), null);
+  // One body shared by a pending and a finished function: only the pending annotation goes.
+  const kept = withoutFunctions({ 'a.cpp': file }, ['fn_00002'], () => null)['a.cpp'];
+  assert.doesNotMatch(kept, /fn_00002/);
+  assert.match(kept, /\/\/ FUNCTION: fn_00003\nint folded\(\)/);
 });
 
 test('an annotated declaration is a region of its own instead of stopping the split', () => {

@@ -16,9 +16,10 @@ export function functionRegions(text) {
   const groups = new Map();
   for (const a of annotations) {
     if (a.kind !== 'FUNCTION' && a.kind !== 'STUB') continue;
-    const g = groups.get(a.targetLine) ?? { start: a.line - 1, targetLine: a.targetLine, ids: [] };
+    const g = groups.get(a.targetLine) ?? { start: a.line - 1, targetLine: a.targetLine, ids: [], lines: new Map() };
     g.start = Math.min(g.start, a.line - 1);
     g.ids.push(a.id);
+    g.lines.set(a.id, a.line - 1);
     groups.set(a.targetLine, g);
   }
   const out = new Map();
@@ -26,7 +27,7 @@ export function functionRegions(text) {
     // A definition runs to its closing brace; an annotated declaration to its semicolon.
     const end = bodyEnd(lines, g.targetLine - 1) ?? declarationEnd(lines, g.targetLine - 1);
     if (end === null) return null;
-    const region = { start: g.start, end, ids: g.ids };
+    const region = { start: g.start, end, ids: g.ids, lines: g.lines };
     for (const id of g.ids) out.set(id, region);
   }
   return out;
@@ -94,8 +95,13 @@ export function withoutFunctions(files, ids, baseText) {
     const lines = text.split('\n');
     // Replace from the bottom so earlier line numbers stay valid.
     for (const r of mine.sort((a, b) => b.start - a.start)) {
-      // A definition shared with a function that is not pending can't be split.
-      if (r.ids.some((id) => !pending.has(id))) return null;
+      // One body annotated for several functions (identical copies in the binary), some of them
+      // pending: the body stays for the others, only the pending ones' annotation lines go.
+      if (r.ids.some((id) => !pending.has(id))) {
+        const drop = r.ids.filter((id) => pending.has(id)).map((id) => r.lines.get(id)).sort((a, b) => b - a);
+        for (const i of drop) lines.splice(i, 1);
+        continue;
+      }
       const b = baseRegions.get(r.ids[0]);
       if (b && (b.ids.length !== r.ids.length || b.ids.some((id) => !r.ids.includes(id)))) return null;
       lines.splice(r.start, r.end - r.start, ...(b ? baseLines.slice(b.start, b.end) : []));
