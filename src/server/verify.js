@@ -74,7 +74,7 @@ export class Verifier {
 
   pump() {
     if (this.stopped) return;
-    const max = this.config.verifyConcurrency ?? 2;
+    const max = this.config.verifyConcurrency ?? 3;
     while (this.running < max) {
       // Verification compiles only the submitted units, so every batch is small here; the units
       // that include a changed header are compiled in the merge's big lane.

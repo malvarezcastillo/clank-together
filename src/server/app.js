@@ -34,7 +34,7 @@ export const DEFAULT_CONFIG = {
   publicUrl: 'http://127.0.0.1:8080',
   leaseMinutes: 120,
   maxLeasesPerUser: 3,
-  verifyConcurrency: 2,
+  verifyConcurrency: 3,
   buildTimeoutMs: 300000,
   submitsPerHour: 30,
   runners: { msvc2010: { type: 'docker', image: 'togetherdecomp/msvc2010:1', memory: '1g', cpus: 1 } },
