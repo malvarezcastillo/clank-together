@@ -382,6 +382,35 @@ test('committing files that are already on main is a no-op, not an error', () =>
   assert.equal(ctx.repo.head(), head);
 });
 
+test('a header batch is verified on its own units and merged with every includer compiled', async () => {
+  await activeUser('hdrauthor');
+  const user = ctx.accounts.byName('hdrauthor');
+  for (const u of ['src/inc_a.cpp', 'src/inc_b.cpp', 'src/inc_c.cpp']) ctx.store.run('INSERT OR IGNORE INTO unit_deps (unit, header) VALUES (?, ?)', u, 'src/shared.h');
+  const files = { 'src/inc_a.cpp': 'int a() { return 1; }\n', 'src/shared.h': 'struct S { int x; };\n' };
+  const batch = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at, result_json) VALUES (?, ?, ?, 'open', ?, ?)`, user.id, ctx.repo.head(), JSON.stringify(files), now(), JSON.stringify({ mergedFiles: files })).lastInsertRowid);
+  const unit = (file) => ({ file, compiled: true, includes: ['src/shared.h'], bindings: {}, lintErrors: [], unannotated: [], inferred: [], errors: [], functions: [] });
+  const rec = { conflicts: [], unknown: [], learned: [], learnedAddresses: [] };
+
+  const calls = [];
+  const real = ctx.verifier.check;
+  ctx.verifier.check = async (f, name, opts = {}) => {
+    calls.push(opts);
+    const compiled = opts.onlyUnits ?? (opts.dependents === false ? ['src/inc_a.cpp'] : ['src/inc_a.cpp', 'src/inc_b.cpp', 'src/inc_c.cpp']);
+    return { check: { annotationErrors: [], units: compiled.map(unit) }, rec, changedHeaders: ['src/shared.h'] };
+  };
+  try {
+    // Verification compiled the submitted unit only.
+    ctx.verifier.rememberCheck(batch, { check: { annotationErrors: [], units: [unit('src/inc_a.cpp')] }, rec, changedHeaders: ['src/shared.h'] });
+    const m = await ctx.verifier.mergeCheck(ctx.store.get('SELECT * FROM batches WHERE id = ?', batch), files);
+    assert.deepEqual(calls.at(-1).onlyUnits?.sort(), ['src/inc_b.cpp', 'src/inc_c.cpp'], 'the merge compiles the includers verification skipped');
+    assert.deepEqual(m.check.units.map((u) => u.file).sort(), ['src/inc_a.cpp', 'src/inc_b.cpp', 'src/inc_c.cpp']);
+  } finally {
+    ctx.verifier.check = real;
+    ctx.store.run(`UPDATE batches SET state = 'superseded' WHERE id = ?`, batch);
+    ctx.store.run(`DELETE FROM unit_deps WHERE header = 'src/shared.h'`);
+  }
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in
