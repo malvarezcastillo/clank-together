@@ -61,6 +61,7 @@ export class CheckQueue {
 
   /** Worker side. */
   start() {
+    this.stopped = false;
     this.store.run(`UPDATE check_jobs SET state = 'queued' WHERE state = 'running'`);
     this.store.setMeta(HEARTBEAT_KEY, now());
     this.heartbeat = setInterval(() => {
@@ -82,9 +83,11 @@ export class CheckQueue {
   stop() {
     clearInterval(this.timer);
     clearInterval(this.heartbeat);
+    this.stopped = true;
   }
 
   pump() {
+    if (this.stopped) return;
     const max = this.config.remoteCheckConcurrency ?? 2;
     while (this.running < max) {
       const job = this.store.tx(() => {

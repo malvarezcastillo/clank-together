@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { lintSubmission } from '../shared/lint.js';
+import { freeTextErrors } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS } from '../shared/compare.js';
@@ -44,6 +45,7 @@ export class Verifier {
   }
 
   start() {
+    this.stopped = false;
     this.store.run(`UPDATE batches SET state = 'queued' WHERE state = 'verifying'`);
     this.store.run(`UPDATE attempts SET state = 'queued' WHERE state = 'verifying'`);
     // Attempts from before batches existed become batches of one.
@@ -60,9 +62,11 @@ export class Verifier {
 
   stop() {
     clearInterval(this.timer);
+    this.stopped = true; // finishing verifications must not start new ones
   }
 
   pump() {
+    if (this.stopped) return;
     const max = this.config.verifyConcurrency ?? 2;
     while (this.running < max) {
       const b = this.store.tx(() => {
@@ -137,6 +141,21 @@ export class Verifier {
     }
   }
 
+  /**
+   * Comments and strings a submission adds that could carry instructions to other agents: only
+   * annotations and markers, and strings of the original executable, are allowed (freetext.js).
+   */
+  freeTextGate(files, baseCommit) {
+    const exe = this.getPe().buf;
+    const inOriginal = (bytes) => exe.indexOf(bytes) !== -1;
+    const errors = [];
+    for (const [file, text] of Object.entries(files)) {
+      if (typeof text !== 'string') continue;
+      for (const e of freeTextErrors(text, this.repo.show(baseCommit, file), inOriginal)) errors.push({ file, ...e });
+    }
+    return errors;
+  }
+
   /** Functions that match on main but would no longer match with this change. */
   regressions(check) {
     const results = new Map([...bestResults(check)].map(([id, b]) => [id, b.f]));
@@ -208,6 +227,8 @@ export class Verifier {
     });
     if (lintErrors.length) return finishAll('rejected', { summary: 'rejected by the static gate', lintErrors });
     if (!this.repo.isAncestor(batch.base_commit)) return finishAll('rejected', { summary: `base commit ${batch.base_commit} is not part of main; sync and resubmit` });
+    const textErrors = this.freeTextGate(submitted, batch.base_commit);
+    if (textErrors.length) return finishAll('rejected', { summary: 'rejected: the submission adds comments or strings that are not allowed (see lintErrors)', lintErrors: textErrors });
     const merged = this.repo.mergeOntoHead(batch.base_commit, submitted);
     if (merged.conflicts.length) return finishAll('needs_cleanup', { summary: 'your change conflicts with newer work on main; sync, merge and resubmit', conflicts: merged.conflicts });
 

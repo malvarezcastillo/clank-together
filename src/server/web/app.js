@@ -392,7 +392,8 @@ function queueBatches(body, items, skipsPeers) {
           async () => {
             if (skipsPeers && !confirm(`Approve all ${list.length} functions of batch #${key} without waiting for peer review? They merge right away.`)) return;
             try {
-              await post(`/api/batches/${key}/review`, { action: 'approve' });
+              // Exactly the functions shown here; peer review is only skipped from its own section.
+              await post(`/api/batches/${key}/review`, { action: 'approve', attemptIds: list.map((a) => a.id), skipPeerReview: skipsPeers });
               await loadQueue();
             } catch (e) {
               alert(e.message);
@@ -623,7 +624,7 @@ document.querySelectorAll('.actions button').forEach((b) =>
   b.addEventListener('click', async () => {
     if (!currentAttempt) return;
     try {
-      const r = await post(`/api/attempts/${currentAttempt.id}/review`, { action: b.dataset.action, comment: $('review-comment').value });
+      const r = await post(`/api/attempts/${currentAttempt.id}/review`, { action: b.dataset.action, comment: $('review-comment').value, skipPeerReview: currentAttempt.state === 'peer_review' });
       $('review-status').textContent = `Recorded. Attempt is now ${r.state}${r.approvalsNeeded ? ` (${r.approvalsNeeded} more approval needed)` : ''}.`;
       $('review-comment').value = '';
       await loadQueue();

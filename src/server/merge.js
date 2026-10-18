@@ -15,6 +15,7 @@ export class Merger {
   }
 
   start() {
+    this.stopped = false;
     this.store.run(`UPDATE batches SET state = 'open' WHERE state = 'merging'`);
     this.store.run(`UPDATE tasks SET state = 'approved' WHERE state = 'merging'`);
     this.timer = setInterval(() => { try { this.pump(); } catch (e) { console.error(`merge pump: ${e.message}`); } }, 3000);
@@ -22,6 +23,7 @@ export class Merger {
 
   stop() {
     clearInterval(this.timer);
+    this.stopped = true;
   }
 
   requiredApprovals(attempt) {
@@ -32,33 +34,36 @@ export class Merger {
   }
 
   /** A human decision on one attempt (peer-confirmed, not byte-identical). */
-  review(reviewer, attemptId, action, comment) {
+  review(reviewer, attemptId, action, comment, options = {}) {
     if (!hasRole(reviewer, 'reviewer')) throw new HttpError(403, 'only reviewers can review');
     if (!['approve', 'request_changes', 'reject'].includes(action)) throw new HttpError(400, 'invalid action');
-    return this.store.tx(() => this.reviewOne(reviewer, attemptId, action, comment));
+    return this.store.tx(() => this.reviewOne(reviewer, attemptId, action, comment, options));
   }
 
   /**
-   * The same decision for every attempt of a batch that waits for human review. Maintainers also
-   * decide the functions still in peer review.
+   * The same decision for the functions of a batch that wait for human review: the given
+   * `attemptIds` (what the reviewer was shown), or all of them. Functions still in peer review are
+   * only included with `skipPeerReview`, which maintainers may ask for explicitly.
    */
-  reviewBatch(reviewer, batchId, action, comment) {
+  reviewBatch(reviewer, batchId, action, comment, { attemptIds = null, skipPeerReview = false } = {}) {
     if (!hasRole(reviewer, 'reviewer')) throw new HttpError(403, 'only reviewers can review');
     if (!['approve', 'request_changes', 'reject'].includes(action)) throw new HttpError(400, 'invalid action');
     return this.store.tx(() => {
-      const states = hasRole(reviewer, 'maintainer') ? `'in_review', 'peer_review'` : `'in_review'`;
-      const waiting = this.store.all(`SELECT id FROM attempts WHERE batch_id = ? AND state IN (${states})`, batchId);
+      const states = skipPeerReview ? `'in_review', 'peer_review'` : `'in_review'`;
+      const wanted = attemptIds ? new Set(attemptIds) : null;
+      const waiting = this.store.all(`SELECT id FROM attempts WHERE batch_id = ? AND state IN (${states})`, batchId).filter((w) => !wanted || wanted.has(w.id));
       if (!waiting.length) throw new HttpError(409, 'nothing in this batch waits for human review');
-      const results = waiting.map((w) => ({ attemptId: w.id, ...this.reviewOne(reviewer, w.id, action, comment) }));
+      const results = waiting.map((w) => ({ attemptId: w.id, ...this.reviewOne(reviewer, w.id, action, comment, { skipPeerReview }) }));
       return { batchId, results };
     });
   }
 
-  reviewOne(reviewer, attemptId, action, comment) {
+  reviewOne(reviewer, attemptId, action, comment, { skipPeerReview = false } = {}) {
     const attempt = this.store.get('SELECT * FROM attempts WHERE id = ?', attemptId);
     if (!attempt) throw new HttpError(404, 'no such attempt');
-    // Maintainers may decide without waiting for the three peer verdicts.
-    const skipsPeers = attempt.state === 'peer_review' && hasRole(reviewer, 'maintainer');
+    // Maintainers may decide without waiting for the three peer verdicts, when they ask for it.
+    const skipsPeers = attempt.state === 'peer_review' && skipPeerReview;
+    if (skipsPeers && !hasRole(reviewer, 'maintainer')) throw new HttpError(403, 'only maintainers can decide before peer review is done');
     if (attempt.state !== 'in_review' && !skipsPeers) throw new HttpError(409, `attempt is ${attempt.state}`);
     if (attempt.user_id === reviewer.id) throw new HttpError(403, 'you cannot review your own attempt');
     if (this.store.get('SELECT 1 FROM reviews WHERE attempt_id = ? AND reviewer_id = ?', attemptId, reviewer.id)) throw new HttpError(409, 'you already reviewed this attempt');
@@ -91,7 +96,7 @@ export class Merger {
    * doesn't wait for the slowest function of its batch.
    */
   async pump() {
-    if (this.busy) return;
+    if (this.busy || this.stopped) return;
     const whole = this.store.get(
       `SELECT b.* FROM batches b WHERE b.state = 'open'
           AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id)

@@ -504,6 +504,8 @@ export function createApp(ctx) {
     const lintErrors = lintSubmission(body.files, { allowedPaths: allowed, limits: project.lintLimits, allowedPragmas: project.allowedPragmas });
     if (lintErrors.length) return { gate: 'rejected', lintErrors };
     if (!repo.isAncestor(body.baseCommit)) throw new HttpError(409, 'your base commit is not part of main; run td sync');
+    const textErrors = ctx.verifier.freeTextGate(body.files, body.baseCommit);
+    if (textErrors.length) return { gate: 'rejected', lintErrors: textErrors };
     const merged = repo.mergeOntoHead(body.baseCommit, body.files);
     if (merged.conflicts.length) return { gate: 'conflict', conflicts: merged.conflicts };
     const gone = new AbortController();
@@ -566,7 +568,7 @@ export function createApp(ctx) {
   router.on('POST', '/api/attempts/:id/review', async ({ req, params }) => {
     const user = auth(req, { role: 'reviewer', session: true });
     const body = await readJson(req, 16 * 1024);
-    const r = merger.review(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null);
+    const r = merger.review(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null, { skipPeerReview: body.skipPeerReview === true });
     if (r.state === 'approved' && runsWorker) setImmediate(() => merger.pump());
     return r;
   });
@@ -575,7 +577,8 @@ export function createApp(ctx) {
   router.on('POST', '/api/batches/:id/review', async ({ req, params }) => {
     const user = auth(req, { role: 'reviewer', session: true });
     const body = await readJson(req, 16 * 1024);
-    const r = merger.reviewBatch(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null);
+    const attemptIds = Array.isArray(body.attemptIds) ? body.attemptIds.map((x) => intParam(x)) : null;
+    const r = merger.reviewBatch(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null, { attemptIds, skipPeerReview: body.skipPeerReview === true });
     if (runsWorker) setImmediate(() => merger.pump());
     return r;
   });

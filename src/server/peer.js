@@ -120,7 +120,6 @@ export class PeerReviews {
     return {
       attemptId: a.id,
       required: this.required,
-      confirmations: this.store.get(`SELECT COUNT(*) AS n FROM peer_reviews WHERE attempt_id = ? AND verdict = 'same'`, a.id).n,
       instructions: PEER_INSTRUCTIONS,
       // Every function this review covers (one batch); give one verdict per attemptId.
       functions: (ids.length ? ids : [a.id]).map((id) => this.functionInfo(id, v)),
@@ -135,7 +134,6 @@ export class PeerReviews {
       submission: {
         annotation: `// FUNCTION: ${s.id}`,
         files: batchResult.mergedFiles ?? this.store.attemptFiles(a),
-        notes: untrusted(a.notes),
       },
       leaseExpires: this.store.get('SELECT expires_at FROM peer_leases WHERE attempt_id = ? ORDER BY expires_at DESC LIMIT 1', a.id)?.expires_at ?? null,
     };
