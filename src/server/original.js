@@ -21,22 +21,24 @@ export class Originals {
       `INSERT INTO original_code (version_id, addr, asm, c) VALUES (?, ?, ?, ?)
        ON CONFLICT(version_id, addr) DO UPDATE SET asm = excluded.asm, c = excluded.c`,
     );
-    this.store.db.exec('BEGIN');
-    try {
-      for await (const line of rl) {
-        if (!line.trim()) continue;
-        const r = JSON.parse(line);
-        insert.run(versionId, Number.parseInt(r.addr, 16), r.asm ?? null, r.c ?? null);
-        if (++n % 5000 === 0) {
-          this.store.db.exec('COMMIT');
-          this.store.db.exec('BEGIN');
-        }
-      }
-      this.store.db.exec('COMMIT');
-    } catch (e) {
-      this.store.db.exec('ROLLBACK');
-      throw e;
+    // Rows are written in chunks, each in its own short transaction with no await inside: the
+    // worker's other work shares this database connection and must never land in (or be rolled
+    // back with) the import's transaction.
+    let chunk = [];
+    const flush = () => {
+      const rows = chunk;
+      chunk = [];
+      this.store.tx(() => {
+        for (const r of rows) insert.run(versionId, Number.parseInt(r.addr, 16), r.asm ?? null, r.c ?? null);
+      });
+    };
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      chunk.push(JSON.parse(line));
+      n++;
+      if (chunk.length >= 2000) flush();
     }
+    flush();
     return n;
   }
 
