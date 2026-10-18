@@ -11,6 +11,7 @@ WorkingDirectory=/var/lib/togetherdecomp
 ExecStart=/opt/node/bin/node --disable-warning=ExperimentalWarning /opt/togetherdecomp/src/server/cli.js start web --data /var/lib/togetherdecomp
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=15
 Environment=NODE_ENV=production
 Environment=TD_WEB_DIR=/opt/togetherdecomp/src/server/web
 

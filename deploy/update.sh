@@ -66,10 +66,11 @@ else
   systemctl restart togetherdecomp.service
   sleep 2
   systemctl is-active --quiet togetherdecomp.service || { journalctl -u togetherdecomp -n 20 --no-pager; exit 1; }
-  # A restart re-queues the worker's running verification or merge; wait (up to 15 min) for it to finish.
-  echo "== restarting the worker when it is idle"
+  # A restart re-queues what the worker is doing. Remote checks are cheap to redo (the waiting agent
+  # still gets its result); a batch verification or merge is waited for, up to 15 minutes.
+  echo "== restarting the worker once no batch is being verified or merged"
   waited=0
-  while [ -n "$(ls -A "$JOBS" 2>/dev/null)" ] && [ "$waited" -lt 900 ]; do
+  while ls "$JOBS" 2>/dev/null | grep -qE '^(batch|merge)-' && [ "$waited" -lt 900 ]; do
     sleep 5
     waited=$((waited + 5))
   done

@@ -720,10 +720,14 @@ export async function startServer(dataDir, { role = 'all' } = {}) {
     await new Promise((r) => server.listen(ctx.config.listen.port, ctx.config.listen.host, r));
     console.log(`clank together coordinator listening on http://${ctx.config.listen.host}:${ctx.config.listen.port} (public url ${ctx.config.publicUrl})`);
   }
+  // Quick exit: requests still open (an agent waiting on a remote check can wait for minutes) are
+  // cut off after a moment; agents retry, and the work itself lives in the database and the worker.
   const shutdown = () => {
     for (const stop of stops) stop();
-    if (server) server.close(() => process.exit(0));
-    else process.exit(0);
+    if (!server) process.exit(0);
+    server.close(() => process.exit(0));
+    server.closeIdleConnections();
+    setTimeout(() => process.exit(0), 3000).unref();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
