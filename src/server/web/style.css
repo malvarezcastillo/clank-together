@@ -457,3 +457,31 @@ code.cmd.prompt { white-space: normal; line-height: 1.45; }
 details.claimed { margin: 0; }
 details.claimed summary { font: inherit; }
 details.claimed ul { margin: 4px 0; padding-left: 18px; font: 12px var(--font-mono); color: var(--muted); }
+
+/* --- attempt page: side by side comparison */
+.compare { margin: 14px 0; }
+.compare-tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 2px solid var(--line); }
+.compare-tabs .tab { border-radius: 3px 3px 0 0; opacity: 0.75; }
+.compare-tabs .tab.active { opacity: 1; background: var(--accent); color: var(--accent-text-on); }
+.panes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.pane { min-width: 0; display: flex; flex-direction: column; }
+.pane-title { font: 600 12px var(--font-mono); color: var(--muted); margin-bottom: 4px; }
+.pane pre.code { flex: 1; margin: 0; max-height: 70vh; overflow: auto; font-size: 12px; line-height: 1.45; }
+.asm-diff { margin-top: 10px; }
+.asm-body { max-height: 70vh; overflow: auto; border: 1px solid var(--line); border-radius: 3px; background: var(--code-bg); }
+.asm-row { display: grid; grid-template-columns: 1fr 1fr; font: 12px/1.55 var(--font-mono); }
+.asm-row > div { padding: 0 8px; white-space: pre; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.asm-row > div + div { border-left: 1px solid var(--line); }
+.asm-head { position: sticky; top: 0; font-weight: 700; color: var(--muted); background: var(--code-bg); border-bottom: 1px solid var(--line); }
+.asm-off { color: var(--muted); margin-right: 8px; }
+.asm-row.differs { background: color-mix(in srgb, var(--danger) 24%, transparent); }
+.asm-row.gap { background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.asm-row.operands > div { color: color-mix(in srgb, var(--fg) 80%, var(--warn)); }
+.asm-label > div { color: var(--accent-ink); font-weight: 700; }
+details.fold { margin: 6px 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 3px; }
+details.fold > summary { font: 600 14px var(--font-body); }
+details.fold[open] > summary { margin-bottom: 6px; }
+@media (max-width: 800px) {
+  .panes, .asm-row { grid-template-columns: 1fr; }
+  .asm-row > div + div { border-left: none; }
+}

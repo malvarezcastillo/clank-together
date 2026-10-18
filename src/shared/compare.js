@@ -161,15 +161,22 @@ export function compareObject({ obj, listing, file, annotations, symbols, nameIn
       functions.push({ ...base, addr: sym.addr, status: STATUS.MISSING, score: 0 });
       continue;
     }
-    const r = compareFunction({ fn, addr: sym.addr, origSize: sym.size, pe, resolve, symbols, proc: procsBySymbol.get(symbol), literalOf: (s) => obj.literal(s) });
+    const proc = procsBySymbol.get(symbol);
+    const r = compareFunction({ fn, addr: sym.addr, origSize: sym.size, pe, resolve, symbols, proc, literalOf: (s) => obj.literal(s) });
     inferred.push(...r.inferred);
     delete r.inferred;
-    functions.push({ ...base, addr: sym.addr, ...r });
+    functions.push({ ...base, addr: sym.addr, ...r, asm: procText(proc) });
   }
 
   const boundSymbols = new Set([...bindings.keys(), ...byAnn.values()]);
   const unannotated = [...objFns.keys()].filter((n) => !boundSymbols.has(n) && !isCompilerGenerated(n));
   return { file, functions, bindings: Object.fromEntries(bindings), inferred: dedupeInferred(inferred), unannotated, errors };
+}
+
+// Our compiled code as the listing shows it, for reviewers to read next to the original.
+function procText(proc) {
+  if (!proc) return null;
+  return proc.insns.slice(0, 4000).map((i) => `${i.offset.toString(16).padStart(4, '0')}  ${i.text}`).join('\n');
 }
 
 function isCompilerGenerated(name) {

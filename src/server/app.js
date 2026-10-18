@@ -14,6 +14,7 @@ import { PeerReviews } from './peer.js';
 import { Originals } from './original.js';
 import { downloadsDir, installPs1, installSh } from './install.js';
 import { ServerGhidra } from './ghidra.js';
+import { functionRegions } from './split.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
@@ -357,6 +358,16 @@ export function createApp(ctx) {
     return tasks.heartbeatAll(user);
   });
 
+  // The submitted definition of one function (annotations through the closing brace).
+  function targetSource(id, files) {
+    if (!id || !files) return null;
+    for (const [file, text] of Object.entries(files)) {
+      const r = functionRegions(text)?.get(id);
+      if (r) return { file, line: r.start + 1, text: text.split('\n').slice(r.start, r.end).join('\n') };
+    }
+    return null;
+  }
+
   router.on('GET', '/api/attempts/:id', ({ req, params }) => {
     const user = auth(req);
     const a = store.get('SELECT a.*, u.name AS author FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.id = ?', intParam(params.id));
@@ -384,6 +395,7 @@ export function createApp(ctx) {
       reviews: store.all('SELECT r.action, r.comment, r.created_at, u.name AS reviewer FROM reviews r JOIN users u ON u.id = r.reviewer_id WHERE r.attempt_id = ?', a.id),
       peerReviews: peers.verdicts(a.id),
       peerRequired: peers.required,
+      targetSource: targetSource(result?.feedback?.target?.id, batchResult.mergedFiles ?? store.attemptFiles(a)),
     };
   });
 

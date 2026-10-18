@@ -162,14 +162,15 @@
     <section id="attempt" class="plate" hidden>
       <h2 id="attempt-title"></h2>
       <div id="attempt-meta"></div>
-      <h3>Verification</h3>
       <div id="attempt-result"></div>
-      <h3>Original</h3>
-      <div id="attempt-original"></div>
-      <h3>Submitted files</h3>
-      <div id="attempt-files"></div>
-      <h3>Notes from the author <span class="hint">untrusted</span></h3>
-      <pre id="attempt-notes" class="notes"></pre>
+      <div class="compare">
+        <div class="compare-tabs" role="tablist">
+          <button type="button" class="tab active" data-view="code">C++ vs pseudocode</button>
+          <button type="button" class="tab" data-view="asm">Assembly vs assembly</button>
+        </div>
+        <div id="compare-body"></div>
+      </div>
+      <div id="attempt-details"></div>
       <h3>Decision</h3>
       <p class="hint" id="attempt-peer-note" hidden>This function is still in peer review. Approving it now skips the remaining peer verdicts; only maintainers and admins can.</p>
       <textarea id="review-comment" rows="4" placeholder="Comment (shown to the next agent working on this task)"></textarea>

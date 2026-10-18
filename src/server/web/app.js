@@ -372,56 +372,59 @@ function queueBatches(body, items, skipsPeers) {
 async function openAttempt(id) {
   const a = await api(`/api/attempts/${id}`);
   currentAttempt = a;
+  const f = a.feedback || {};
+  const t = f.target;
   $('attempt').hidden = false;
-  $('attempt-title').textContent = `Attempt #${a.id} (task ${a.taskId}) by ${a.author}`;
-  $('attempt-meta').replaceChildren(el('p', `State ${a.state}, score ${((a.score || 0) * 100).toFixed(1)}%, base ${a.baseCommit.slice(0, 10)}`));
+  $('attempt-title').textContent = `Attempt #${a.id} by ${a.author}${t ? `: ${t.demangled || t.id}` : ''}`;
+  $('attempt-meta').replaceChildren(
+    el('p', `${t ? `${t.id} · ` : ''}${a.state.replace('_', ' ')} · score ${((a.score || 0) * 100).toFixed(1)}% · size ${t?.size?.ours ?? '?'} / ${t?.size?.original ?? '?'} bytes · base ${a.baseCommit.slice(0, 10)}`, 'muted'),
+  );
   if (a.changedHeaders.length) $('attempt-meta').append(el('p', `Changes headers: ${a.changedHeaders.join(', ')} (needs extra approval)`, 'warn'));
 
   const r = $('attempt-result');
-  r.replaceChildren();
-  const f = a.feedback || {};
-  r.append(el('p', f.summary || ''));
-  if (f.target) {
-    r.append(el('p', `${f.target.id} ${f.target.demangled || ''}: ${f.target.status}, size ${f.target.size?.ours} / ${f.target.size?.original ?? '?'}`));
-    if (f.target.relocations?.length) r.append(table(['Offset', 'Symbol', 'Status'], f.target.relocations.map((x) => [`+0x${x.offset.toString(16)}`, x.symbol, x.ok ? 'not yet named' : x.reason])));
-  }
-  (f.warnings || []).forEach((w) => r.append(el('p', w, 'warn')));
+  r.replaceChildren(el('p', f.summary || ''));
   if (a.peerReviews?.length) {
-    r.append(el('h3', `Peer review (${a.peerReviews.filter((p) => p.verdict === 'same').length} of ${a.peerRequired} confirmed the logic)`));
+    r.append(el('h3', `Peer review: ${a.peerReviews.filter((p) => p.verdict === 'same').length} of ${a.peerRequired} confirmed the logic`));
     r.append(table(['Reviewer', 'Verdict', 'Reason (untrusted)'], a.peerReviews.map((p) => [p.reviewer, status(p.verdict === 'same' ? 'exact' : 'revoked'), p.reason?.text ?? ''])));
-  } else if (a.state === 'in_review' && f.target && f.target.status !== 'exact' && f.target.status !== 'match_unresolved') {
+  } else if (a.state === 'in_review' && t && t.status !== 'exact' && t.status !== 'match_unresolved') {
     r.append(el('p', 'Not byte-identical and no peer verdicts recorded.', 'warn'));
   }
-  if (f.otherFunctions?.length) r.append(table(['Other functions in file', 'Status', 'Score'], f.otherFunctions.map((x) => [x.id, x.status, `${(x.score * 100).toFixed(1)}%`])));
 
-  // The original next to the submission, so a human can judge it like the peers do.
-  const orig = $('attempt-original');
-  orig.replaceChildren();
-  if (f.target?.id) {
-    api(`/api/original/${f.target.id}`)
-      .then((o) => {
-        if (o.pseudocode) {
-          const d = el('details');
-          d.open = true;
-          d.append(el('summary', `Original pseudocode (${o.source}, a reading aid)`), el('pre', o.pseudocode, 'code'));
-          orig.append(d);
-        }
-        const d = el('details');
-        d.append(el('summary', `Original disassembly at ${o.addr}`), el('pre', o.asm, 'code'));
-        orig.append(d);
-      })
-      .catch((e) => orig.append(el('p', `Original not available: ${e.message}`, 'muted')));
+  // Side by side: the submission on the left, the original on the right.
+  compare = { source: a.targetSource, ourAsm: t?.asm ?? null, original: null, error: null };
+  showCompare(compareView);
+  if (t?.id) {
+    api(`/api/original/${t.id}`)
+      .then((o) => (compare.original = o))
+      .catch((e) => (compare.error = e.message))
+      .finally(() => currentAttempt === a && showCompare(compareView));
   }
 
-  const files = $('attempt-files');
-  files.replaceChildren();
-  for (const [p, content] of Object.entries(a.mergedFiles || a.files)) {
-    const d = el('details');
-    d.append(el('summary', p));
-    d.append(el('pre', content, 'code'));
-    files.append(d);
+  // Everything else folds away.
+  const details = $('attempt-details');
+  details.replaceChildren();
+  const fold = (title, ...content) => {
+    const d = el('details', null, 'fold');
+    d.append(el('summary', title), ...content);
+    details.append(d);
+  };
+  if (f.warnings?.length) fold(`Warnings (${f.warnings.length})`, ...f.warnings.map((w) => el('p', w, 'warn')));
+  if (t?.relocations?.length) fold(`References to check (${t.relocations.length})`, table(['Offset', 'Symbol', 'Status'], t.relocations.map((x) => [`+0x${x.offset.toString(16)}`, x.symbol, x.ok ? 'not yet named' : x.reason])));
+  if (f.otherFunctions?.length) {
+    const exact = f.otherFunctions.filter((x) => x.status === 'exact' || x.status === 'match_unresolved').length;
+    fold(`Other functions in the file (${f.otherFunctions.length}, ${exact} byte-identical)`, table(['Function', 'Status', 'Score'], f.otherFunctions.map((x) => [x.id, x.status, `${(x.score * 100).toFixed(1)}%`])));
   }
-  $('attempt-notes').textContent = a.notes || '(none)';
+  const files = Object.entries(a.mergedFiles || a.files);
+  fold(
+    `Submitted files (${files.length})`,
+    ...files.map(([p, content]) => {
+      const d = el('details');
+      d.append(el('summary', p), el('pre', content, 'code'));
+      return d;
+    }),
+  );
+  fold(a.notes ? 'Notes from the author (untrusted)' : 'Notes from the author (none)', el('pre', a.notes || '(none)', 'notes'));
+
   // Deciding a function before three peers confirmed it is for maintainers.
   const early = a.state === 'peer_review';
   for (const btn of document.querySelectorAll('.actions button')) btn.disabled = early && !atLeast('maintainer');
@@ -429,6 +432,145 @@ async function openAttempt(id) {
   $('attempt-peer-note').hidden = !early;
   $('review-status').textContent = a.reviews.map((x) => `${x.reviewer}: ${x.action}${x.comment ? ` - ${x.comment}` : ''}`).join('\n');
   $('attempt').scrollIntoView({ behavior: 'smooth' });
+}
+
+let compare = null;
+let compareView = 'code';
+
+for (const tab of document.querySelectorAll('.compare-tabs .tab')) tab.addEventListener('click', () => showCompare(tab.dataset.view));
+
+function showCompare(view) {
+  compareView = view;
+  for (const tab of document.querySelectorAll('.compare-tabs .tab')) tab.classList.toggle('active', tab.dataset.view === view);
+  const body = $('compare-body');
+  body.replaceChildren();
+  if (!compare) return;
+  const o = compare.original;
+  const pending = !o && !compare.error ? 'Loading the original…' : `Original not available${compare.error ? `: ${compare.error}` : ''}`;
+  if (view === 'code') {
+    body.append(
+      twoPanes(
+        [compare.source ? `Submitted C++ · ${compare.source.file}:${compare.source.line}` : 'Submitted C++', compare.source?.text ?? 'The function was not found in the submitted files.'],
+        [o ? `Original pseudocode (Ghidra, a reading aid) · ${o.addr}` : 'Original pseudocode', o ? o.pseudocode ?? 'No pseudocode exported for this function yet; see the assembly view.' : pending],
+      ),
+    );
+  } else if (!compare.ourAsm || !o) {
+    body.append(twoPanes(['Our compiled code', compare.ourAsm ?? 'Not recorded for this attempt (it was submitted before the compiled code was kept). Newer attempts have it.'], [o ? `Original at ${o.addr}` : 'Original', o?.asm ?? pending]));
+  } else {
+    body.append(alignedAsm(compare.ourAsm, o.asm, o.addr));
+  }
+}
+
+function twoPanes(left, right) {
+  const wrap = el('div', null, 'panes');
+  for (const [title, text] of [left, right]) {
+    const pane = el('div', null, 'pane');
+    pane.append(el('div', title, 'pane-title'), el('pre', text, 'code'));
+    wrap.append(pane);
+  }
+  return wrap;
+}
+
+// Both listings as rows, lined up by instruction (longest common sequence of mnemonics), so
+// matching instructions sit side by side and the differences stand out. Ghidra and the MSVC
+// listing spell some mnemonics differently (JZ / je).
+const MNEMONIC_ALIAS = { je: 'jz', jne: 'jnz', jb: 'jc', jnae: 'jc', jae: 'jnc', jnb: 'jnc', sete: 'setz', setne: 'setnz', setb: 'setc', setae: 'setnc', cmove: 'cmovz', cmovne: 'cmovnz', cmovb: 'cmovc', cmovae: 'cmovnc', jnbe: 'ja', jna: 'jbe', jnge: 'jl', jnl: 'jge', jng: 'jle', jnle: 'jg' };
+const mnemonic = (m) => MNEMONIC_ALIAS[m.toLowerCase()] ?? m.toLowerCase();
+
+function parseOurs(text) {
+  return text
+    .split('\n')
+    .map((line) => {
+      const m = /^([0-9a-f]+)\s+(\S+)\s*(.*)$/i.exec(line);
+      return m ? { off: m[1], key: mnemonic(m[2]), text: `${m[2]} ${m[3]}`.trim() } : null;
+    })
+    .filter(Boolean);
+}
+
+function parseOriginal(text) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    const m = /^\s*\+0x([0-9a-f]+)\s+[0-9a-f]+\s+(?:[0-9a-f]{2}\s)+\s*(\S+)\s*(.*)$/i.exec(line);
+    if (m) out.push({ off: m[1].replace(/^0+(?=.)/, '').padStart(4, '0'), key: mnemonic(m[2]), text: `${m[2].toLowerCase()} ${m[3]}`.trim() });
+    else if (/^\w+:$/.test(line.trim())) out.push({ label: line.trim() });
+  }
+  return out;
+}
+
+function alignedAsm(oursText, origText, addr) {
+  const ours = parseOurs(oursText);
+  const orig = parseOriginal(origText);
+  const origInsns = orig.filter((x) => !x.label);
+  const rows = alignRows(ours, origInsns);
+  // Labels of the original go back in above the instruction they name.
+  const labelsBefore = new Map();
+  let labels = [];
+  for (const x of orig) {
+    if (x.label) labels.push(x.label);
+    else if (labels.length) {
+      labelsBefore.set(x, labels);
+      labels = [];
+    }
+  }
+  const same = rows.filter((r) => r.a && r.b && r.a.key === r.b.key).length;
+  const wrap = el('div', null, 'asm-diff');
+  wrap.append(el('p', `${same} of ${Math.max(ours.length, origInsns.length)} instructions line up by mnemonic. Red rows differ, yellow rows exist on one side only; operands are compared loosely.`, 'hint'));
+  const body = el('div', null, 'asm-body');
+  const head = el('div', null, 'asm-row asm-head');
+  head.append(el('div', `Our compiled code (${ours.length} instructions)`), el('div', `Original at ${addr} (${origInsns.length} instructions)`));
+  body.append(head);
+  for (const row of rows) {
+    for (const label of (row.b && labelsBefore.get(row.b)) || []) {
+      const lr = el('div', null, 'asm-row asm-label');
+      lr.append(el('div', ''), el('div', label));
+      body.append(lr);
+    }
+    const cls = !row.a || !row.b ? 'gap' : row.a.key !== row.b.key ? 'differs' : looseOperands(row.a.text) === looseOperands(row.b.text) ? 'same' : 'operands';
+    const tr = el('div', null, `asm-row ${cls}`);
+    tr.append(asmCell(row.a), asmCell(row.b));
+    body.append(tr);
+  }
+  wrap.append(body);
+  return wrap;
+}
+
+function asmCell(x) {
+  const c = el('div');
+  if (x) {
+    c.append(el('span', x.off, 'asm-off'), document.createTextNode(x.text));
+    c.title = x.text;
+  }
+  return c;
+}
+
+// For colouring only: case, spacing and size keywords differ between the two disassemblers.
+function looseOperands(text) {
+  return text.toLowerCase().replace(/;.*$/, '').replace(/\s+/g, '').replace(/(qword|dword|word|byte)ptr/g, '$1');
+}
+
+function alignRows(a, b) {
+  const n = Math.min(a.length, 1500);
+  const m = Math.min(b.length, 1500);
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i].key === b[j].key ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const rows = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i].key === b[j].key) rows.push({ a: a[i++], b: b[j++] });
+    else if (dp[i + 1][j] >= dp[i][j + 1]) rows.push({ a: a[i++], b: null });
+    else rows.push({ a: null, b: b[j++] });
+  }
+  while (i < a.length) rows.push({ a: a[i++], b: null });
+  while (j < b.length) rows.push({ a: null, b: b[j++] });
+  // A gap on each side right after each other is one changed instruction: show it on one row.
+  const out = [];
+  for (const r of rows) {
+    const prev = out[out.length - 1];
+    if (prev && prev.a && !prev.b && r.b && !r.a) prev.b = r.b;
+    else out.push({ ...r });
+  }
+  return out;
 }
 
 document.querySelectorAll('.actions button').forEach((b) =>
