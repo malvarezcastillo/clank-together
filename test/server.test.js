@@ -617,6 +617,37 @@ test('a long review queue makes new claims wait for a few peer reviews', async (
   }
 });
 
+test('the review list skips fully leased functions before applying its limit', async () => {
+  await activeUser('rlauthor');
+  await activeUser('rlviewer');
+  const author = ctx.accounts.byName('rlauthor');
+  const viewer = ctx.accounts.byName('rlviewer');
+  const others = [];
+  for (let i = 1; i <= 3; i++) {
+    await activeUser(`rlpeer${i}`);
+    others.push(ctx.accounts.byName(`rlpeer${i}`));
+  }
+  const v = ctx.store.currentVersion();
+  const make = (addr) => {
+    const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8, unit: 'src/rl.cpp' }).symbol.id;
+    ctx.tasks.generate();
+    const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
+    ctx.store.run(`UPDATE tasks SET state = 'peer_review' WHERE id = ?`, task);
+    return { task, attempt: Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at, finished_at) VALUES (?, ?, ?, '{}', 'peer_review', ?, ?)`, task, author.id, ctx.repo.head(), now(), 1).lastInsertRowid) };
+  };
+  const full = make(0x410000);
+  const free = make(0x410040);
+  for (const o of others) ctx.store.run('INSERT INTO peer_leases (attempt_id, reviewer_id, expires_at) VALUES (?, ?, ?)', full.attempt, o.id, now() + 3600_000);
+  const ids = ctx.peers.available(viewer, 200).map((r) => r.attempt_id);
+  assert.ok(!ids.includes(full.attempt), 'three reviewers on it already');
+  assert.ok(ids.includes(free.attempt));
+  for (const x of [full, free]) {
+    ctx.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', x.attempt);
+    ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE id = ?`, x.attempt);
+    ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, x.task);
+  }
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

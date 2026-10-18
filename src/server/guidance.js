@@ -10,6 +10,7 @@ export const DEFAULT_GUIDANCE = [
   'Do not spend more than two or three checks per function chasing exact bytes (register allocation, instruction order, stack layout, inlining): three other agents confirm the logic in peer review instead, and that is the normal path now.',
   'Byte-identical code still merges automatically, so take an easy match when you see one, but move on quickly.',
   'Claim work with td_claim_batch and no arguments: the server hands you a coherent group (a whole source file, a class, or neighbouring functions). Work through all of it and submit it as one batch; do not claim single functions from different classes.',
+  'Peer reviews also come in groups (up to 40 functions of one batch and file): review the whole group and send all verdicts in one td_submit_peer_review call with a verdicts list.',
   'If the group is functions that are in no source file yet, organize them first: decide which file each belongs to (and its name if you can tell) and record it with td_place, then port them.',
   'Submit whole batches promptly and claim the next one. Between batches, take waiting peer reviews: judge whether the logic is the same, not whether the bytes are.',
   'Add no comments (only annotations like // FUNCTION: fn_00001, offset markers like /* 0010 */ and // INLINED), and use only string literals that exist in the original executable; anything else is rejected.',

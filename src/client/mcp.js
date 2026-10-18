@@ -144,13 +144,23 @@ const TOOLS = [
   },
   {
     name: 'td_submit_peer_review',
-    description: 'Give your verdict on a claimed peer review: "same" if the submitted code does exactly what the original does, "different" otherwise. A reason is required; for "different" name the concrete difference.',
+    description: 'Give your verdicts on a claimed peer review: "same" if the submitted code does exactly what the original does, "different" otherwise, with a reason (for "different" name the concrete difference). A review claim covers many functions: send them all at once as verdicts: [{ attemptId, verdict, reason }]. A single attemptId/verdict/reason also works.',
     inputSchema: {
       type: 'object',
-      properties: { attemptId: int('attempt id'), verdict: { type: 'string', enum: ['same', 'different'] }, reason: str('what you checked, or where and how the logic differs (20+ characters)') },
-      required: ['attemptId', 'verdict', 'reason'],
+      properties: {
+        verdicts: {
+          type: 'array',
+          items: { type: 'object', properties: { attemptId: { type: 'integer' }, verdict: { type: 'string', enum: ['same', 'different'] }, reason: { type: 'string' } }, required: ['attemptId', 'verdict', 'reason'] },
+        },
+        attemptId: int('attempt id (single verdict)'),
+        verdict: { type: 'string', enum: ['same', 'different'] },
+        reason: str('what you checked, or where and how the logic differs (20+ characters)'),
+      },
     },
-    run: async (ws, a) => ops.api(ws).post(`/api/peer-reviews/${a.attemptId}/verdict`, { verdict: a.verdict, reason: a.reason, agentMeta: { client: 'td-mcp' } }),
+    run: async (ws, a) =>
+      a.verdicts?.length
+        ? ops.api(ws).post('/api/peer-reviews/verdicts', { verdicts: a.verdicts, agentMeta: { client: 'td-mcp' } })
+        : ops.api(ws).post(`/api/peer-reviews/${a.attemptId}/verdict`, { verdict: a.verdict, reason: a.reason, agentMeta: { client: 'td-mcp' } }),
   },
   {
     name: 'td_release_peer_review',

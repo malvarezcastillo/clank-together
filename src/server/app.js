@@ -619,6 +619,13 @@ export function createApp(ctx) {
     return peers.context(intParam(params.id));
   });
 
+  // A bulk review: all verdicts of a claimed group in one call.
+  router.on('POST', '/api/peer-reviews/verdicts', async ({ req }) => {
+    const user = auth(req);
+    const body = await readJson(req, 512 * 1024);
+    return { results: peers.submitMany(user, body.verdicts, body.agentMeta) };
+  });
+
   router.on('POST', '/api/peer-reviews/:id/verdict', async ({ req, params }) => {
     const user = auth(req);
     const body = await readJson(req, 16 * 1024);

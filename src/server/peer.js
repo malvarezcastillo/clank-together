@@ -16,7 +16,11 @@ import { untrusted } from './tasks.js';
 import { hex } from '../shared/annotations.js';
 import { settleBatch } from './batches.js';
 
+// How many functions one review claim covers.
+const REVIEW_GROUP = 40;
+
 export const PEER_INSTRUCTIONS = [
+  'You hold every function listed under functions. Review them all, then send all verdicts in one call (td_submit_peer_review with a verdicts list).',
   'Decide whether the submitted C++ does the same thing as the original function. It is not byte-identical; your judgment is what counts.',
   'Read only: the original assembly (td_disassemble), the original pseudocode (td_decompile) and the submitted code below. Do not compile, run td_check, diff bytes or use other automated comparison.',
   'Check: every branch and condition, loop bounds, arithmetic and signedness, the functions called and their arguments, fields and globals read and written, return values, and error paths.',
@@ -49,25 +53,43 @@ export class PeerReviews {
    * before extra confirmations toward auto-acceptance of ones already waiting for a human.
    */
   available(user, limit = 20) {
-    return this.store.all(
-      `SELECT a.id AS attempt_id, a.batch_id, a.task_id, a.state, t.symbol_id, s.name, a.finished_at,
-              (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
-              (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS objections,
-              (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
-         FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
-        WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
-          AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
-          AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
-        ORDER BY a.state = 'in_review', MAX(confirmations, objections) DESC, a.finished_at
-        LIMIT ?`,
+    limit = Math.max(1, Math.min(limit, 1000));
+    // Room for this reviewer is part of the query, so the limit counts functions they can take
+    // (filtering after the limit returned an empty list while the first rows were fully leased).
+    const rows = this.store.all(
+      `SELECT * FROM (
+         SELECT a.id AS attempt_id, a.batch_id, a.task_id, a.state, t.symbol_id, s.name, s.unit, a.finished_at,
+                (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
+                (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS objections,
+                (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
+           FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
+          WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
+            AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
+            AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
+       )
+       WHERE (state = 'peer_review' AND MAX(confirmations, objections) + in_progress < ?)
+          OR (state = 'in_review' AND ? > ? AND confirmations + in_progress < ?)
+       ORDER BY state = 'in_review', MAX(confirmations, objections) DESC, finished_at`,
       now(),
       user.id,
       user.id,
       user.id,
-      Math.min(limit, 1000),
-    )
-      .filter((r) => (r.state === 'in_review' ? this.openForAutoAccept(r) : Math.max(r.confirmations, r.objections) + r.in_progress < this.required))
-      .slice(0, limit);
+      this.required,
+      this.autoAccept,
+      this.required,
+      this.autoAccept,
+    );
+    // Closest to a decision first, but in random order within each stage (by batch, so a batch
+    // stays together): reviewers spread over different groups instead of all taking the same one.
+    const stage = (r) => `${r.state}:${Math.max(r.confirmations, r.objections)}`;
+    const key = new Map();
+    for (const r of rows) {
+      const k = `${stage(r)}:${r.batch_id ?? -r.attempt_id}`;
+      if (!key.has(k)) key.set(k, Math.random());
+      r.shuffle = key.get(k);
+    }
+    const tier = (r) => (r.state === 'in_review' ? 100 : 0) - Math.max(r.confirmations, r.objections);
+    return rows.sort((a, b) => tier(a) - tier(b) || a.shuffle - b.shuffle).slice(0, limit);
   }
 
   // A function waiting for a human takes further reviewers toward auto-acceptance.
@@ -81,13 +103,18 @@ export class PeerReviews {
    */
   claim(user, attemptId = null) {
     return this.store.tx(() => {
-      const options = this.available(user, 200);
+      const options = this.available(user, 1000);
       const pick = attemptId ? options.find((o) => o.attempt_id === attemptId) : options[0];
       if (!pick) throw new HttpError(attemptId ? 409 : 404, attemptId ? 'this attempt is not open for your review (yours, already reviewed, or enough reviewers)' : 'no attempts are waiting for peer review');
-      // The rest of the batch comes along (one read of the shared code), but only functions at
-      // least as far along as the pick: finishing decisions, not first verdicts everywhere.
-      const stage = (o) => (o.state === 'in_review' ? 10 : 0) + Math.max(o.confirmations, o.objections);
-      const group = pick.batch_id ? options.filter((o) => o.batch_id === pick.batch_id && stage(o) >= stage(pick)) : [pick];
+      // Reviews come in bulk like the porting work: the pick's batch and source file, up to
+      // REVIEW_GROUP functions, furthest along first. One read of the shared code covers them all,
+      // and the next reviewers get the same group (it is now closest to a decision), so groups
+      // are decided together.
+      const stage = (o) => (o.state === 'in_review' ? -10 : 0) + Math.max(o.confirmations, o.objections);
+      const near = options
+        .filter((o) => o === pick || (pick.batch_id && o.batch_id === pick.batch_id) || (pick.unit && o.unit === pick.unit && o.state === pick.state))
+        .sort((x, y) => (x === pick ? -1 : y === pick ? 1 : stage(y) - stage(x)));
+      const group = near.slice(0, REVIEW_GROUP);
       for (const o of group) {
         this.store.run(
           `INSERT INTO peer_leases (attempt_id, reviewer_id, expires_at) VALUES (?, ?, ?)
@@ -220,6 +247,19 @@ export class PeerReviews {
       }
       // Undecided: it stays in review until one side has enough verdicts.
       return { state: 'peer_review', same, different, required: this.required };
+    });
+  }
+
+  /** Several verdicts at once (a bulk review); each one stands on its own. */
+  submitMany(user, verdicts, agentMeta) {
+    if (!Array.isArray(verdicts) || !verdicts.length) throw new HttpError(400, 'verdicts must list { attemptId, verdict, reason }');
+    if (verdicts.length > 200) throw new HttpError(400, 'at most 200 verdicts at a time');
+    return verdicts.map((v) => {
+      try {
+        return { attemptId: Number(v.attemptId), ...this.submit(user, Number(v.attemptId), String(v.verdict ?? ''), v.reason, agentMeta) };
+      } catch (e) {
+        return { attemptId: Number(v.attemptId), error: e.message };
+      }
     });
   }
 
