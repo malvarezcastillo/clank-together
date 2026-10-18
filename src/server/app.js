@@ -183,9 +183,12 @@ export function createApp(ctx) {
   router.on('GET', '/api/symbols', ({ req, res, query }) => {
     const v = query.get('version') ? store.get('SELECT * FROM versions WHERE id = ?', query.get('version')) : store.currentVersion();
     if (!v) throw new HttpError(404, 'unknown version');
-    const rows = [...store.symbolMap(v.id).values()].map((s) => [s.id, s.kind, s.addr, s.size, s.name, s.decorated, s.library ? 1 : 0, s.unit]);
-    const body = JSON.stringify({ version: v.id, columns: ['id', 'kind', 'addr', 'size', 'name', 'decorated', 'library', 'unit'], symbols: rows });
-    const etag = `"${crypto.createHash('sha1').update(body).digest('hex')}"`;
+    // Building it takes a while; a minute-old table is fine for agents.
+    const { body, etag } = cached(`symbols:${v.id}`, 60_000, () => {
+      const rows = [...store.symbolMap(v.id).values()].map((s) => [s.id, s.kind, s.addr, s.size, s.name, s.decorated, s.library ? 1 : 0, s.unit]);
+      const json = JSON.stringify({ version: v.id, columns: ['id', 'kind', 'addr', 'size', 'name', 'decorated', 'library', 'unit'], symbols: rows });
+      return { body: json, etag: `"${crypto.createHash('sha1').update(json).digest('hex')}"` };
+    });
     const headers = { etag, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' };
     if (req.headers['if-none-match'] === etag) {
       res.writeHead(304, headers);
@@ -198,7 +201,17 @@ export function createApp(ctx) {
   // Public: who is on the project and what their agents are doing right now. No token labels or
   // other account details; only names, roles and work.
   const ACTIVE_MS = 15 * 60_000;
-  router.on('GET', '/api/crew', () => {
+  // Public numbers every open page polls: computed at most once per `ttl` and shared by everyone.
+  const shared = new Map();
+  const cached = (key, ttl, compute) => {
+    const hit = shared.get(key);
+    if (hit && Date.now() - hit.at < ttl) return hit.value;
+    const value = compute();
+    shared.set(key, { at: Date.now(), value });
+    return value;
+  };
+
+  router.on('GET', '/api/crew', () => cached('crew', 20_000, () => {
     const since = Date.now() - ACTIVE_MS;
     const users = store.all(
       `SELECT u.name, u.role, u.approved_at AS joined,
@@ -226,9 +239,9 @@ export function createApp(ctx) {
       return { name: a.name, agents: a.agents, lastSeen: a.last_seen, units: units.map((u) => ({ unit: u.unit ?? '(no unit)', functions: u.functions })), reviewing, verifying: waiting, submittedToday: today };
     });
     return { activeMinutes: ACTIVE_MS / 60_000, users, active };
-  });
+  }));
 
-  router.on('GET', '/api/progress', () => {
+  router.on('GET', '/api/progress', () => cached('progress', 20_000, () => {
     const total = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE s.kind = 'function' AND s.library = 0`);
     const byStatus = store.all(`SELECT fs.status, COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 GROUP BY fs.status`);
     const byTaskState = store.all('SELECT state, COUNT(*) AS n FROM tasks GROUP BY state');
@@ -236,7 +249,7 @@ export function createApp(ctx) {
     const confirmed = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE fs.confirmed = 1 AND fs.status NOT IN ('exact', 'match_unresolved')`);
     const peerQueue = store.get("SELECT COUNT(*) AS n FROM attempts WHERE state = 'peer_review'").n;
     return { functions: total.n, bytes: total.bytes, byStatus, confirmed, peerQueue, byTaskState, contributors };
-  });
+  }));
 
   // --- accounts
 

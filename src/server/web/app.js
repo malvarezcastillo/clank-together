@@ -732,8 +732,12 @@ api('/api/info')
 loadProgress().catch((e) => ($('progress-body').textContent = e.message));
 loadCrew().catch((e) => ($('active-body').textContent = e.message));
 // Live numbers: progress and the crew views refresh on their own.
-setInterval(() => {
+// Live numbers, only while the page is visible (background tabs would otherwise keep polling).
+const refreshLive = () => {
+  if (document.visibilityState !== 'visible') return;
   loadProgress().catch(() => {});
   loadCrew().catch(() => {});
-}, 30_000);
+};
+setInterval(refreshLive, 60_000);
+document.addEventListener('visibilitychange', refreshLive);
 refresh();
