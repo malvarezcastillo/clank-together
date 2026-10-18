@@ -242,7 +242,8 @@ export class Store {
     this.addColumn('func_status', 'code_hash', 'TEXT');
     this.addColumn('versions', 'label', 'TEXT');
     this.addColumn('check_jobs', 'files_hash', 'TEXT'); // a retry of the same check joins the queued one
-    this.addColumn('batches', 'cost', 'INTEGER'); // units its verification compiles (queue order) // human-readable name, e.g. "World of Warcraft 5.0.3 (build 15890, x64)"
+    this.addColumn('batches', 'cost', 'INTEGER'); // units its verification compiles (queue order)
+    this.addColumn('users', 'peer_review_blocked', 'INTEGER NOT NULL DEFAULT 0'); // no peer reviews from this account // human-readable name, e.g. "World of Warcraft 5.0.3 (build 15890, x64)"
     this.addColumn('attempts', 'batch_id', 'INTEGER REFERENCES batches(id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
   }

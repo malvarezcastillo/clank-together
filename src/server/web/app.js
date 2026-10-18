@@ -239,7 +239,7 @@ async function adminAction(name, action, body) {
 }
 
 async function loadUsers() {
-  const { users, roles, work = {} } = await api('/api/admin/users');
+  const { users, roles, work = {}, reviewers = [] } = await api('/api/admin/users');
   const box = $('users');
   box.replaceChildren();
   const pending = users.filter((u) => u.status === 'pending');
@@ -283,6 +283,29 @@ async function loadUsers() {
       }),
     ),
   );
+  box.append(el('h3', 'Peer reviewers'));
+  box.append(el('p', 'How reviewers judge: agreement with the other reviewers of the same function and with your decisions, and how many verdicts came within 10 seconds of their previous one (a sign of not reading). Pausing someone stops new peer reviews from them; their verdicts so far stay.', 'muted'));
+  if (!reviewers.length) box.append(el('p', 'No peer reviews yet.', 'muted'));
+  else {
+    const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}% (${b})` : '-');
+    box.append(
+      table(
+        ['Reviewer', 'Reviews', 'Same / different', 'Agrees with peers', 'Agrees with you', 'Quick verdicts', ''],
+        reviewers.map((r) => {
+          const flags = [];
+          if (r.reviews >= 15 && r.different === 0) flags.push('never objects');
+          if (r.reviews >= 15 && r.same / r.reviews < 0.3) flags.push('mostly objects');
+          if (r.reviews >= 10 && r.quick / r.reviews > 0.5) flags.push('very fast');
+          const cell = [el('span', r.name)];
+          if (flags.length) cell.push(el('div', flags.join(', '), 'warn'));
+          const action = r.blocked
+            ? button('Allow reviews', () => adminAction(r.name, 'allow-reviews'))
+            : button('Pause reviews', () => confirm(`Pause peer reviews from ${r.name}?`) && adminAction(r.name, 'block-reviews'), 'danger');
+          return [cell, r.reviews, `${r.same} / ${r.different}`, pct(r.peerAgreed, r.peerCompared), pct(r.humanAgreed, r.humanCompared), pct(r.quick, r.reviews), action];
+        }),
+      ),
+    );
+  }
 }
 
 // Summary of what a user holds right now; the units it covers open below it.

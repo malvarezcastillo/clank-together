@@ -11,6 +11,7 @@ import { fixture, FN_ADDR, CALLEE_ADDR, GLOBAL_ADDR } from './helpers.js';
 import { openServer, createApp } from '../src/server/app.js';
 import { Store, now } from '../src/server/db.js';
 import { STATUS } from '../src/shared/compare.js';
+import { reviewerStats } from '../src/server/reviewers.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 let dataDir, ctx, server, base;
@@ -447,6 +448,19 @@ test('five agreeing peers and no objection accept a function without human revie
     ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE id = ?`, x.attempt);
     ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, x.task);
   }
+});
+
+test('reviewer stats and pausing a reviewer', async () => {
+  // The auto-accept test left verdicts from aapeer1..5; aapeer1 objected on the contested function.
+  const stats = Object.fromEntries(reviewerStats(ctx.store).map((r) => [r.name, r]));
+  assert.ok(stats.aapeer2.reviews >= 2);
+  assert.equal(stats.aapeer1.different, 1);
+  assert.ok(stats.aapeer2.peerCompared >= 1);
+
+  const peer = ctx.accounts.byName('aapeer6');
+  ctx.store.run('UPDATE users SET peer_review_blocked = 1 WHERE id = ?', peer.id);
+  assert.deepEqual(ctx.peers.available(peer), [], 'a paused reviewer gets no reviews');
+  ctx.store.run('UPDATE users SET peer_review_blocked = 0 WHERE id = ?', peer.id);
 });
 
 test('the crew view is public and shows no account details', async () => {

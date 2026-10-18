@@ -51,10 +51,12 @@ export class PeerReviews {
               (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
          FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
         WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
+          AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
           AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
         ORDER BY a.state = 'in_review', a.finished_at
         LIMIT ?`,
       now(),
+      user.id,
       user.id,
       user.id,
       Math.min(limit, 1000),
@@ -162,6 +164,7 @@ export class PeerReviews {
       if (!a) throw new HttpError(404, 'no such attempt');
       if (a.state !== 'peer_review' && a.state !== 'in_review') throw new HttpError(409, `attempt is ${a.state}, not waiting for peer review`);
       if (a.user_id === user.id) throw new HttpError(403, 'you cannot review your own attempt');
+      if (this.store.get('SELECT 1 FROM users WHERE id = ? AND peer_review_blocked = 1', user.id)) throw new HttpError(403, 'peer reviews from this account are paused by a maintainer');
       if (this.store.get('SELECT 1 FROM peer_reviews WHERE attempt_id = ? AND reviewer_id = ?', attemptId, user.id)) throw new HttpError(409, 'you already reviewed this attempt');
       const leased = this.store.get('SELECT 1 FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ? AND expires_at > ?', attemptId, user.id, now());
       const counts = this.counts(attemptId);

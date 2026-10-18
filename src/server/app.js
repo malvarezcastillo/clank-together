@@ -17,6 +17,7 @@ import { ServerGhidra } from './ghidra.js';
 import { functionRegions } from './split.js';
 import { CheckQueue, WorkerUnavailable } from './checks.js';
 import { withGuidance } from './guidance.js';
+import { reviewerStats } from './reviewers.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
@@ -601,7 +602,7 @@ export function createApp(ctx) {
 
   router.on('GET', '/api/admin/users', ({ req, query }) => {
     auth(req, { role: 'admin', session: true });
-    return { roles: ROLES, users: accounts.listUsers(query.get('status') ?? undefined), work: claimedWork() };
+    return { roles: ROLES, users: accounts.listUsers(query.get('status') ?? undefined), work: claimedWork(), reviewers: reviewerStats(store) };
   });
 
   // What each user currently holds, by name: leased tasks grouped by unit, peer reviews, submitted batches in flight.
@@ -632,6 +633,17 @@ export function createApp(ctx) {
     reject: (name, admin) => accounts.reject(name, admin.id),
     revoke: (name, admin) => accounts.revoke(name, admin.id),
     reinstate: (name, admin) => accounts.reinstate(name, admin.id),
+    // Pause or allow an account's peer reviews (e.g. rubber-stamping); its existing verdicts stay.
+    'block-reviews': (name, admin) => setReviewBlock(name, 1, admin),
+    'allow-reviews': (name, admin) => setReviewBlock(name, 0, admin),
+  };
+  const setReviewBlock = (name, blocked, admin) => {
+    const u = accounts.byName(name);
+    if (!u) throw new HttpError(404, 'no such user');
+    store.run('UPDATE users SET peer_review_blocked = ? WHERE id = ?', blocked, u.id);
+    if (blocked) store.run('DELETE FROM peer_leases WHERE reviewer_id = ?', u.id);
+    store.event(blocked ? 'reviews_blocked' : 'reviews_allowed', admin.id, { name });
+    return { name, peerReviewsBlocked: !!blocked };
   };
   router.on('POST', '/api/admin/users/:name/:action', async ({ req, params }) => {
     const admin = auth(req, { role: 'admin', session: true });
