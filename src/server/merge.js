@@ -282,6 +282,7 @@ export class Merger {
       (peers.length ? `\nPeer-reviewed-by: ${peers.join(', ')}` : '') +
       (reviewers.length ? `\nReviewed-by: ${reviewers.join(', ')}` : '') +
       (!reviewers.length && !confirmedIds.size ? '\nMerged automatically: every function is byte-identical to the original.' : '') +
+      (!reviewers.length && confirmedIds.size ? `\nAccepted without human review: at least ${this.peers?.autoAccept ?? 5} peers confirmed the logic and none objected.` : '') +
       '\n';
     const commit = this.repo.commitFiles(merged.files, message, `${author} <${author.replace(/[^A-Za-z0-9_.-]/g, '_')}@users.clank-together.invalid>`);
 

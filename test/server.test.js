@@ -411,6 +411,44 @@ test('a header batch is verified on its own units and merged with every includer
   }
 });
 
+test('five agreeing peers and no objection accept a function without human review', async () => {
+  await activeUser('aaauthor');
+  const author = ctx.accounts.byName('aaauthor');
+  const peers = [];
+  for (let i = 1; i <= 6; i++) peers.push(await activeUser(`aapeer${i}`));
+  const v = ctx.store.currentVersion();
+  const make = (addr) => {
+    const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8, unit: 'src/aa.cpp' }).symbol.id;
+    ctx.tasks.generate();
+    const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
+    ctx.store.run(`UPDATE tasks SET state = 'peer_review' WHERE id = ?`, task);
+    return { task, attempt: Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, task, author.id, ctx.repo.head(), now()).lastInsertRowid) };
+  };
+  const review = async (attempt, token, verdict) => {
+    await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, token);
+    return (await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict, reason: verdict === 'same' ? 'the same branches, calls and returns' : 'the original returns early when the flag is set' }, token)).body;
+  };
+
+  const clean = make(0x401900);
+  for (let i = 0; i < 3; i++) await review(clean.attempt, peers[i], 'same');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', clean.attempt).state, 'in_review', 'three send it to a human');
+  assert.equal((await review(clean.attempt, peers[3], 'same')).state, 'in_review', 'it stays open for more reviewers');
+  assert.equal((await review(clean.attempt, peers[4], 'same')).state, 'approved', 'five accept it');
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = ?', clean.task).state, 'approved');
+
+  const contested = make(0x401940);
+  await review(contested.attempt, peers[0], 'different');
+  for (let i = 1; i <= 3; i++) await review(contested.attempt, peers[i], 'same');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', contested.attempt).state, 'in_review');
+  const more = await call('POST', '/api/peer-reviews/claim', { attemptId: contested.attempt }, peers[4]);
+  assert.equal(more.status, 409, 'an objection leaves the decision to a human');
+
+  for (const x of [clean, contested]) {
+    ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE id = ?`, x.attempt);
+    ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, x.task);
+  }
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

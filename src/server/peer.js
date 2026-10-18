@@ -6,7 +6,9 @@
 // An attempt stays in peer review until `peerReviews` (default 3) different accounts agree: that
 // many "same" verdicts send it on to human review, that many "different" ones send it back to its
 // author with their reasons. With mixed verdicts, further reviewers are let in until one side
-// gets there.
+// gets there. A function stays open for more reviewers while it waits for a human: with
+// `peerAutoAccept` (default 5) "same" verdicts and no "different" at all it is accepted without
+// human review.
 
 import { HttpError } from './http.js';
 import { now } from './db.js';
@@ -32,6 +34,10 @@ export class PeerReviews {
     return this.project.matchPolicy.peerReviews ?? 3;
   }
 
+  get autoAccept() {
+    return this.project.matchPolicy.peerAutoAccept ?? 5;
+  }
+
   get leaseMs() {
     return (this.project.matchPolicy.peerLeaseMinutes ?? 60) * 60_000;
   }
@@ -39,20 +45,28 @@ export class PeerReviews {
   /** Attempts waiting for peer review that `user` may take. */
   available(user, limit = 20) {
     return this.store.all(
-      `SELECT a.id AS attempt_id, a.batch_id, a.task_id, t.symbol_id, s.name, a.finished_at,
+      `SELECT a.id AS attempt_id, a.batch_id, a.task_id, a.state, t.symbol_id, s.name, a.finished_at,
               (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
               (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS objections,
               (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
          FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
-        WHERE a.state = 'peer_review' AND a.user_id != ?
+        WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
           AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
-        ORDER BY a.finished_at
+        ORDER BY a.state = 'in_review', a.finished_at
         LIMIT ?`,
       now(),
       user.id,
       user.id,
-      Math.min(limit, 200),
-    ).filter((r) => Math.max(r.confirmations, r.objections) + r.in_progress < this.required);
+      Math.min(limit, 1000),
+    )
+      .filter((r) => (r.state === 'in_review' ? this.openForAutoAccept(r) : Math.max(r.confirmations, r.objections) + r.in_progress < this.required))
+      .slice(0, limit);
+  }
+
+  // A function waiting for a human takes further reviewers toward auto-acceptance, unless someone
+  // already found a difference (then the human decides).
+  openForAutoAccept(r) {
+    return this.autoAccept > this.required && r.objections === 0 && r.confirmations + r.in_progress < this.autoAccept;
   }
 
   /**
@@ -146,13 +160,14 @@ export class PeerReviews {
     return this.store.tx(() => {
       const a = this.store.get('SELECT * FROM attempts WHERE id = ?', attemptId);
       if (!a) throw new HttpError(404, 'no such attempt');
-      if (a.state !== 'peer_review') throw new HttpError(409, `attempt is ${a.state}, not waiting for peer review`);
+      if (a.state !== 'peer_review' && a.state !== 'in_review') throw new HttpError(409, `attempt is ${a.state}, not waiting for peer review`);
       if (a.user_id === user.id) throw new HttpError(403, 'you cannot review your own attempt');
       if (this.store.get('SELECT 1 FROM peer_reviews WHERE attempt_id = ? AND reviewer_id = ?', attemptId, user.id)) throw new HttpError(409, 'you already reviewed this attempt');
       const leased = this.store.get('SELECT 1 FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ? AND expires_at > ?', attemptId, user.id, now());
       const counts = this.counts(attemptId);
       const others = this.store.get('SELECT COUNT(*) AS n FROM peer_leases WHERE attempt_id = ? AND reviewer_id != ? AND expires_at > ?', attemptId, user.id, now()).n;
-      if (!leased && Math.max(counts.same, counts.different) + others >= this.required) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
+      const full = a.state === 'in_review' ? !this.openForAutoAccept({ objections: counts.different, confirmations: counts.same, in_progress: others }) : Math.max(counts.same, counts.different) + others >= this.required;
+      if (!leased && full) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
 
       this.store.run(
         'INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, agent_meta, created_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -163,6 +178,17 @@ export class PeerReviews {
 
       const same = counts.same + (verdict === 'same' ? 1 : 0);
       const different = counts.different + (verdict === 'different' ? 1 : 0);
+      if (a.state === 'in_review') {
+        // Already waiting for a human: enough agreeing peers and no objection accept it.
+        if (same >= this.autoAccept && different === 0) {
+          this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
+          this.store.run(`UPDATE attempts SET state = 'approved' WHERE id = ?`, attemptId);
+          this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), a.task_id);
+          this.store.event('auto_accepted', null, { attempt: attemptId, same });
+          return { state: 'approved', same, different, required: this.required };
+        }
+        return { state: 'in_review', same, different, required: this.required };
+      }
       if (different >= this.required) {
         // Enough independent reviewers found a difference: back to the author with their reasons.
         this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
@@ -176,7 +202,8 @@ export class PeerReviews {
         return { state: 'needs_cleanup', same, different, required: this.required };
       }
       if (same >= this.required) {
-        this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
+        // Leases toward auto-acceptance stay; the others end here.
+        if (!(this.autoAccept > this.required && different === 0)) this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
         this.store.run(`UPDATE attempts SET state = 'in_review' WHERE id = ?`, attemptId);
         this.store.run(`UPDATE tasks SET state = 'in_review', updated_at = ? WHERE id = ?`, now(), a.task_id);
         return { state: 'in_review', same, different, required: this.required };

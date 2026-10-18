@@ -404,8 +404,12 @@ function queueBatches(body, items, skipsPeers) {
       );
     }
     body.append(head);
-    const peerCol = (a) =>
-      a.state === 'peer_review' ? `${a.peer_same} same · ${a.peer_different} different${a.peer_working ? ` · ${a.peer_working} reviewing` : ''}` : 'confirmed';
+    const peerCol = (a) => {
+      const working = a.peer_working ? ` · ${a.peer_working} reviewing` : '';
+      if (a.state === 'peer_review') return `${a.peer_same} same · ${a.peer_different} different${working}`;
+      // Waiting for a human: more peers can still accept it (5 agreeing, no objection).
+      return a.peer_different ? `${a.peer_same} same · ${a.peer_different} different: contested, you decide` : `${a.peer_same} same · accepts itself at 5${working}`;
+    };
     body.append(
       table(
         ['Attempt', 'Symbol', 'Name', 'Score', 'Peers', 'Approvals', ''],
