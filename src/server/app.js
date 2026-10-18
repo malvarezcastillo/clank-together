@@ -13,7 +13,7 @@ import { Verifier } from './verify.js';
 import { Merger } from './merge.js';
 import { PeerReviews } from './peer.js';
 import { Originals } from './original.js';
-import { downloadsDir, installPs1, installSh } from './install.js';
+import { downloadsDir, installPs1, installSh, publishedBuilds } from './install.js';
 import { ServerGhidra } from './ghidra.js';
 import { functionRegions } from './split.js';
 import { CheckQueue, WorkerUnavailable } from './checks.js';
@@ -788,7 +788,7 @@ export function createApp(ctx) {
       const m = router.match(req.method, url.pathname);
       if (!m) throw new HttpError(404, 'not found');
       const result = await m.handler({ req, res, params: m.params, query: url.searchParams });
-      if (result !== undefined) sendJson(res, 200, result);
+      if (result !== undefined) sendJson(res, 200, withUpdateNote(req, result));
     } catch (e) {
       if (res.headersSent) return res.end();
       if (e instanceof HttpError) sendJson(res, e.status, { error: e.message, details: e.details });
@@ -804,6 +804,30 @@ export function createApp(ctx) {
 // Public downloads of the td binaries (tools/build-td output copied to <dataDir>/downloads).
 const DOWNLOADS = new Set(['td-windows-x64.exe', 'td-linux-x64', 'SHA256SUMS']);
 let downloadsRoot = null;
+// Agents read the guidance in work responses; one whose td is not the current build is told to
+// update there (td from before builds were reported sends none). Read per request, so a new
+// publish takes effect without a restart.
+function withUpdateNote(req, result) {
+  if (!result || typeof result !== 'object' || typeof result.guidance !== 'string' || !downloadsRoot) return result;
+  const build = String(req.headers['x-td-build'] ?? '');
+  if (build === 'dev') return result;
+  let current;
+  try {
+    current = Object.values(publishedBuilds({ dataDir: path.dirname(downloadsRoot) }));
+  } catch {
+    return result;
+  }
+  if (!current.length || current.includes(build)) return result;
+  return {
+    ...result,
+    guidance:
+      result.guidance +
+      ` UPDATE NEEDED: your td is not the current build (${build ? build.slice(0, 12) : 'it does not report one'}; current ${current.map((h) => h.slice(0, 12)).join(' / ')}).` +
+      ' Tell the user to restart the AI app (td updates itself when it starts) or to run "td update" and reconnect.' +
+      ' Older td lacks td_mark_no_decompile, td_place and bulk verdicts in td_submit_peer_review.',
+  };
+}
+
 function serveDownload(name, req, res) {
   const file = DOWNLOADS.has(name) && downloadsRoot ? path.join(downloadsRoot, name) : null;
   if (!file || !fs.existsSync(file)) {

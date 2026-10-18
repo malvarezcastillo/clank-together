@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { ownBuild } from './update.js';
 
 export class Api {
   constructor(server, token) {
@@ -14,7 +15,7 @@ export class Api {
   async request(method, path, body) {
     const res = await fetch(this.server + path, {
       method,
-      headers: { 'content-type': 'application/json', ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) },
+      headers: { 'content-type': 'application/json', 'x-td-build': await ownBuild(), ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();
@@ -40,7 +41,7 @@ export class Api {
   /** GET that sends the ETag of a cached copy: null when unchanged (304), else { data, etag }. */
   async getIfChanged(p, etag) {
     const res = await fetch(this.server + p, {
-      headers: { ...(this.token ? { authorization: `Bearer ${this.token}` } : {}), ...(etag ? { 'if-none-match': etag } : {}) },
+      headers: { 'x-td-build': await ownBuild(), ...(this.token ? { authorization: `Bearer ${this.token}` } : {}), ...(etag ? { 'if-none-match': etag } : {}) },
     });
     if (res.status === 304) return null;
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);

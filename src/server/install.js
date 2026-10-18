@@ -11,6 +11,11 @@ export function downloadsDir(config) {
   return path.join(config.dataDir, 'downloads');
 }
 
+/** The SHA-256 of every published td binary (download name -> hash). */
+export function publishedBuilds(config) {
+  return checksums(config);
+}
+
 function checksums(config) {
   const file = path.join(downloadsDir(config), 'SHA256SUMS');
   const out = {};

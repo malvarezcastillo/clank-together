@@ -45,6 +45,25 @@ async function ownHash(exe, state) {
 }
 
 /**
+ * This td's build: the SHA-256 of the standalone executable (cached by size and mtime), or 'dev'
+ * when it runs from a checkout. Sent with every request so the server can tell an outdated td.
+ */
+let buildCache = null;
+export async function ownBuild() {
+  if (buildCache) return buildCache;
+  try {
+    const sea = await import('node:sea').catch(() => null);
+    if (!sea?.isSea?.()) return (buildCache = 'dev');
+    const state = readState();
+    buildCache = await ownHash(process.execPath, state);
+    writeState(state);
+  } catch {
+    buildCache = 'unknown';
+  }
+  return buildCache;
+}
+
+/**
  * Checks for and installs a newer td. Returns a message when an update was installed (it takes
  * effect on the next start), otherwise null. Never throws: an update must not break a command.
  */

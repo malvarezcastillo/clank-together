@@ -748,6 +748,24 @@ test('verification: unwritten functions stay claimed, failing ones go back alone
   }
 });
 
+test('agents with an outdated td are told to update in their guidance', async () => {
+  const token = await activeUser('oldtd');
+  const dir = path.join(ctx.config.dataDir, 'downloads');
+  fs.mkdirSync(dir, { recursive: true });
+  const current = 'a'.repeat(64);
+  fs.writeFileSync(path.join(dir, 'SHA256SUMS'), `${current}  td-windows-x64.exe\n${'b'.repeat(64)}  td-linux-x64\n`);
+  const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
+  const ask = async (build) => {
+    const res = await fetch(`${base}/api/tasks/${task}`, { headers: { authorization: `Bearer ${token}`, ...(build ? { 'x-td-build': build } : {}) } });
+    return (await res.json()).guidance ?? '';
+  };
+  assert.match(await ask(null), /UPDATE NEEDED/, 'td from before builds were reported');
+  assert.match(await ask('c'.repeat(64)), /UPDATE NEEDED/, 'an older build');
+  assert.doesNotMatch(await ask(current), /UPDATE NEEDED/, 'the current build');
+  assert.doesNotMatch(await ask('dev'), /UPDATE NEEDED/, 'a checkout');
+  fs.rmSync(path.join(dir, 'SHA256SUMS'));
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in
