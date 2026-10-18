@@ -203,11 +203,11 @@ export class Merger {
     if (merged.conflicts.length) return bounce('conflicts with newer work on main', { conflicts: merged.conflicts });
 
     // Re-verify on top of the current main: other merges may have landed since verification.
-    // The code already passed the lint. When nothing it depends on changed on main since it was
-    // verified, the verification's compile stands and nothing is compiled again.
-    const reused = this.verifier.reusableCheck(batch, merged.files);
-    if (reused) this.log.info(`batch ${batch.id}: nothing it depends on changed since verification; merging without recompiling`);
-    const { check, rec, changedHeaders } = reused ?? (await this.verifier.check(merged.files, `merge-${batch.id}`, { lint: false }));
+    // The code already passed the lint; units unchanged since verification keep its compile.
+    const parentId = batch.result_json ? JSON.parse(batch.result_json).splitFrom : null;
+    const verifiedBatch = (parentId && this.store.get('SELECT * FROM batches WHERE id = ?', parentId)) || batch;
+    const { check, rec, changedHeaders, reused = 0, compiled } = await this.verifier.mergeCheck(batch, merged.files, verifiedBatch);
+    if (reused) this.log.info(`batch ${batch.id}: merge reuses ${reused} compiled unit(s) from verification, compiles ${compiled}`);
     const targets = new Set(attempts.map((a) => a.symbol_id));
     const outside = this.verifier.changedOutside(check, merged.files, targets);
     const confirmedIds = new Set();
