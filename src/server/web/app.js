@@ -102,7 +102,7 @@ async function loadProgress() {
       seg.style.setProperty('width', `${Math.min(100, lastBars[key + cls] ?? 0)}%`);
       lastBars[key + cls] = w;
       meter.append(seg);
-      requestAnimationFrame(() => seg.style.setProperty('width', `${Math.min(100, w)}%`));
+      setTimeout(() => seg.style.setProperty('width', `${Math.min(100, w)}%`), 30);
     }
     right.append(meter, el('div', `byte-identical ${fmt(done.identical)} (${pct(done.identical, of).toFixed(2)}%) · peer-confirmed ${fmt(done.confirmed)} (${pct(done.confirmed, of).toFixed(2)}%)`, 'pbar-detail'));
     row.append(right);
