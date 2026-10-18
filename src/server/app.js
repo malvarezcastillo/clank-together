@@ -574,7 +574,7 @@ export function createApp(ctx) {
     const user = auth(req, { role: 'reviewer', session: true });
     const body = await readJson(req, 16 * 1024);
     const r = merger.review(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null, { skipPeerReview: body.skipPeerReview === true });
-    if (r.state === 'approved' && runsWorker) setImmediate(() => merger.pump());
+    if (r.state === 'approved' && runsWorker) setImmediate(() => merger.pump().catch(() => {}));
     return r;
   });
 
@@ -584,7 +584,7 @@ export function createApp(ctx) {
     const body = await readJson(req, 16 * 1024);
     const attemptIds = Array.isArray(body.attemptIds) ? body.attemptIds.map((x) => intParam(x)) : null;
     const r = merger.reviewBatch(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null, { attemptIds, skipPeerReview: body.skipPeerReview === true });
-    if (runsWorker) setImmediate(() => merger.pump());
+    if (runsWorker) setImmediate(() => merger.pump().catch(() => {}));
     return r;
   });
 

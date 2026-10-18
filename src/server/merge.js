@@ -6,12 +6,23 @@ import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
 import { returnBatch, batchAttempts, settleBatch } from './batches.js';
 import { withoutFunctions } from './split.js';
-import { RANK, bestResults } from './verify.js';
+import { RANK, bestResults, BIG_BATCH } from './verify.js';
+
+// Merges run in two lanes: one big merge (a header batch that must recompile many units) at a
+// time, while the other lane keeps small ones going. They compile side by side; the commit is the
+// part after the compile, which runs without yielding, so commits never interleave.
+const MERGE_SLOTS = 2;
 
 export class Merger {
   constructor({ store, config, repo, project, tasks, verifier, getPe, peers, log = console }) {
     Object.assign(this, { store, config, repo, project, tasks, verifier, getPe, peers, log });
-    this.busy = false;
+    this.running = 0;
+    this.runningBig = 0;
+    this.active = new Set(); // batch ids being merged (a split parent stays 'open' meanwhile)
+  }
+
+  get busy() {
+    return this.running > 0;
   }
 
   start() {
@@ -95,38 +106,55 @@ export class Merger {
    * approved part of a batch whose other functions still wait for review, so finished work
    * doesn't wait for the slowest function of its batch.
    */
+  /** Starts merges while a lane is free; resolves when the merges it started are done. */
   async pump() {
-    if (this.busy || this.stopped) return;
+    const started = [];
+    while (!this.stopped && this.running < MERGE_SLOTS) {
+      const pick = this.next(this.runningBig > 0);
+      if (!pick) break;
+      const big = (pick.batch.cost ?? 0) > BIG_BATCH;
+      this.running++;
+      if (big) this.runningBig++;
+      this.active.add(pick.batch.id);
+      started.push(
+        (pick.whole ? this.merge(pick.batch) : this.mergeApprovedPart(pick.batch))
+          .catch((e) => {
+            this.log.error(`merge of batch ${pick.batch.id} failed: ${e.stack}`);
+            try {
+              this.repo.reset();
+            } catch {}
+            this.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, pick.batch.id);
+            this.store.event('merge_error', null, { batch: pick.batch.id, error: e.message });
+          })
+          .finally(() => {
+            this.running--;
+            if (big) this.runningBig--;
+            this.active.delete(pick.batch.id);
+          }),
+      );
+    }
+    await Promise.all(started);
+  }
+
+  // The oldest batch ready to merge as a whole, else one whose approved part can merge.
+  next(smallOnly) {
+    const skip = [...this.active];
+    const notActive = skip.length ? `AND b.id NOT IN (${skip.map(Number).join(',')})` : '';
+    const size = smallOnly ? `AND COALESCE(b.cost, 0) <= ${BIG_BATCH}` : '';
     const whole = this.store.get(
-      `SELECT b.* FROM batches b WHERE b.state = 'open'
+      `SELECT b.* FROM batches b WHERE b.state = 'open' ${notActive} ${size}
           AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id)
           AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state != 'approved')
         ORDER BY b.id LIMIT 1`,
     );
-    const partial = whole
-      ? null
-      : this.store.get(
-          `SELECT b.* FROM batches b WHERE b.state = 'open' AND json_extract(COALESCE(b.result_json, '{}'), '$.noSplit') IS NULL
-              AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state = 'approved')
-              AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN ('queued', 'verifying', 'merging'))
-            ORDER BY b.id LIMIT 1`,
-        );
-    const batch = whole ?? partial;
-    if (!batch) return;
-    this.busy = true;
-    try {
-      if (whole) await this.merge(whole);
-      else await this.mergeApprovedPart(partial);
-    } catch (e) {
-      this.log.error(`merge of batch ${batch.id} failed: ${e.stack}`);
-      try {
-        this.repo.reset();
-      } catch {}
-      this.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, batch.id);
-      this.store.event('merge_error', null, { batch: batch.id, error: e.message });
-    } finally {
-      this.busy = false;
-    }
+    if (whole) return { batch: whole, whole: true };
+    const partial = this.store.get(
+      `SELECT b.* FROM batches b WHERE b.state = 'open' ${notActive} ${size} AND json_extract(COALESCE(b.result_json, '{}'), '$.noSplit') IS NULL
+          AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state = 'approved')
+          AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN ('queued', 'verifying', 'merging'))
+        ORDER BY b.id LIMIT 1`,
+    );
+    return partial ? { batch: partial, whole: false } : null;
   }
 
   /**
@@ -199,6 +227,7 @@ export class Merger {
       returnBatch(this.store, batch.id, summary);
       this.log.info(`merge of batch ${batch.id} bounced: ${summary}`);
     };
+    const startHead = this.repo.head();
     const merged = this.repo.mergeOntoHead(batch.base_commit, files);
     if (merged.conflicts.length) return bounce('conflicts with newer work on main', { conflicts: merged.conflicts });
 
@@ -208,6 +237,18 @@ export class Merger {
     const verifiedBatch = (parentId && this.store.get('SELECT * FROM batches WHERE id = ?', parentId)) || batch;
     const { check, rec, changedHeaders, reused = 0, compiled } = await this.verifier.mergeCheck(batch, merged.files, verifiedBatch);
     if (reused) this.log.info(`batch ${batch.id}: merge reuses ${reused} compiled unit(s) from verification, compiles ${compiled}`);
+    // Another merge may have committed while this one compiled. If it touched anything this check
+    // compiled against, the result is stale: back in line, and the next try recompiles that part.
+    if (this.repo.head() !== startHead) {
+      const changed = new Set(this.repo.git(['diff', '--name-only', startHead, 'HEAD']).split('\n').filter(Boolean));
+      const touched = Object.keys(merged.files).some((f) => changed.has(f)) || check.units.some((u) => changed.has(u.file) || (u.includes ?? []).some((h) => changed.has(h)));
+      if (touched) {
+        this.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, batch.id);
+        for (const a of attempts) this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), a.task_id);
+        this.log.info(`batch ${batch.id}: main changed files it depends on while it compiled; merging again`);
+        return;
+      }
+    }
     const targets = new Set(attempts.map((a) => a.symbol_id));
     const outside = this.verifier.changedOutside(check, merged.files, targets);
     const confirmedIds = new Set();
