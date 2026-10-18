@@ -61,46 +61,68 @@ function formData(form) {
 
 // --- public
 
-let lastPct = 0; // the gauge moves from the previous reading, not from zero, when it refreshes
+const lastBars = {}; // bars move from the previous reading, not from zero, when they refresh
 
 async function loadProgress() {
   const p = await api('/api/progress');
   const body = $('progress-body');
   body.replaceChildren();
   body.className = '';
-  // Byte for byte: exact, and identical bytes whose referenced data has no name yet.
-  const exact = p.byStatus.filter((s) => s.status === 'exact' || s.status === 'match_unresolved').reduce((t, s) => ({ n: t.n + s.n, bytes: t.bytes + s.bytes }), { n: 0, bytes: 0 });
-  const pct = p.bytes ? (exact.bytes / p.bytes) * 100 : 0;
-
-  const gauge = el('div', null, 'gauge');
-  gauge.append(el('div', `${pct.toFixed(2).padStart(6, '0')}%`, 'readout'));
-  const meter = el('div', null, 'meter');
-  meter.setAttribute('role', 'progressbar');
-  meter.setAttribute('aria-valuemin', '0');
-  meter.setAttribute('aria-valuemax', '100');
-  meter.setAttribute('aria-valuenow', pct.toFixed(2));
-  const fill = el('div', null, 'fill');
-  fill.style.setProperty('width', `${Math.min(100, lastPct)}%`);
-  lastPct = pct;
-  meter.append(fill);
-  gauge.append(meter);
-  const conf = p.confirmed?.n ?? 0;
-  if (!p.functions) gauge.append(el('p', 'No target loaded yet. The machines are warming up.', 'gauge-caption'));
-  else {
-    // Both measures: functions (many small ones are done) and bytes of code (how much of the binary).
-    const share = (a, b) => `${b ? ((a / b) * 100).toFixed(2) : '0.00'}%`;
-    const kb = (n) => `${(n / 1024).toLocaleString(undefined, { maximumFractionDigits: 0 })} KB`;
-    const counts = el('div', null, 'gauge-counts');
-    counts.append(
-      el('div', `Functions: ${exact.n.toLocaleString()} of ${p.functions.toLocaleString()} byte-identical (${share(exact.n, p.functions)})`),
-      el('div', `Code: ${kb(exact.bytes)} of ${kb(p.bytes)} byte-identical (${share(exact.bytes, p.bytes)})`),
-    );
-    gauge.append(counts);
-    const extra = [conf ? `${conf.toLocaleString()} more confirmed by peer review` : '', p.peerQueue ? `${p.peerQueue.toLocaleString()} waiting for peer review` : ''].filter(Boolean);
-    if (extra.length) gauge.append(el('p', extra.join(' · '), 'gauge-caption'));
+  // Done = merged into main: byte-identical, plus peer-confirmed (same logic, other bytes). The bars
+  // show the total; the byte-identical part has its own colour.
+  const identical = p.byStatus.filter((s) => s.status === 'exact' || s.status === 'match_unresolved').reduce((t, s) => ({ n: t.n + s.n, bytes: t.bytes + s.bytes }), { n: 0, bytes: 0 });
+  const confirmed = { n: p.confirmed?.n ?? 0, bytes: p.confirmed?.bytes ?? 0 };
+  if (!p.functions) {
+    body.append(el('p', 'No target loaded yet. The machines are warming up.', 'muted'));
+    return;
   }
-  body.append(gauge);
-  requestAnimationFrame(() => fill.style.setProperty('width', `${Math.min(100, pct)}%`));
+  const pct = (a, b) => (b ? (a / b) * 100 : 0);
+  const kb = (n) => `${(n / 1024).toLocaleString(undefined, { maximumFractionDigits: 0 })} KB`;
+  const bars = el('div', null, 'progress-bars');
+  const bar = (key, label, done, of, fmt) => {
+    const total = done.identical + done.confirmed;
+    const row = el('div', null, 'pbar');
+    row.append(el('div', `${pct(total, of).toFixed(2)}%`, 'readout'));
+    const right = el('div', null, 'pbar-body');
+    right.append(el('div', `${label}: ${fmt(total)} of ${fmt(of)} done`, 'pbar-label'));
+    const meter = el('div', null, 'meter');
+    meter.setAttribute('role', 'progressbar');
+    meter.setAttribute('aria-label', label);
+    meter.setAttribute('aria-valuemin', '0');
+    meter.setAttribute('aria-valuemax', '100');
+    meter.setAttribute('aria-valuenow', pct(total, of).toFixed(2));
+    const segs = [
+      ['identical', pct(done.identical, of), `byte-identical: ${fmt(done.identical)}`],
+      ['confirmed', pct(done.confirmed, of), `confirmed by peer review: ${fmt(done.confirmed)}`],
+    ];
+    for (const [cls, w, title] of segs) {
+      const seg = el('div', null, `fill ${cls}`);
+      seg.title = title;
+      // Grows from the previous reading, not from zero, when the page refreshes.
+      seg.style.setProperty('width', `${Math.min(100, lastBars[key + cls] ?? 0)}%`);
+      lastBars[key + cls] = w;
+      meter.append(seg);
+      requestAnimationFrame(() => seg.style.setProperty('width', `${Math.min(100, w)}%`));
+    }
+    right.append(meter, el('div', `byte-identical ${fmt(done.identical)} (${pct(done.identical, of).toFixed(2)}%) · peer-confirmed ${fmt(done.confirmed)} (${pct(done.confirmed, of).toFixed(2)}%)`, 'pbar-detail'));
+    row.append(right);
+    bars.append(row);
+  };
+  bar('fn', 'Functions', { identical: identical.n, confirmed: confirmed.n }, p.functions, (n) => n.toLocaleString());
+  bar('by', 'Code', { identical: identical.bytes, confirmed: confirmed.bytes }, p.bytes, kb);
+  const legend = el('div', null, 'pbar-legend');
+  legend.append(el('span', 'byte-identical', 'swatch identical'), el('span', 'confirmed by peer review', 'swatch confirmed'));
+  if (p.peerQueue) legend.append(el('span', `${p.peerQueue.toLocaleString()} waiting for peer review`, 'muted'));
+  if (p.merges) {
+    const rate = el('div', null, 'merge-rate');
+    rate.append(
+      el('span', `${p.merges.lastHour.toLocaleString()}`, 'merge-rate-n'),
+      el('span', ` functions merged in the last hour · ${p.merges.perHourDay.toFixed(1)}/h on average over 24 h`, 'muted'),
+    );
+    bars.append(rate);
+  }
+  bars.append(legend);
+  body.append(bars);
 
   const stats = el('div', null, 'stats');
   if (p.byTaskState.length) stats.append(table(['Task state', 'Count'], p.byTaskState.map((s) => [withInfo(s.state, TASK_STATES[s.state]), s.n])));

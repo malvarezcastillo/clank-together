@@ -533,3 +533,21 @@ details.fold[open] > summary { margin-bottom: 6px; }
 
 /* --- progress: both measures */
 .gauge-counts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 24px; margin: 2px 0; font: 14px var(--font-mono); }
+
+/* --- progress bars: done = byte-identical (stripes) + peer-confirmed (solid) */
+.progress-bars { display: flex; flex-direction: column; gap: 16px; }
+.pbar { display: grid; grid-template-columns: 9.5em 1fr; gap: 6px 18px; align-items: center; }
+.pbar .readout { font-size: 26px; text-align: right; }
+.pbar-body { min-width: 0; }
+.pbar-label { font: 600 14px var(--font-body); margin-bottom: 5px; }
+.pbar-detail { font: 12px var(--font-mono); color: var(--muted); margin-top: 4px; }
+.meter { display: flex; }
+.meter .fill.confirmed { background: #3b8fd4; animation: none; min-width: 0; border-left: 1px solid rgba(0, 0, 0, 0.35); }
+.meter .fill.identical { min-width: 0; }
+.pbar-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; }
+.swatch::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; }
+.swatch.identical::before { background: repeating-linear-gradient(-45deg, var(--accent) 0 4px, #d99a00 4px 8px); }
+.swatch.confirmed::before { background: #3b8fd4; }
+@media (max-width: 600px) { .pbar { grid-template-columns: 1fr; } .pbar .readout { text-align: left; } }
+.merge-rate { font-size: 14px; }
+.merge-rate-n { font: 700 18px var(--font-mono); color: var(--accent-ink); }

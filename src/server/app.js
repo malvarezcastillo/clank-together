@@ -249,7 +249,10 @@ export function createApp(ctx) {
     const contributors = store.all(`SELECT u.name, COUNT(*) AS merged FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.state = 'merged' GROUP BY u.id ORDER BY merged DESC LIMIT 20`);
     const confirmed = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE fs.confirmed = 1 AND fs.status NOT IN ('exact', 'match_unresolved')`);
     const peerQueue = store.get("SELECT COUNT(*) AS n FROM attempts WHERE state = 'peer_review'").n;
-    return { functions: total.n, bytes: total.bytes, byStatus, confirmed, peerQueue, byTaskState, contributors };
+    // Functions merged into main per hour: the last hour, and the average over the last day.
+    const mergedSince = (ms) => store.get(`SELECT COALESCE(SUM(json_extract(data, '$.functions')), 0) AS n FROM events WHERE type = 'merged' AND at > ?`, Date.now() - ms).n;
+    const merges = { lastHour: mergedSince(3600_000), perHourDay: mergedSince(24 * 3600_000) / 24 };
+    return { functions: total.n, bytes: total.bytes, byStatus, confirmed, peerQueue, byTaskState, contributors, merges };
   }));
 
   // --- accounts
