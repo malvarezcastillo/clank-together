@@ -294,7 +294,7 @@ export class Tasks {
     return this.store.tx(() => {
       for (const id of ids) this.requireLease(user, id);
       // Keep the verification queue moving: a few batches waiting per account at a time.
-      const max = this.config.maxQueuedBatches ?? 4;
+      const max = this.config.maxQueuedBatches ?? 8;
       const waiting = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND state IN ('queued', 'verifying')`, user.id).n;
       if (waiting >= max) {
         throw new HttpError(429, `you have ${waiting} batches waiting for verification (the limit is ${max}); keep your claims, do peer reviews meanwhile (td_list_peer_reviews), and submit again when one is done (td_get_batch shows it)`, { retryAfterSeconds: 120 });

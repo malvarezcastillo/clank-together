@@ -79,7 +79,12 @@ export class Verifier {
       // Verification compiles only the submitted units, so every batch is small here; the units
       // that include a changed header are compiled in the merge's big lane.
       const b = this.store.tx(() => {
-        const row = this.store.get(`SELECT * FROM batches WHERE state = 'queued' ORDER BY id LIMIT 1`);
+        // Fair between accounts: the oldest batch of whoever has the fewest batches verifying, so a
+        // fast contributor with several batches waiting does not hold every slot.
+        const row = this.store.get(
+          `SELECT b.* FROM batches b WHERE b.state = 'queued'
+            ORDER BY (SELECT COUNT(*) FROM batches v WHERE v.user_id = b.user_id AND v.state = 'verifying'), b.id LIMIT 1`,
+        );
         if (row) {
           this.store.run(`UPDATE batches SET state = 'verifying' WHERE id = ?`, row.id);
           this.store.run(`UPDATE attempts SET state = 'verifying' WHERE batch_id = ? AND state = 'queued'`, row.id);
