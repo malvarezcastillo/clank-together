@@ -110,15 +110,16 @@ const TASK_STATES = {
 
 /** A label with an info mark that explains it on hover, focus or tap. */
 function withInfo(label, text) {
-  const wrap = el('span', label);
+  const wrap = el('span');
   if (text) {
     const i = el('span', 'i', 'info');
     i.tabIndex = 0;
     i.setAttribute('role', 'note');
     i.setAttribute('aria-label', text);
     i.dataset.tip = text;
-    wrap.append(' ', i);
+    wrap.append(i, ' ');
   }
+  wrap.append(label);
   return wrap;
 }
 
