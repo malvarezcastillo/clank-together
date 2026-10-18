@@ -246,7 +246,10 @@ export class Verifier {
     for (const row of this.store.all(`SELECT * FROM func_status WHERE status IN ('exact', 'match_unresolved') OR confirmed = 1`)) {
       if (!compiledFiles.has(row.file)) continue;
       const now_ = results.get(row.symbol_id);
-      if (!now_ || RANK[now_.status] < RANK[row.status]) out.push({ id: row.symbol_id, file: row.file, was: row.status, now: now_?.status ?? 'removed' });
+      // Exact and match_unresolved are the same bytes: whether a referenced label resolves depends
+      // on which other units this check compiled, not on the change.
+      const rank = (s) => (s === STATUS.UNRESOLVED ? RANK[STATUS.EXACT] : RANK[s]);
+      if (!now_ || rank(now_.status) < rank(row.status)) out.push({ id: row.symbol_id, file: row.file, was: row.status, now: now_?.status ?? 'removed' });
       // A peer-confirmed function whose compiled code changes was not seen by its reviewers.
       else if (row.confirmed && now_.status === STATUS.MISMATCH && Math.abs(now_.score - row.score) > 1e-4) {
         out.push({ id: row.symbol_id, file: row.file, was: 'peer-confirmed', now: `changed (score ${(row.score * 100).toFixed(1)}% -> ${(now_.score * 100).toFixed(1)}%)` });
