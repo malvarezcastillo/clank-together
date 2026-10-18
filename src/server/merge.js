@@ -186,7 +186,8 @@ export class Merger {
     const attempts = batchAttempts(this.store, parent.id);
     const approved = attempts.filter((a) => a.state === 'approved');
     const pending = attempts.filter((a) => a.state !== 'approved');
-    const files = withoutFunctions(JSON.parse(parent.files_json), pending.map((a) => a.symbol_id), (f) => this.repo.show(parent.base_commit, f));
+    const keepCode = !!JSON.parse(parent.result_json ?? '{}').splitKeepCode;
+    const files = withoutFunctions(JSON.parse(parent.files_json), pending.map((a) => a.symbol_id), (f) => this.repo.show(parent.base_commit, f), { keepCode });
     if (!files) return this.noSplit(parent, 'the approved and pending functions share code that cannot be separated');
     const child = this.store.tx(() => {
       const r = this.store.run(
@@ -198,7 +199,7 @@ export class Merger {
       for (const a of approved) this.store.run('UPDATE attempts SET batch_id = ? WHERE id = ?', id, a.id);
       return this.store.get('SELECT * FROM batches WHERE id = ?', id);
     });
-    this.log.info(`batch ${parent.id}: merging its ${approved.length} approved functions as batch ${child.id}; ${pending.length} still in review`);
+    this.log.info(`batch ${parent.id}: merging its ${approved.length} approved functions as batch ${child.id}; ${pending.length} still in review${keepCode ? ' (their code kept, unannotated)' : ''}`);
     try {
       await this.merge(child, { parent, parentFiles: JSON.parse(parent.files_json), splitFiles: files });
     } catch (e) {
@@ -247,6 +248,12 @@ export class Merger {
   }
 
   noSplit(batch, reason) {
+    // Putting the pending functions back as on main did not work: next round keeps their new code,
+    // unannotated (split.js).
+    if (!JSON.parse(this.store.get('SELECT result_json FROM batches WHERE id = ?', batch.id).result_json ?? '{}').splitKeepCode) {
+      this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.splitKeepCode', json('true')) WHERE id = ?`, batch.id);
+      return this.log.info(`batch ${batch.id}: splitting failed (${reason}); next round keeps the pending functions' code without their annotations`);
+    }
     this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.noSplit', ?) WHERE id = ?`, reason, batch.id);
     // With a function sent back it can never merge as a whole, so it all goes back.
     if (this.store.get(`SELECT 1 FROM attempts WHERE batch_id = ? AND state IN ('needs_cleanup', 'rejected', 'returned', 'withdrawn')`, batch.id)) {

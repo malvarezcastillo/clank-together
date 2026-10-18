@@ -2,6 +2,10 @@
 // stays in review. The approved part is the submitted files with every pending function put back
 // the way it is on the batch's base commit (or removed, when the submission added it). The merge
 // re-verifies the result on main, so a split that breaks anything is caught there.
+//
+// When that does not build (the approved functions call a pending one by its new signature, or a
+// helper the submission added), `keepCode` keeps the pending functions' new code and takes out only
+// their annotations: main compiles, they do not count as done, and their review goes on.
 
 import { parseAnnotations } from '../shared/annotations.js';
 
@@ -75,9 +79,10 @@ function bodyEnd(lines, from) {
  * @param {Record<string,string>} files     submitted files
  * @param {Iterable<string>} ids            symbol IDs whose changes are taken out
  * @param {(file: string) => string|null} baseText  the file on the batch's base commit
+ * @param {{keepCode?: boolean}} [opts]     keep the pending code, without its annotations
  * @returns {Record<string,string>|null}    null when the functions can't be separated cleanly
  */
-export function withoutFunctions(files, ids, baseText) {
+export function withoutFunctions(files, ids, baseText, { keepCode = false } = {}) {
   const pending = new Set(ids);
   const out = {};
   for (const [file, text] of Object.entries(files)) {
@@ -86,6 +91,13 @@ export function withoutFunctions(files, ids, baseText) {
     const mine = [...new Set([...regions].filter(([id]) => pending.has(id)).map(([, r]) => r))];
     if (!mine.length) {
       out[file] = text;
+      continue;
+    }
+    if (keepCode) {
+      const drop = mine.flatMap((r) => r.ids.filter((id) => pending.has(id)).map((id) => r.lines.get(id))).sort((a, b) => b - a);
+      const lines = text.split('\n');
+      for (const i of drop) lines.splice(i, 1);
+      out[file] = lines.join('\n');
       continue;
     }
     const base = baseText(file);

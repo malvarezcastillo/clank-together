@@ -48,3 +48,9 @@ test('an annotated declaration is a region of its own instead of stopping the sp
   const out = withoutFunctions({ 'a.cpp': text }, ['fn_00011'], () => null);
   assert.equal(out['a.cpp'], '// STUB: fn_00010\nvoid declared(int a);\n\n');
 });
+
+test('keepCode keeps the pending code and drops only its annotations', () => {
+  const text = '// FUNCTION: fn_00001\nint helper(int x) {\n  return x;\n}\n\n// FUNCTION: fn_00002\nint user() {\n  return helper(2);\n}\n';
+  const out = withoutFunctions({ 'a.cpp': text }, ['fn_00001'], () => 'int helper() {\n  return 1;\n}\n', { keepCode: true });
+  assert.equal(out['a.cpp'], 'int helper(int x) {\n  return x;\n}\n\n// FUNCTION: fn_00002\nint user() {\n  return helper(2);\n}\n');
+});
