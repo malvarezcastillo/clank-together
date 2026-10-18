@@ -94,7 +94,11 @@ export function withoutFunctions(files, ids, baseText, { keepCode = false } = {}
       continue;
     }
     if (keepCode) {
-      const drop = mine.flatMap((r) => r.ids.filter((id) => pending.has(id)).map((id) => r.lines.get(id))).sort((a, b) => b - a);
+      // Annotations already on main stay (the function keeps being measured there); only the ones
+      // the submission added are taken out.
+      const base = baseText(file);
+      const onMain = new Set(base === null ? [] : [...(functionRegions(base) ?? new Map()).keys()]);
+      const drop = mine.flatMap((r) => r.ids.filter((id) => pending.has(id) && !onMain.has(id)).map((id) => r.lines.get(id))).sort((a, b) => b - a);
       const lines = text.split('\n');
       for (const i of drop) lines.splice(i, 1);
       out[file] = lines.join('\n');

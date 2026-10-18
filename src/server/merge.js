@@ -336,12 +336,15 @@ export class Merger {
       batch.id,
     ).map((r) => r.name);
     const identicalCount = results.filter((r) => !r.peerConfirmed).length;
-    const title =
-      results.length === 1
-        ? `Decompile ${results[0].id}${results[0].name ? ` (${results[0].name})` : ''}`
-        : `Decompile ${results.length} functions in ${[...new Set(Object.keys(files))].slice(0, 2).join(', ')}${Object.keys(files).length > 2 ? ', ...' : ''}`;
     const head = this.repo.head();
     const change = (id) => this.codeChange(id, merged.files, head);
+    // Code that was already on main and is only confirmed now (often ported before the migration)
+    // is not a decompilation; the diff then shows only what else the batch changed.
+    const verb = results.every((r) => change(r.id) === ' (already on main)') ? 'Confirm' : 'Decompile';
+    const title =
+      results.length === 1
+        ? `${verb} ${results[0].id}${results[0].name ? ` (${results[0].name})` : ''}`
+        : `${verb} ${results.length} functions in ${[...new Set(Object.keys(files))].slice(0, 2).join(', ')}${Object.keys(files).length > 2 ? ', ...' : ''}`;
     const lines = results.map((r) => `- ${r.id}${r.name ? ` ${r.name}` : ''}: ${r.peerConfirmed ? 'logic confirmed by peer review' : 'byte-identical'}${change(r.id)}`);
     const message =
       `${title}\n\nBatch #${batch.id} by ${author}: ${identicalCount} byte-identical, ${results.length - identicalCount} confirmed by peer review.\n\n${lines.join('\n')}\n` +

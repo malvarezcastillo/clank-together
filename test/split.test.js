@@ -54,3 +54,9 @@ test('keepCode keeps the pending code and drops only its annotations', () => {
   const out = withoutFunctions({ 'a.cpp': text }, ['fn_00001'], () => 'int helper() {\n  return 1;\n}\n', { keepCode: true });
   assert.equal(out['a.cpp'], 'int helper(int x) {\n  return x;\n}\n\n// FUNCTION: fn_00002\nint user() {\n  return helper(2);\n}\n');
 });
+
+test('keepCode leaves annotations that are already on main', () => {
+  const text = '// FUNCTION: fn_00001\nint helper(int x) {\n  return x;\n}\n\n// FUNCTION: fn_00002\nint user() {\n  return helper(2);\n}\n';
+  const base = '// FUNCTION: fn_00001\nint helper() {\n  return 1;\n}\n';
+  assert.equal(withoutFunctions({ 'a.cpp': text }, ['fn_00001'], () => base, { keepCode: true })['a.cpp'], text);
+});
