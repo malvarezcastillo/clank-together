@@ -12,7 +12,22 @@ import { now } from './db.js';
 import { returnBatch, batchAttempts } from './batches.js';
 import { analyzeInWorkers } from './analyze.js';
 
-const RANK = { [STATUS.EXACT]: 3, [STATUS.UNRESOLVED]: 2, [STATUS.MISMATCH]: 1, [STATUS.MISSING]: 0, [STATUS.NO_ADDRESS]: 0 };
+export const RANK = { [STATUS.EXACT]: 3, [STATUS.UNRESOLVED]: 2, [STATUS.MISMATCH]: 1, [STATUS.MISSING]: 0, [STATUS.NO_ADDRESS]: 0 };
+
+/**
+ * One result per function: templates and inline functions are compiled in every unit that uses
+ * them (and folded in the binary), so a function counts with its best compiled copy.
+ */
+export function bestResults(check) {
+  const best = new Map();
+  for (const u of check.units) {
+    for (const f of u.functions) {
+      const b = best.get(f.id);
+      if (!b || RANK[f.status] > RANK[b.f.status] || (RANK[f.status] === RANK[b.f.status] && f.score > b.f.score)) best.set(f.id, { f, unit: u.file });
+    }
+  }
+  return best;
+}
 
 export class Verifier {
   constructor({ store, config, repo, project, tasks, getPe, peers, log = console }) {
@@ -124,8 +139,7 @@ export class Verifier {
 
   /** Functions that match on main but would no longer match with this change. */
   regressions(check) {
-    const results = new Map();
-    for (const u of check.units) for (const f of u.functions) results.set(f.id, f);
+    const results = new Map([...bestResults(check)].map(([id, b]) => [id, b.f]));
     const compiledFiles = new Set(check.units.map((u) => u.file));
     const out = [];
     for (const row of this.store.all(`SELECT * FROM func_status WHERE status IN ('exact', 'match_unresolved') OR confirmed = 1`)) {

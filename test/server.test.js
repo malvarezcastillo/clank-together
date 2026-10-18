@@ -351,6 +351,20 @@ test('peer review: three other agents must agree, by reading only', async () => 
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task.id);
 });
 
+test('a function compiled in several units counts with its best copy', () => {
+  const v = ctx.store.currentVersion();
+  const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x401700, size: 8, unit: 'src/tpl_a.cpp' }).symbol.id;
+  const fn = (status, score) => ({ id, status, score, relocations: [], size: { ours: 8, original: 8 } });
+  const unit = (file, f) => ({ file, compiled: true, includes: [], bindings: {}, functions: [f] });
+  const rec = { conflicts: [], unknown: [], learned: [], learnedAddresses: [] };
+  // The template instance in a later unit references unnamed data; the earlier one matches.
+  ctx.merger.applyCheckToDatabase({ units: [unit('src/tpl_a.cpp', fn(STATUS.EXACT, 1)), unit('src/tpl_b.cpp', fn(STATUS.UNRESOLVED, 1))] }, rec, ctx.repo.head(), null);
+  assert.equal(ctx.store.get('SELECT status FROM func_status WHERE symbol_id = ?', id).status, STATUS.EXACT);
+  // A later check that only compiled tpl_b does not lower the status measured in tpl_a.
+  ctx.merger.applyCheckToDatabase({ units: [unit('src/tpl_b.cpp', fn(STATUS.UNRESOLVED, 1))] }, rec, ctx.repo.head(), null);
+  assert.equal(ctx.store.get('SELECT status FROM func_status WHERE symbol_id = ?', id).status, STATUS.EXACT);
+});
+
 test('the crew view is public and shows no account details', async () => {
   const token = await activeUser('crewview');
   await call('GET', '/api/tasks', null, token); // the agent checks in

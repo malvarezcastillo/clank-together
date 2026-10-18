@@ -6,6 +6,7 @@ import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
 import { returnBatch, batchAttempts, settleBatch } from './batches.js';
 import { withoutFunctions } from './split.js';
+import { RANK, bestResults } from './verify.js';
 
 export class Merger {
   constructor({ store, config, repo, project, tasks, verifier, getPe, peers, log = console }) {
@@ -289,18 +290,22 @@ export class Merger {
       for (const [decorated, id] of Object.entries(u.bindings)) {
         this.store.run('UPDATE symbols SET decorated = ? WHERE id = ? AND decorated IS NULL', decorated, id);
       }
-      for (const f of u.functions) {
-        this.store.run(
-          `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(symbol_id) DO UPDATE SET file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at, code_hash = COALESCE(excluded.code_hash, func_status.code_hash),
-             confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 WHEN excluded.status IN ('exact', 'match_unresolved') THEN 0 ELSE func_status.confirmed END`,
-          f.id, u.file, f.status, f.score, commit, now(), confirmedIds.has(f.id) ? 1 : 0, f.codeHash ?? null,
-        );
-        if (f.demangled) this.store.run('UPDATE symbols SET name = ? WHERE id = ? AND name IS NULL', f.demangled, f.id);
-        this.store.run('UPDATE symbols SET unit = ? WHERE id = ? AND unit IS NULL', u.file, f.id);
-        if (f.status === STATUS.EXACT || f.status === STATUS.UNRESOLVED) {
-          this.store.run(`UPDATE tasks SET state = 'done', updated_at = ? WHERE symbol_id = ? AND state IN ('open', 'needs_cleanup', 'hard')`, now(), f.id);
-        }
+    }
+    const compiledUnits = new Set(check.units.filter((u) => u.compiled).map((u) => u.file));
+    for (const [id, { f, unit }] of bestResults(check)) {
+      // A status measured in a unit this check did not compile is not lowered from a partial view.
+      const old = this.store.get('SELECT status, file FROM func_status WHERE symbol_id = ?', id);
+      if (old && !compiledUnits.has(old.file) && RANK[old.status] > RANK[f.status]) continue;
+      this.store.run(
+        `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(symbol_id) DO UPDATE SET file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at, code_hash = COALESCE(excluded.code_hash, func_status.code_hash),
+           confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 WHEN excluded.status IN ('exact', 'match_unresolved') THEN 0 ELSE func_status.confirmed END`,
+        f.id, unit, f.status, f.score, commit, now(), confirmedIds.has(f.id) ? 1 : 0, f.codeHash ?? null,
+      );
+      if (f.demangled) this.store.run('UPDATE symbols SET name = ? WHERE id = ? AND name IS NULL', f.demangled, f.id);
+      this.store.run('UPDATE symbols SET unit = ? WHERE id = ? AND unit IS NULL', unit, f.id);
+      if (f.status === STATUS.EXACT || f.status === STATUS.UNRESOLVED) {
+        this.store.run(`UPDATE tasks SET state = 'done', updated_at = ? WHERE symbol_id = ? AND state IN ('open', 'needs_cleanup', 'hard')`, now(), f.id);
       }
     }
     for (const l of rec.learned) this.store.run('UPDATE symbols SET decorated = ? WHERE id = ? AND decorated IS NULL', l.decorated, l.id);

@@ -61,6 +61,8 @@ function formData(form) {
 
 // --- public
 
+let lastPct = 0; // the gauge moves from the previous reading, not from zero, when it refreshes
+
 async function loadProgress() {
   const p = await api('/api/progress');
   const body = $('progress-body');
@@ -77,6 +79,8 @@ async function loadProgress() {
   meter.setAttribute('aria-valuemax', '100');
   meter.setAttribute('aria-valuenow', pct.toFixed(2));
   const fill = el('div', null, 'fill');
+  fill.style.setProperty('width', `${Math.min(100, lastPct)}%`);
+  lastPct = pct;
   meter.append(fill);
   gauge.append(meter);
   const conf = p.confirmed?.n ?? 0;
@@ -647,5 +651,9 @@ api('/api/info')
   .catch(() => {});
 loadProgress().catch((e) => ($('progress-body').textContent = e.message));
 loadCrew().catch((e) => ($('active-body').textContent = e.message));
-setInterval(() => loadCrew().catch(() => {}), 60_000);
+// Live numbers: progress and the crew views refresh on their own.
+setInterval(() => {
+  loadProgress().catch(() => {});
+  loadCrew().catch(() => {});
+}, 30_000);
 refresh();
