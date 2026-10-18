@@ -367,6 +367,12 @@ document.querySelectorAll('.actions button').forEach((b) =>
 
 api('/api/info')
   .then((info) => {
+    if (info.version) {
+      $('target-name').textContent = info.version.label;
+      $('target-meta').textContent = `${info.project} · sha256 ${info.version.sha256.slice(0, 12)}…`;
+      $('target-meta').title = info.version.sha256;
+      $('target').hidden = false;
+    }
     if (info.gitWeb) $('source-link').href = info.gitWeb;
     $('clone-cmd').textContent = `git clone ${info.git}`;
   })

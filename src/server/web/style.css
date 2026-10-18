@@ -398,3 +398,31 @@ footer code { word-break: break-all; }
 
 .batch-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 18px 0 4px; }
 .batch-head button { margin-left: auto; }
+
+/* Current target: a stamped steel label under the headline. */
+.target {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin: 16px 0 4px;
+  padding: 10px 16px;
+  border: 1px solid var(--plate-edge);
+  border-left: 6px solid var(--accent);
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--plate-hi), var(--plate-lo));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 0 rgba(0, 0, 0, 0.25);
+}
+.target-label {
+  font: 600 12px var(--font-display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.target-name {
+  font: 700 20px var(--font-display);
+  font-stretch: condensed;
+  letter-spacing: 0.03em;
+}
+.target-meta { font: 12px var(--font-mono); color: var(--muted); }

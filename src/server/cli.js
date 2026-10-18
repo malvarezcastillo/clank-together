@@ -30,6 +30,7 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   user token <name> [label]              create an API token for an account
   version add <id> <exe> [--current]     register a target executable version
   version set-current <id>
+  version label <id> <text>              readable name shown on the website
   version map <newId> <csv> --from <oldId>
                                          carry symbol IDs to a new version (csv: old_addr,new_addr[,size])
   symbols import <csv> [--version <id>]  import functions (csv: addr,size,name[,library]) e.g. from
@@ -135,6 +136,14 @@ async function main() {
         if (values.current || first) setCurrent(store, id);
       });
       console.log(`added version ${id} (sha256 ${sha256})`);
+      return;
+    }
+    if (sub === 'label') {
+      // A readable name for the website, e.g. "World of Warcraft 5.0.3 (build 15890, x64)".
+      const [id, ...words] = rest;
+      if (!store.get('SELECT 1 FROM versions WHERE id = ?', id)) throw new Error(`unknown version ${id}`);
+      store.run('UPDATE versions SET label = ? WHERE id = ?', words.join(' ') || null, id);
+      console.log(`${id} is labelled "${words.join(' ')}"`);
       return;
     }
     if (sub === 'set-current') {

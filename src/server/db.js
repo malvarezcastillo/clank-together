@@ -219,6 +219,7 @@ export class Store {
     this.addColumn('func_status', 'confirmed', 'INTEGER NOT NULL DEFAULT 0');
     // Fingerprint of main's compiled code per function (submissions may only change their own tasks).
     this.addColumn('func_status', 'code_hash', 'TEXT');
+    this.addColumn('versions', 'label', 'TEXT'); // human-readable name, e.g. "World of Warcraft 5.0.3 (build 15890, x64)"
     this.addColumn('attempts', 'batch_id', 'INTEGER REFERENCES batches(id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
   }

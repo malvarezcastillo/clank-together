@@ -148,7 +148,7 @@ export function createApp(ctx) {
       // Clone from the git dashboard (Forgejo) when configured; /repo.git is the coordinator's own read-only fallback.
       git: config.gitCloneUrl ?? `${config.publicUrl}/repo.git`,
       gitWeb: config.gitWebUrl ?? null,
-      version: v ? { id: v.id, sha256: v.sha256, size: v.size, download: config.distributeTarget ? `${config.publicUrl}/api/target/${encodeURIComponent(v.id)}` : null } : null,
+      version: v ? { id: v.id, label: v.label ?? v.id, sha256: v.sha256, size: v.size, download: config.distributeTarget ? `${config.publicUrl}/api/target/${encodeURIComponent(v.id)}` : null } : null,
       toolchain: project.toolchain,
       toolchainLock: loadToolchainLock(repo.dir),
       limits: { ...DEFAULT_LIMITS, ...project.lintLimits },
