@@ -16,6 +16,7 @@ import { downloadsDir, installPs1, installSh } from './install.js';
 import { ServerGhidra } from './ghidra.js';
 import { functionRegions } from './split.js';
 import { CheckQueue } from './checks.js';
+import { withGuidance } from './guidance.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
@@ -252,16 +253,19 @@ export function createApp(ctx) {
     return tasks.list({ state: query.get('state') ?? undefined, unit: query.get('unit') ?? undefined, limit: intParam(query.get('limit') ?? '50'), offset: intParam(query.get('offset') ?? '0') });
   });
 
+  // Work responses carry the project's current policy for agents (guidance.js).
+  const guided = (r) => withGuidance(store, r);
+
   router.on('GET', '/api/tasks/:id', ({ req, params }) => {
     auth(req);
-    return tasks.context(intParam(params.id));
+    return guided(tasks.context(intParam(params.id)));
   });
 
   router.on('POST', '/api/tasks/claim', async ({ req }) => {
     const user = auth(req);
     const body = await readJson(req, 4096);
     const id = tasks.claim(user, body.taskId ? intParam(body.taskId) : null);
-    return tasks.context(id);
+    return guided(tasks.context(id));
   });
 
   router.on('POST', '/api/tasks/:id/heartbeat', ({ req, params }) => {
@@ -281,7 +285,7 @@ export function createApp(ctx) {
     const taskId = intParam(params.id);
     const body = await readJson(req);
     const r = submitBatch(user, [taskId], body);
-    return { attemptId: r.attempts[0].attemptId, batchId: r.batchId, state: 'queued' };
+    return guided({ attemptId: r.attempts[0].attemptId, batchId: r.batchId, state: 'queued' });
   });
 
   /** Validates a submission body and queues it as one batch for the given tasks. */
@@ -314,12 +318,12 @@ export function createApp(ctx) {
          LEFT JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ? WHERE t.id IN (${ph}) ORDER BY a.addr`,
       v.id, ...ids,
     );
-    return {
+    return guided({
       tasks: rows.map((r) => ({ ...r, addr: r.addr != null ? '0x' + hex(r.addr) : null, annotation: `// FUNCTION: ${r.symbol}` })),
       allowedPaths: tasks.allowedPathsForTasks(ids),
       baseCommit: repo.head(),
       note: 'Write or fix every function, check, then submit them together (td submit --all). Context of one task: GET /api/tasks/<id>.',
-    };
+    });
   });
 
   router.on('POST', '/api/batches', async ({ req }) => {
@@ -327,7 +331,7 @@ export function createApp(ctx) {
     submitLimiter.check(user.id);
     const body = await readJson(req, 8 * 1024 * 1024);
     const r = submitBatch(user, (body.taskIds ?? []).map((x) => intParam(x)), body);
-    return { ...r, state: 'queued' };
+    return guided({ ...r, state: 'queued' });
   });
 
   router.on('GET', '/api/batches/:id', ({ req, params }) => {
@@ -339,7 +343,7 @@ export function createApp(ctx) {
       `SELECT a.id, a.task_id, t.symbol_id, s.name, a.state, a.score, a.result_json FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id WHERE a.batch_id = ? ORDER BY a.id`,
       b.id,
     );
-    return {
+    return guided({
       id: b.id,
       author: b.author,
       state: b.state,
@@ -353,7 +357,7 @@ export function createApp(ctx) {
         const fb = a.result_json ? JSON.parse(a.result_json).feedback : null;
         return { attemptId: a.id, taskId: a.task_id, symbol: a.symbol_id, name: a.name, state: a.state, score: a.score, summary: fb?.summary ?? null, status: fb?.target?.status ?? null };
       }),
-    };
+    });
   });
 
   router.on('POST', '/api/tasks/heartbeat-all', ({ req }) => {
@@ -469,7 +473,7 @@ export function createApp(ctx) {
     const merged = repo.mergeOntoHead(body.baseCommit, body.files);
     if (merged.conflicts.length) return { gate: 'conflict', conflicts: merged.conflicts };
     try {
-      return await ctx.checks.run(user.id, merged.files);
+      return guided(await ctx.checks.run(user.id, merged.files));
     } catch (e) {
       throw new HttpError(503, e.message);
     }

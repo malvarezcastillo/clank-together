@@ -10,6 +10,7 @@ import { parseArgs } from 'node:util';
 import { openServer, startServer, DEFAULT_CONFIG } from './app.js';
 import { Store, now } from './db.js';
 import { Accounts } from './accounts.js';
+import { agentGuidance, setAgentGuidance, resetAgentGuidance } from './guidance.js';
 import { PEImage } from '../shared/pe.js';
 
 const TEMPLATE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'template');
@@ -30,6 +31,7 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   user token <name> [label]              create an API token for an account
   version add <id> <exe> [--current]     register a target executable version
   version set-current <id>
+  guidance show|set <text>|off|reset     policy note sent to agents with every work response
   version label <id> <text>              readable name shown on the website
   version map <newId> <csv> --from <oldId>
                                          carry symbol IDs to a new version (csv: old_addr,new_addr[,size])
@@ -78,6 +80,16 @@ async function main() {
 
   if (cmd === 'init') return init(dataDir);
   if (cmd === 'start') return startServer(dataDir, { role: sub ?? 'all' });
+
+  if (cmd === 'guidance') {
+    // Reaches running agents on their next call; no restart needed.
+    const store = new Store(path.join(dataDir, 'td.sqlite'));
+    if (sub === 'set') setAgentGuidance(store, rest.join(' ') || (await readStdin()).replace(/^﻿/, '').trim());
+    else if (sub === 'off') setAgentGuidance(store, '');
+    else if (sub === 'reset') resetAgentGuidance(store);
+    else if (sub !== 'show' && sub !== undefined) throw new Error('usage: td-server guidance show|set <text>|off|reset');
+    return console.log(agentGuidance(store) ?? '(off: agents get no guidance)');
+  }
 
   if (cmd === 'user') {
     const accounts = new Accounts(new Store(path.join(dataDir, 'td.sqlite')));

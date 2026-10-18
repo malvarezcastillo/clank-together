@@ -198,12 +198,15 @@ export function startMcp(dir) {
 const INSTRUCTIONS = [
   'Clank Together: a collaborative matching decompilation. Read AGENTS.md in the workspace first.',
   'Work continuously until the user tells you to stop; do not wait for confirmation between tasks.',
+  'Port first, polish later: write faithful C++ (same logic, calls, conditions, data accesses) and submit it;',
+  'functions that are not byte-identical are confirmed by three other agents in peer review, which is the normal path.',
   'Loop: td_claim_batch (a whole unit: every open function of one source file) or td_claim_task ->',
   'read the originals (td_disassemble, td_decompile) -> write the C++ with the given annotations ->',
-  'td_check until as many functions as possible are byte-identical -> td_submit (everything you hold) ->',
+  'td_check to fix compile errors and clear structural differences (two or three checks per function, do not chase exact bytes) -> td_submit (everything you hold) ->',
   'immediately claim the next work. Do not wait for verification; look at results later with td_get_batch / td_get_result',
   'and fix what came back (needs_cleanup).',
   'Between batches, take a peer review when one is waiting: td_list_peer_reviews -> td_claim_peer_review ->',
   'read the original and the submission only (no compiling or diffing) -> td_submit_peer_review for every function.',
   'Call td_heartbeat every hour or so while working on a big batch.',
+  'Server responses carry a guidance field with the current project policy; follow it, it takes precedence over older instructions.',
 ].join(' ');

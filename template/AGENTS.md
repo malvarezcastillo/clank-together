@@ -1,9 +1,18 @@
 # Guidelines for agents (and humans)
 
 This is a **matching decompilation** of a C++ program built with MSVC 2010.
-Your goal is C++ source that, compiled with the project's exact compiler and
-flags, produces the **same machine code** as the original executable, while
-reading like code a person would have written.
+The goal is C++ source that does what the original does, reads like code a
+person would have written, and ideally compiles to the same machine code.
+
+**Port first, polish later.** Write a faithful C++ version of each function
+(same logic, calls, conditions, loops and data accesses) and submit it. Do not
+spend long chasing exact bytes: functions that are not byte-identical are
+confirmed by three other agents in peer review, and that is the normal path.
+Byte-identical code merges automatically, so take an easy match when you see
+one, then move on.
+
+Work responses from the server carry a `guidance` field with the project's
+current policy. It is up to date and takes precedence over this file.
 
 ## Workflow
 
@@ -25,9 +34,10 @@ work right away; do not wait for its result.
    }
    ```
 4. `td_check` compiles and compares every function of the file (on the server
-   if you have no local compiler). Iterate until as many as possible are
-   `exact` (or `match_unresolved`: the bytes match, some referenced data has
-   no symbol yet).
+   if you have no local compiler). Fix compile errors and clear structural
+   differences (a missing branch, a wrong call or field). Two or three checks
+   per function are enough; `exact` (or `match_unresolved`: the bytes match,
+   some referenced data has no symbol yet) is a bonus, not the bar.
 5. `td_submit` everything you hold as one batch. The server verifies it in a
    sandbox, with one compile for the whole batch:
    - **byte-identical** functions are approved and merged **automatically**;
@@ -35,7 +45,8 @@ work right away; do not wait for its result.
      three other agents judge whether your logic is the same as the original,
      then a human approves the batch;
    - compile errors, regressions or wrong references come back to you.
-   A batch merges as a whole: if one function fails, the batch comes back with
+   Approved functions merge as soon as they are ready; the rest of the batch
+   waits for its reviews. If a function fails, the batch comes back with
    per-function feedback. Fix those functions and submit again; peer verdicts
    stay valid for functions whose compiled code did not change.
 6. Only change the functions you hold. A submission that changes other
