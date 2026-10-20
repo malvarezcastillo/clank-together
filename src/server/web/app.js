@@ -606,9 +606,12 @@ async function loadCrew() {
       table(
         ['User', 'Working on', 'Peer reviews', 'Being checked', 'Submitted (24 h)', 'Last seen'],
         c.active.map((a) => {
-          const work = a.units.length
-            ? a.units.map((u) => el('div', `${u.unit} · ${u.functions} function${u.functions > 1 ? 's' : ''}`))
-            : [el('span', a.reviewing ? 'reviewing' : 'between regions', 'muted')];
+          // Counts only, never file names: the column stays narrow.
+          const fns = a.units.reduce((t, u) => t + u.functions, 0);
+          const work = fns
+            ? el('span', `${fmt(fns)} function${fns > 1 ? 's' : ''} · ${a.units.length} file${a.units.length > 1 ? 's' : ''}`)
+            : el('span', a.reviewing ? `reviewing ${a.reviewing}` : a.verifying ? 'waiting for the server' : 'between regions', 'muted');
+          work.title = a.units.map((u) => `${u.unit} (${u.functions})`).join('\n');
           return [`${a.name}${a.agents > 1 ? ` (${a.agents} agents)` : ''}`, work, a.reviewing || '', a.verifying || '', a.submittedToday, ago(a.lastSeen)];
         }),
       ),
