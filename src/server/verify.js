@@ -410,8 +410,10 @@ export class Verifier {
     for (const a of attempts) {
       const ev = this.evaluate({ check, rec, targetId: a.symbol_id, files: merged.files, changedHeaders, outside });
       // Held but not written: no annotation for it anywhere in the submission. Not a failure; it
-      // goes back to the author's claim.
-      if (!ev.feedback.target && !Object.values(submitted).some((text) => new RegExp(`//\\s*(FUNCTION|STUB)\\s*:\\s*${a.symbol_id}\\b`).test(String(text)))) {
+      // goes back to the author's claim. Also when main has code for it (verification compiles the
+      // unit a function lives in): that code is not this submission's, and reviewers shown the
+      // submitted files would not find it.
+      if (!Object.values(submitted).some((text) => new RegExp(`//\\s*(FUNCTION|STUB)\\s*:\\s*${a.symbol_id}\\b`).test(String(text)))) {
         this.withdraw(a);
         withdrawn++;
         continue;
