@@ -307,6 +307,13 @@ export class Tasks {
     if (ids.length > this.maxLeased) throw new HttpError(400, `at most ${this.maxLeased} tasks per submission`);
     return this.store.tx(() => {
       const own = new Set(ids.filter((id) => this.requireSubmittable(user, id).own));
+      // Authors whose recent work keeps breaking or being sent back slow down (quality.js).
+      const q = this.quality?.of(user.id);
+      if (q?.level === 'paused') throw new HttpError(429, this.quality.constructor.advice(q), { retryAfterSeconds: 3600, quality: q.level });
+      if (q?.level === 'limited') {
+        const lastHour = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND created_at > ? AND state != 'skip'`, user.id, now() - 3600_000).n;
+        if (lastHour >= 6) throw new HttpError(429, this.quality.constructor.advice(q), { retryAfterSeconds: 600, quality: q.level });
+      }
       // An agent stuck in a loop (every submission refused before it compiled: not synced, conflicts,
       // comments) pauses until it has fixed that, instead of filling the queue every few seconds.
       const recent = this.store.all(
@@ -320,7 +327,7 @@ export class Tasks {
         throw new HttpError(429, `your last ${recent.length} submissions were all refused before compiling (latest: ${refused[0].why}). Run td_sync, merge, fix that and check locally (td_check) before submitting again`, { retryAfterSeconds: 600 });
       }
       // Keep the verification queue moving: a few batches waiting per account at a time.
-      const max = this.config.maxQueuedBatches ?? 8;
+      const max = q?.level === 'limited' ? 1 : this.config.maxQueuedBatches ?? 8;
       const waiting = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND state IN ('queued', 'verifying')`, user.id).n;
       if (waiting >= max) {
         throw new HttpError(429, `you have ${waiting} batches waiting for verification (the limit is ${max}); keep your claims, do peer reviews meanwhile (td_list_peer_reviews), and submit again when one is done (td_get_batch shows it)`, { retryAfterSeconds: 120 });

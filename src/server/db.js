@@ -300,6 +300,7 @@ export class Store {
     this.addColumn('check_jobs', 'files_hash', 'TEXT'); // a retry of the same check joins the queued one
     this.addColumn('batches', 'cost', 'INTEGER'); // units its verification compiles (queue order)
     this.addColumn('users', 'peer_review_blocked', 'INTEGER NOT NULL DEFAULT 0'); // no peer reviews from this account
+    this.addColumn('users', 'submit_mode', "TEXT NOT NULL DEFAULT 'auto'"); // auto (quality.js) | trusted | paused
     // "No decompile" claims: an attempt that says a function needs no source (peer reviewed like code).
     this.addColumn('attempts', 'kind', "TEXT NOT NULL DEFAULT 'code'"); // code | skip
     this.addColumn('attempts', 'skip_category', 'TEXT');

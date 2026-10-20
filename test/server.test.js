@@ -1251,3 +1251,45 @@ test('three "different" send a function back even when five said "same"', async 
   assert.equal(r.body.state, 'needs_cleanup', 'five "same" do not outvote three "different"');
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task);
 });
+
+test('authors whose work peers keep sending back are limited, then paused; trusted ones are not', async () => {
+  const token = await activeUser('qaauthor');
+  const author = ctx.accounts.byName('qaauthor');
+  const reviewers = [];
+  for (let i = 1; i <= 3; i++) {
+    await activeUser(`qareviewer${i}`);
+    reviewers.push(ctx.accounts.byName(`qareviewer${i}`));
+  }
+  const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
+  const addDecided = (n, rejected) => {
+    for (let i = 0; i < n; i++) {
+      const a = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', ?, ?)`, task, author.id, ctx.repo.head(), rejected ? 'needs_cleanup' : 'merged', now()).lastInsertRowid);
+      for (const r of reviewers) ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, ?, 'checked the calls and branches', ?)`, a, r.id, rejected ? 'different' : 'same', now());
+    }
+  };
+  addDecided(10, false);
+  addDecided(12, true);
+  ctx.quality.forget(author.id);
+  assert.equal(ctx.quality.of(author.id).level, 'limited', '12 of 22 sent back');
+  addDecided(20, true);
+  ctx.quality.forget(author.id);
+  const q = ctx.quality.of(author.id);
+  assert.equal(q.level, 'paused', '32 of 42 sent back');
+  assert.match(q.reasons[0], /sent back by peers/);
+  const me = (await call('GET', '/api/me', null, token)).body;
+  assert.equal(me.quality.level, 'paused');
+  assert.match(me.quality.note, /lifts by itself/);
+  const claim = await call('POST', '/api/regions/claim', { kind: 'unit', key: 'src/player.cpp' }, token);
+  assert.equal(claim.status, 429);
+
+  await ctx.accounts.createUser('qaadmin', 'admin', PASSWORD);
+  const admin = await login('qaadmin');
+  assert.equal((await request('POST', '/api/admin/users/qaauthor/submit-trusted', {}, { cookie: admin })).status, 200);
+  assert.equal(ctx.quality.of(author.id).level, 'ok', 'trusted accounts are never limited');
+  assert.equal((await request('POST', '/api/admin/users/qaauthor/submit-paused', {}, { cookie: admin })).status, 200);
+  assert.equal(ctx.quality.of(author.id).level, 'paused');
+  assert.match(ctx.quality.of(author.id).reasons[0], /maintainer paused/);
+  const board = (await request('GET', '/api/admin/authors', null, { cookie: admin })).body;
+  assert.ok(board.authors.some((a) => a.name === 'qaauthor' && a.level === 'paused'));
+  ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE user_id = ?`, author.id);
+});

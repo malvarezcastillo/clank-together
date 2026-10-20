@@ -108,6 +108,12 @@ export class Regions {
     if (!['unit', 'class'].includes(kind)) throw new HttpError(400, "kind must be 'unit' or 'class'");
     key = String(key ?? '').trim();
     if (!key || key.length > 300) throw new HttpError(400, 'key must name the source file (kind unit) or the class (kind class)');
+    const q = this.quality?.of(user.id);
+    if (q?.level === 'paused') throw new HttpError(429, this.quality.constructor.advice(q), { retryAfterSeconds: 3600 });
+    if (q?.level === 'limited') {
+      const other = this.mine(user).filter((x) => !(x.kind === kind && x.key === key));
+      if (other.length) throw new HttpError(409, `${this.quality.constructor.advice(q)} Finish or release ${other[0].key} first.`);
+    }
     return this.store.tx(() => {
       const members = this.members(kind, key);
       if (!members.length) throw new HttpError(404, `no functions in ${kind} ${key}`);

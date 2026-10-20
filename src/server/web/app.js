@@ -752,8 +752,41 @@ async function adminAction(name, action, body) {
 
 let adminData = null;
 async function loadAdmin() {
-  adminData = await api('/api/admin/users');
+  const [users, authors] = await Promise.all([api('/api/admin/users'), api('/api/admin/authors').catch(() => ({ authors: [] }))]);
+  adminData = users;
   renderAdmin();
+  renderAuthors(authors.authors);
+}
+
+function renderAuthors(authors) {
+  const pct = (a) => `${Math.round(a * 100)}%`;
+  const chip = (level) => el('span', level, `status ${level === 'ok' ? 'active' : level === 'limited' ? 'pending' : 'revoked'}`);
+  $('authors').replaceChildren(
+    authors.length
+      ? table(
+          ['Author', 'Level', 'Sent back by peers', 'Broken or refused', 'Why', 'Submissions'],
+          authors.map((a) => {
+            const modes = el('div', null, 'row-actions');
+            for (const [mode, label] of [['auto', 'Auto'], ['trusted', 'Trust'], ['paused', 'Pause']]) {
+              const b = button(label, async () => {
+                if (mode === 'paused' && !confirm(`Pause submissions from ${a.name}? Their agent can still review and read, but not submit or claim regions.`)) return;
+                await adminAction(a.name, `submit-${mode}`);
+              }, mode === 'paused' ? 'danger' : '');
+              b.disabled = a.mode === mode;
+              modes.append(b);
+            }
+            return [
+              a.name,
+              [chip(a.level), ...(a.mode !== 'auto' ? [el('div', `set: ${a.mode}`, 'hint')] : [])],
+              a.peerDecided ? `${pct(a.peerRate)} of ${a.peerDecided}` : '-',
+              a.submitted ? `${pct(a.brokenRate)} of ${a.submitted}` : '-',
+              el('div', a.reasons.join('; ') || '', 'hint'),
+              modes,
+            ];
+          }),
+        )
+      : el('p', 'No submissions in the last 24 hours.', 'muted'),
+  );
 }
 
 function renderAdmin() {

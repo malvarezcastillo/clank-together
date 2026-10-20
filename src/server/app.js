@@ -24,6 +24,7 @@ import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { Regions } from './regions.js';
 import { Credits, SLOT_TABLE } from './credits.js';
 import { Live } from './live.js';
+import { Quality, LIMITS } from './quality.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
@@ -84,6 +85,9 @@ export function openServer(dataDir, { log = console } = {}) {
   const tasks = new Tasks({ store, config, repo, project });
   const regions = new Regions({ store, config, repo, tasks });
   tasks.regions = regions;
+  const quality = new Quality({ store });
+  tasks.quality = quality;
+  regions.quality = quality;
   const peers = new PeerReviews({ store, project });
   const verifier = new Verifier({ store, config, repo, project, tasks, getPe, peers, log });
   verifier.regions = regions;
@@ -94,7 +98,7 @@ export function openServer(dataDir, { log = console } = {}) {
   merger.onMerged = (commit) => ghidra.scheduleRefresh(commit);
   const checks = new CheckQueue({ store, repo, verifier, config, log });
   const credits = new Credits({ store });
-  return { config, store, repo, project, tasks, regions, credits, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
+  return { config, store, repo, project, tasks, regions, quality, credits, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
 }
 
 export function createApp(ctx) {
@@ -312,6 +316,10 @@ export function createApp(ctx) {
       leasedAllowedPaths: leases.length ? tasks.allowedPathsForTasks(leases) : [],
       regions: ctx.regions.mine(user).map((r) => ({ kind: r.kind, key: r.key, expires: r.expires_at })),
       regionTasks: shared,
+      quality: (() => {
+        const q = ctx.quality.of(user.id);
+        return { level: q.level, reasons: q.reasons, ...(q.level !== 'ok' ? { note: Quality.advice(q) } : {}) };
+      })(),
       regionAllowedPaths: shared.length ? tasks.allowedPathsForTasks(shared.slice(0, 500).map((t) => t.taskId)) : [],
     };
   });
@@ -928,6 +936,10 @@ export function createApp(ctx) {
     return tasks.get(t.id);
   });
 
+  router.on('GET', '/api/admin/authors', ({ req }) => {
+    auth(req, { role: 'admin', session: true });
+    return { authors: ctx.quality.authors(), limits: LIMITS };
+  });
   router.on('GET', '/api/admin/users', ({ req, query }) => {
     auth(req, { role: 'admin', session: true });
     return { roles: ROLES, users: accounts.listUsers(query.get('status') ?? undefined), work: claimedWork(), reviewers: reviewerStats(store) };
@@ -965,7 +977,19 @@ export function createApp(ctx) {
     'block-reviews': (name, admin) => setReviewBlock(name, 1, admin),
     'allow-reviews': (name, admin) => setReviewBlock(name, 0, admin),
     delete: (name, admin) => accounts.deleteUser(name, admin.id),
+    // Submissions: auto (limited by recent quality), trusted (never limited) or paused.
+    'submit-auto': (name) => setSubmitMode(name, 'auto'),
+    'submit-trusted': (name) => setSubmitMode(name, 'trusted'),
+    'submit-paused': (name) => setSubmitMode(name, 'paused'),
     'reset-password': (name, admin) => accounts.resetPassword(name, admin.id),
+  };
+  const setSubmitMode = (name, mode) => {
+    const u = accounts.byName(name);
+    if (!u) throw new HttpError(404, 'no such user');
+    store.run('UPDATE users SET submit_mode = ? WHERE id = ?', mode, u.id);
+    ctx.quality.forget(u.id);
+    store.event('submit_mode', null, { name, mode });
+    return { name, mode };
   };
   const setReviewBlock = (name, blocked, admin) => {
     const u = accounts.byName(name);
