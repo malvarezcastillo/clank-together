@@ -4,6 +4,8 @@
 
 {
 	admin off
+	# The ACME account: expiry notices, and ZeroSSL (the fallback issuer) requires one.
+	email admin@saty.dev
 }
 
 saty.dev {

@@ -69,7 +69,10 @@ export class Regions {
       if (free && !g.free) continue;
       out.push(g);
     }
-    out.sort((a, b) => Number(b.free) - Number(a.free) || a.claimedBy.length - b.claimedBy.length || b.open - a.open || a.key.localeCompare(b.key));
+    // A good region is one agent's batch: 5 to 80 open functions first, then bigger ones (share
+    // them, or take them in parts), then the tiny ones.
+    const size = (g) => (g.open >= 5 && g.open <= 80 ? 0 : g.open > 80 ? 1 : 2);
+    out.sort((a, b) => Number(b.free) - Number(a.free) || a.claimedBy.length - b.claimedBy.length || size(a) - size(b) || b.open - a.open || a.key.localeCompare(b.key));
     return { total: out.length, regions: out.slice(0, Math.min(Math.max(1, limit | 0), 1000)) };
   }
 
