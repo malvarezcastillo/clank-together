@@ -1228,3 +1228,26 @@ test('the live socket pushes new events, refuses other sites and ignores what cl
     live.stop();
   }
 });
+
+test('three "different" send a function back even when five said "same"', async () => {
+  await activeUser('odauthor');
+  const author = ctx.accounts.byName('odauthor');
+  const peers = [];
+  for (let i = 1; i <= 8; i++) peers.push(await activeUser(`odpeer${i}`));
+  const v = ctx.store.currentVersion();
+  const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402a00, size: 8, unit: 'src/od.cpp' }).symbol.id;
+  ctx.tasks.generate();
+  const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
+  ctx.store.run(`UPDATE tasks SET state = 'in_review' WHERE id = ?`, task);
+  // An attempt from the earlier rule: in human review, objections were not counted there.
+  const attempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'in_review', ?)`, task, author.id, ctx.repo.head(), now()).lastInsertRowid);
+  const reviewers = ctx.peers;
+  for (const [i, verdict] of ['different', 'different', 'different', 'same', 'same', 'same', 'same'].entries()) {
+    ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, ?, 'checked every branch and call', ?)`, attempt, ctx.accounts.byName(`odpeer${i + 1}`).id, verdict, now());
+  }
+  void reviewers;
+  await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, peers[7]);
+  const r = await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'the same calls and the same returns' }, peers[7]);
+  assert.equal(r.body.state, 'needs_cleanup', 'five "same" do not outvote three "different"');
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task);
+});

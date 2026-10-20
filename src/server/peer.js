@@ -206,7 +206,8 @@ export class PeerReviews {
       const different = counts.different + (verdict === 'different' ? 1 : 0);
       // A competing candidate does not take a task over from the agent holding it.
       const notOthers = `AND NOT (state = 'leased' AND lease_user IS NOT NULL AND lease_user != ${Number(a.user_id)})`;
-      if (same >= this.autoAccept) {
+      // Three "different" send it back even when five said "same": accepted only without that.
+      if (same >= this.autoAccept && different < this.required) {
         // Accepted: it merges (objections, if any, are kept for a human to look at later).
         this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
         this.store.run(`UPDATE attempts SET state = 'approved' WHERE id = ?`, attemptId);
@@ -260,6 +261,7 @@ export class PeerReviews {
   }
 
   confirmed(attemptId) {
-    return this.counts(attemptId).same >= this.autoAccept;
+    const c = this.counts(attemptId);
+    return c.same >= this.autoAccept && c.different < this.required;
   }
 }
