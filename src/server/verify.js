@@ -9,6 +9,8 @@ import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS } from '../shared/compare.js';
 import { listSources, isUnit } from '../shared/project.js';
+import { changedNames, unitsMentioning } from './affected.js';
+import { className } from './grouping.js';
 import { now } from './db.js';
 import { returnBatch, batchAttempts, settleBatch } from './batches.js';
 import { analyzeInWorkers } from './analyze.js';
@@ -151,9 +153,27 @@ export class Verifier {
         if (at && isUnit(at)) units.add(at);
         else unknown++;
       }
-      // Never compiled before and defined in a changed header: any includer may be the one.
+      // Never compiled before and defined in a changed header: the includers that mention its template
+      // arguments or class are the ones that can instantiate it (every includer took up to an hour).
       if (unknown && !dependents && changedHeaders.length) {
-        for (const h of changedHeaders) for (const r of this.store.all('SELECT unit FROM unit_deps WHERE header = ?', h)) units.add(r.unit);
+        // The template arguments of the annotation (<CMapObj, HASHKEY_NONE>) are the sharp test: the
+        // class (TSHashTable) is mentioned by many more units. The class only when there are none.
+        const args = new Set();
+        const classes = new Set();
+        for (const id of targets) {
+          for (const h of changedHeaders) {
+            const m = new RegExp(`FUNCTION:\\s*${id}\\s*<([^>\\n]*)>`).exec(String(files[h] ?? ''));
+            for (const n of m?.[1].match(/[A-Za-z_]\w{2,}/g) ?? []) args.add(n);
+          }
+          const cls = className(this.store.get('SELECT name FROM symbols WHERE id = ?', id)?.name);
+          if (cls) classes.add(cls.replace(/<.*$/, '').split('::').pop());
+        }
+        const names = [...(args.size ? args : classes)];
+        for (const h of changedHeaders) {
+          const deps = this.store.all('SELECT unit FROM unit_deps WHERE header = ? ORDER BY unit', h).map((r) => r.unit);
+          const hits = names.length ? unitsMentioning(this.repo, deps, names, files) ?? [] : [];
+          for (const u of (hits.length ? hits : deps).slice(0, 16)) units.add(u);
+        }
       }
     }
 
@@ -228,12 +248,18 @@ export class Verifier {
     // A unit the merged files add that verification did not compile.
     const known = new Set(saved.check.units.map((u) => u.file));
     for (const f of Object.keys(files)) if (isUnit(f) && !known.has(f)) stale.push({ file: f });
-    // Verification compiled only the submitted units; nothing reaches main without every includer
-    // of a changed header compiled and checked for regressions.
+    // Verification compiled only the submitted units. Before a header change reaches main, the
+    // includers it can affect are compiled and checked for regressions: the ones that mention a
+    // name it touched (affected.js); every includer when the change is too broad to narrow down.
+    const head = this.repo.head();
     for (const h of Object.keys(files).filter((f) => !isUnit(f))) {
-      for (const r of this.store.all('SELECT unit FROM unit_deps WHERE header = ?', h)) {
-        if (!known.has(r.unit) && !stale.some((u) => u.file === r.unit)) stale.push({ file: r.unit });
-      }
+      const before = this.repo.show(head, h);
+      if (before === files[h]) continue;
+      const deps = this.store.all('SELECT unit FROM unit_deps WHERE header = ?', h).map((r) => r.unit);
+      const narrowed = before === null ? null : unitsMentioning(this.repo, deps, changedNames(before, files[h]), files);
+      const pick = narrowed && narrowed.length <= 300 ? narrowed : deps;
+      if (pick !== deps) this.log.info(`batch ${batch.id}: ${h} changed; compiling ${pick.length} of its ${deps.length} includers (the ones that mention what changed)`);
+      for (const u of pick) if (!known.has(u) && !stale.some((x) => x.file === u)) stale.push({ file: u });
     }
     if (!stale.length) return { ...saved, reused: saved.check.units.length, compiled: 0 };
     const part = await this.check(files, `merge-${batch.id}`, { lint: false, onlyUnits: stale.map((u) => u.file) });
