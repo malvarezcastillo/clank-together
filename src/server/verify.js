@@ -10,6 +10,7 @@ import { reconcile } from '../shared/reconcile.js';
 import { STATUS } from '../shared/compare.js';
 import { listSources, isUnit } from '../shared/project.js';
 import { changedNames, unitsMentioning } from './affected.js';
+import { undefinedDeclarations } from './undefined.js';
 import { className } from './grouping.js';
 import { now } from './db.js';
 import { returnBatch, batchAttempts, settleBatch } from './batches.js';
@@ -220,6 +221,21 @@ export class Verifier {
     return errors;
   }
 
+  /** Functions the submission declares that nothing defines (undefined.js). */
+  undefinedGate(files, baseCommit) {
+    const submitted = Object.keys(files);
+    // A function of the original: by name, or by its stable ID (agents name unnamed ones fn_01234).
+    const known = (name) => !!this.store.get('SELECT 1 FROM symbols WHERE id = ? OR name = ? OR name LIKE ? LIMIT 1', name, name, `%::${name}`);
+    const existsElsewhere = (name) => {
+      try {
+        return this.repo.git(['grep', '-l', '-w', '-F', '-e', name, 'HEAD', '--', '.', ...submitted.map((f) => `:(exclude)${f}`)]).trim().length > 0;
+      } catch {
+        return false; // git grep exits 1 when nothing matches
+      }
+    };
+    return undefinedDeclarations(files, { before: (f) => this.repo.show(baseCommit, f), existsElsewhere, known });
+  }
+
   // What a merge needs from the verification's check (without listings and byte diffs).
   rememberCheck(batchId, { check, rec, changedHeaders }) {
     const compact = {
@@ -396,6 +412,13 @@ export class Verifier {
     if (!this.repo.isAncestor(batch.base_commit)) return finishAll('rejected', { summary: `base commit ${batch.base_commit} is not part of main; sync and resubmit` });
     const textErrors = this.freeTextGate(submitted, batch.base_commit);
     if (textErrors.length) return finishAll('rejected', { summary: 'rejected: the submission adds comments or strings that are not allowed (see lintErrors)', lintErrors: textErrors });
+    const undefinedNames = this.undefinedGate(submitted, batch.base_commit);
+    if (undefinedNames.length) {
+      return finishAll('needs_cleanup', {
+        summary: `declares functions that are defined nowhere: ${undefinedNames.join(', ')}. Main is linked as a whole: call the real function of the original (td_lookup_symbol; td_new_symbol for one not in the database yet) and port it too if it has no code yet, or write the logic inline`,
+        undefinedFunctions: undefinedNames,
+      });
+    }
     const merged = this.repo.mergeOntoHead(batch.base_commit, submitted);
     if (merged.conflicts.length) return finishAll('needs_cleanup', { summary: 'your change conflicts with newer work on main; sync, merge and resubmit', conflicts: merged.conflicts });
 
