@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -13,6 +14,7 @@ import { Store, now } from '../src/server/db.js';
 import { STATUS } from '../src/shared/compare.js';
 import { reviewerStats } from '../src/server/reviewers.js';
 import { inferUnits, groupFor } from '../src/server/grouping.js';
+import { Live } from '../src/server/live.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 let dataDir, ctx, server, base;
@@ -1175,4 +1177,38 @@ test('deleting an account: kept as deleted_<id> when it has work, removed otherw
   const reset = await request('POST', '/api/admin/users/deladmin/reset-password', {}, { cookie: admin });
   assert.equal(reset.status, 200);
   assert.ok(reset.body.password.length >= 12);
+});
+
+test('the live socket pushes new events, refuses other sites and ignores what clients send', async () => {
+  const live = new Live({ store: ctx.store, credits: ctx.credits, ...server.liveSources });
+  live.attach(server);
+  try {
+    const url = base.replace('http', 'ws') + '/api/live';
+    const ws = new WebSocket(url);
+    const messages = [];
+    ws.addEventListener('message', (e) => messages.push(JSON.parse(e.data)));
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve);
+      ws.addEventListener('error', reject);
+    });
+    await waitFor(() => messages.some((m) => m.type === 'hello'));
+    ws.send('anything');
+    ctx.store.event('merged', ctx.accounts.byName('rgfirst').id, { batch: 1, functions: 3, commit: 'abcdef1234567890' });
+    const feed = await waitFor(() => messages.find((m) => m.type === 'feed'), 8000);
+    assert.equal(feed.items.at(-1).type, 'merged');
+    assert.equal(feed.items.at(-1).functions, 3);
+    assert.equal(feed.items.at(-1).commit, 'abcdef1234');
+    ws.close();
+
+    // A page on another site may not open it with the visitor's cookie.
+    const res = await new Promise((resolve) => {
+      const req = http.request(base + '/api/live', { headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13', origin: 'https://evil.example' } });
+      req.on('response', (r) => resolve(r.statusCode));
+      req.on('upgrade', () => resolve(101));
+      req.end();
+    });
+    assert.equal(res, 403);
+  } finally {
+    live.stop();
+  }
 });

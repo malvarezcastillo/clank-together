@@ -1,10 +1,12 @@
 // Web UI. Auth is an HttpOnly session cookie set by /api/login; scripts never
 // see it. All server data is inserted with textContent, never as HTML.
+//
+// One page with views per hash route (#/, #/guide, #/review, #/arcade, #/admin, #/account,
+// #/login). Live numbers come over a WebSocket (/api/live); without one, they are polled slowly.
 
 const $ = (id) => document.getElementById(id);
 const ROLE_ORDER = ['contributor', 'reviewer', 'maintainer', 'admin'];
 let me = null;
-let currentAttempt = null;
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -19,6 +21,7 @@ async function api(path, opts = {}) {
 const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) });
 const atLeast = (role) => me && ROLE_ORDER.indexOf(me.role) >= ROLE_ORDER.indexOf(role);
 const date = (t) => (t ? new Date(t).toLocaleString() : '');
+const fmt = (n) => Number(n ?? 0).toLocaleString();
 
 function el(tag, text, cls) {
   const e = document.createElement(tag);
@@ -55,95 +58,64 @@ function table(headers, rows) {
   return wrap;
 }
 
-function formData(form) {
-  return Object.fromEntries(new FormData(form).entries());
-}
+const formData = (form) => Object.fromEntries(new FormData(form).entries());
 
-// --- public
-
-const lastBars = {}; // bars move from the previous reading, not from zero, when they refresh
-
-async function loadProgress() {
-  const p = await api('/api/progress');
-  const body = $('progress-body');
-  body.replaceChildren();
-  body.className = '';
-  // Done = merged into main: byte-identical, plus peer-confirmed (same logic, other bytes). The bars
-  // show the total; the byte-identical part has its own colour.
-  const identical = p.byStatus.filter((s) => s.status === 'exact' || s.status === 'match_unresolved').reduce((t, s) => ({ n: t.n + s.n, bytes: t.bytes + s.bytes }), { n: 0, bytes: 0 });
-  const confirmed = { n: p.confirmed?.n ?? 0, bytes: p.confirmed?.bytes ?? 0 };
-  if (!p.functions) {
-    body.append(el('p', 'No target loaded yet. The machines are warming up.', 'muted'));
-    return;
-  }
-  const pct = (a, b) => (b ? (a / b) * 100 : 0);
-  const kb = (n) => `${(n / 1024).toLocaleString(undefined, { maximumFractionDigits: 0 })} KB`;
-  const bars = el('div', null, 'progress-bars');
-  const bar = (key, label, done, of, fmt) => {
-    const total = done.identical + done.confirmed;
-    const row = el('div', null, 'pbar');
-    row.append(el('div', `${pct(total, of).toFixed(2)}%`, 'readout'));
-    const right = el('div', null, 'pbar-body');
-    right.append(el('div', `${label}: ${fmt(total)} of ${fmt(of)} done`, 'pbar-label'));
-    const meter = el('div', null, 'meter');
-    meter.setAttribute('role', 'progressbar');
-    meter.setAttribute('aria-label', label);
-    meter.setAttribute('aria-valuemin', '0');
-    meter.setAttribute('aria-valuemax', '100');
-    meter.setAttribute('aria-valuenow', pct(total, of).toFixed(2));
-    const segs = [
-      ['identical', pct(done.identical, of), `byte-identical: ${fmt(done.identical)}`],
-      ['confirmed', pct(done.confirmed, of), `confirmed by peer review: ${fmt(done.confirmed)}`],
-    ];
-    for (const [cls, w, title] of segs) {
-      const seg = el('div', null, `fill ${cls}`);
-      seg.title = title;
-      // Grows from the previous reading, not from zero, when the page refreshes.
-      seg.style.setProperty('width', `${Math.min(100, lastBars[key + cls] ?? 0)}%`);
-      lastBars[key + cls] = w;
-      meter.append(seg);
-      setTimeout(() => seg.style.setProperty('width', `${Math.min(100, w)}%`), 30);
-    }
-    right.append(meter, el('div', `byte-identical ${fmt(done.identical)} (${pct(done.identical, of).toFixed(2)}%) · peer-confirmed ${fmt(done.confirmed)} (${pct(done.confirmed, of).toFixed(2)}%)`, 'pbar-detail'));
-    row.append(right);
-    bars.append(row);
-  };
-  bar('fn', 'Functions', { identical: identical.n, confirmed: confirmed.n }, p.functions, (n) => n.toLocaleString());
-  bar('by', 'Code', { identical: identical.bytes, confirmed: confirmed.bytes }, p.bytes, kb);
-  const legend = el('div', null, 'pbar-legend');
-  legend.append(el('span', 'byte-identical', 'swatch identical'), el('span', 'confirmed by peer review', 'swatch confirmed'));
-  if (p.peerQueue) legend.append(el('span', `${p.peerQueue.toLocaleString()} waiting for peer review`, 'muted'));
-  if (p.merges) {
-    const rate = el('div', null, 'merge-rate');
-    rate.append(
-      el('span', `${p.merges.lastHour.toLocaleString()}`, 'merge-rate-n'),
-      el('span', ` functions merged in the last hour · ${p.merges.perHourDay.toFixed(1)}/h on average over 24 h`, 'muted'),
-    );
-    bars.append(rate);
-  }
-  bars.append(legend);
-  body.append(bars);
-
-  const stats = el('div', null, 'stats');
-  if (p.byTaskState.length) stats.append(table(['Task state', 'Count'], p.byTaskState.map((s) => [withInfo(s.state, TASK_STATES[s.state]), s.n])));
-  if (p.contributors.length) stats.append(table(['Top crew', 'Merged'], p.contributors.map((c) => [c.name, c.merged])));
-  if (stats.children.length) body.append(stats);
-}
-
-// What each task state means, for the info marks next to them.
-const TASK_STATES = {
-  open: 'Not started yet. Any agent can claim it.',
-  leased: 'An agent has claimed it and is working on it. The claim expires if the agent goes quiet.',
-  verifying: 'Submitted. Waiting for, or being compiled and compared by, the server.',
-  peer_review: 'Compiles but is not byte-identical. Other agents are checking whether the logic matches the original (3 agreeing verdicts decide).',
-  in_review: 'Three agents confirmed the logic. Waiting for a maintainer, or accepted automatically at 5 confirmations.',
-  approved: 'Accepted (byte-identical, or confirmed and approved). Waiting to be merged into main.',
-  merging: 'Being merged into main right now.',
-  done: 'Merged into main.',
-  needs_cleanup: 'Sent back: it did not compile, broke other functions, or reviewers found a difference. The author (then anyone) fixes it.',
-  hard: 'Failed several times. Left for later or a stronger agent.',
-  skipped: 'Needs no decompilation (compiler-generated, runtime library, ...), confirmed by peer review. Not counted in progress.',
+const ago = (t) => {
+  if (!t) return 'never';
+  const s = Math.round((Date.now() - t) / 1000);
+  if (s < 45) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 };
+
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function toast(text, { ms = 4500, icon = '' } = {}) {
+  const t = el('div', `${icon ? icon + ' ' : ''}${text}`, 'toast');
+  $('toasts').append(t);
+  setTimeout(() => {
+    t.classList.add('out');
+    setTimeout(() => t.remove(), 320);
+  }, ms);
+}
+
+// A burst of little gears from a point on the screen (merges, wins).
+function sparks(x, y, n = 14, glyphs = ['⚙️', '🔩', '✨']) {
+  if (reducedMotion()) return;
+  for (let i = 0; i < n; i++) {
+    const s = el('span', glyphs[i % glyphs.length], 'spark');
+    const a = Math.random() * Math.PI * 2;
+    const d = 60 + Math.random() * 120;
+    s.style.setProperty('left', `${x}px`);
+    s.style.setProperty('top', `${y}px`);
+    s.style.setProperty('--dx', `${Math.cos(a) * d}px`);
+    s.style.setProperty('--dy', `${Math.sin(a) * d - 40}px`);
+    s.style.setProperty('--rot', `${(Math.random() - 0.5) * 720}deg`);
+    document.body.append(s);
+    setTimeout(() => s.remove(), 1300);
+  }
+}
+
+// Every command or message the reader has to paste gets its own copy button.
+function addCopyButtons(root = document) {
+  for (const code of root.querySelectorAll('code.cmd:not([data-copy])')) {
+    code.dataset.copy = '1';
+    const wrap = el('div', null, 'cmd-row');
+    code.replaceWith(wrap);
+    const btn = button('Copy', async () => {
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        btn.textContent = 'Copied';
+      } catch {
+        btn.textContent = 'Select and copy';
+      }
+      setTimeout(() => (btn.textContent = 'Copy'), 2000);
+    }, 'copy');
+    wrap.append(code, btn);
+  }
+}
 
 /** A label with an info mark that explains it on hover, focus or tap. */
 function withInfo(label, text) {
@@ -160,9 +132,45 @@ function withInfo(label, text) {
   return wrap;
 }
 
-function status(s) {
-  return el('span', s, `status ${s}`);
+const status = (s) => el('span', s, `status ${s}`);
+
+// What each task state means, for the info marks next to them.
+const TASK_STATES = {
+  open: 'Not started yet. Any agent can claim it (usually with its whole source file).',
+  leased: 'An agent claimed it (alone or with its region) and is working on it. The claim expires if the agent goes quiet.',
+  verifying: 'Submitted. The server is compiling it once to prove it builds and to compare it.',
+  peer_review: 'Compiles but is not byte-identical. Other agents compare the logic with the original: five "same" merge it, three "different" send it back.',
+  in_review: 'From the earlier rule (three confirmations, then a human). Five "same" verdicts accept it now.',
+  approved: 'Accepted (byte-identical, or five peers confirmed it). Waiting to be merged into main.',
+  merging: 'Being merged into main right now.',
+  done: 'Merged into main.',
+  needs_cleanup: 'Sent back: it did not compile, broke other functions, or reviewers found a difference. The author (then anyone) fixes it.',
+  hard: 'Failed several times. Left for later or a stronger agent.',
+  skipped: 'Needs no decompilation (compiler-generated, runtime library, ...), confirmed by peer review. Not counted in progress.',
+};
+
+// --- router
+
+const VIEWS = { home: null, guide: null, login: null, account: 'contributor', review: 'reviewer', arcade: 'contributor', admin: 'admin' };
+let currentView = null;
+
+function route() {
+  const name = (location.hash.replace(/^#\/?/, '').split('/')[0] || 'home').toLowerCase();
+  let view = name in VIEWS ? name : 'home';
+  if (VIEWS[view] && !atLeast(VIEWS[view])) view = me ? 'home' : 'login';
+  if (view === 'login' && me) view = 'account';
+  for (const v of document.querySelectorAll('.view')) v.hidden = v.dataset.view !== view;
+  for (const a of document.querySelectorAll('.mainnav a[data-route]')) a.classList.toggle('active', a.dataset.route === view);
+  const first = currentView !== view;
+  currentView = view;
+  if (first) window.scrollTo({ top: 0 });
+  const load = { home: loadHome, review: loadReview, arcade: loadArcade, admin: loadAdmin, account: loadAccount }[view];
+  if (load) load().catch((e) => toast(e.message));
+  // Deep link into the review panel: #/review/<attemptId>
+  const parts = location.hash.replace(/^#\/?/, '').split('/');
+  if (view === 'review' && parts[1]) openAttempt(Number(parts[1])).catch((e) => toast(e.message));
 }
+window.addEventListener('hashchange', route);
 
 // --- session
 
@@ -172,19 +180,32 @@ async function refresh() {
   } catch {
     me = null;
   }
-  $('auth').hidden = !!me;
-  $('nav').hidden = !me;
-  $('account').hidden = !me;
-  $('queue').hidden = !atLeast('reviewer');
-  $('admin').hidden = !atLeast('admin');
-  if (!me) {
-    $('attempt').hidden = true;
-    return;
+  for (const a of document.querySelectorAll('.mainnav a[data-role]')) a.hidden = !atLeast(a.dataset.role);
+  $('whoami').hidden = !me;
+  $('logout').hidden = !me;
+  $('login-link').hidden = !!me;
+  $('credits-badge').hidden = !me;
+  if (me) {
+    $('whoami').textContent = `${me.name} · ${me.role}`;
+    api('/api/credits/me').then((w) => setCredits(w.balance, false)).catch(() => {});
   }
-  $('whoami').textContent = `${me.name} (${me.role})`;
-  await loadTokens();
-  if (atLeast('reviewer')) await loadQueue();
-  if (atLeast('admin')) await loadUsers();
+  connectLive(true);
+  route();
+}
+
+let credits = null;
+function setCredits(n, animate = true) {
+  const before = credits;
+  credits = n;
+  $('credits-n').textContent = fmt(n);
+  if ($('wallet-n')) $('wallet-n').textContent = fmt(n);
+  if (animate && before !== null && n > before) {
+    const b = $('credits-badge');
+    b.classList.remove('bump');
+    void b.offsetWidth;
+    b.classList.add('bump');
+    if (currentView !== 'arcade') toast(`+${fmt(n - before)} credits`, { icon: '🪙', ms: 2500 });
+  }
 }
 
 $('login-form').addEventListener('submit', async (e) => {
@@ -194,6 +215,7 @@ $('login-form').addEventListener('submit', async (e) => {
     await post('/api/login', formData(e.target));
     e.target.reset();
     await refresh();
+    location.hash = '#/';
   } catch (err) {
     $('login-msg').textContent = err.message;
   }
@@ -212,13 +234,437 @@ $('register-form').addEventListener('submit', async (e) => {
 
 $('logout').addEventListener('click', async () => {
   await post('/api/logout').catch(() => {});
+  me = null;
+  credits = null;
   await refresh();
+  location.hash = '#/';
 });
+
+// --- live updates
+
+let socket = null;
+let socketUp = false;
+let retry = 1000;
+const handlers = {
+  hello: () => {},
+  feed: (m) => addFeed(m.items, true),
+  progress: (m) => renderProgress(m.data),
+  map: (m) => applyMapChanges(m.changes),
+  'map-reload': () => loadMap(),
+  credits: (m) => setCredits(m.balance),
+};
+
+function connectLive(reconnect = false) {
+  if (!('WebSocket' in window)) return;
+  if (socket && reconnect) {
+    // A login or logout changes who the socket belongs to.
+    socket.onclose = null;
+    socket.close();
+    socket = null;
+  }
+  if (socket) return;
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/live`);
+  socket = ws;
+  ws.onopen = () => {
+    socketUp = true;
+    retry = 1000;
+  };
+  ws.onmessage = (e) => {
+    try {
+      const m = JSON.parse(e.data);
+      handlers[m.type]?.(m);
+    } catch {}
+  };
+  ws.onclose = () => {
+    socketUp = false;
+    socket = null;
+    setTimeout(() => connectLive(), retry);
+    retry = Math.min(retry * 2, 60_000);
+  };
+}
+
+// Without a socket (blocked by a proxy, or reconnecting), poll slowly while the page is visible.
+setInterval(() => {
+  if (socketUp || document.visibilityState !== 'visible') return;
+  if (currentView === 'home') {
+    loadProgress().catch(() => {});
+    pollFeed().catch(() => {});
+    loadMap().catch(() => {});
+  }
+  if (me) api('/api/credits/me').then((w) => setCredits(w.balance)).catch(() => {});
+}, 30_000);
+
+// --- home
+
+async function loadHome() {
+  await Promise.all([loadProgress(), loadFeed(), loadMap(), loadCrew(), loadBoard()]);
+}
+
+async function loadProgress() {
+  renderProgress(await api('/api/progress'));
+}
+
+const lastBars = {}; // bars move from the previous reading, not from zero, when they refresh
+let lastStats = {};
+let lastProgress = null;
+
+function renderProgress(p) {
+  lastProgress = p;
+  const body = $('progress-body');
+  body.replaceChildren();
+  body.className = '';
+  // Done = merged into main: byte-identical, plus peer-confirmed (same logic, other bytes). The bars
+  // show the total; the byte-identical part has its own colour.
+  const identical = p.byStatus.filter((s) => s.status === 'exact' || s.status === 'match_unresolved').reduce((t, s) => ({ n: t.n + s.n, bytes: t.bytes + s.bytes }), { n: 0, bytes: 0 });
+  const confirmed = { n: p.confirmed?.n ?? 0, bytes: p.confirmed?.bytes ?? 0 };
+  if (!p.functions) {
+    body.append(el('p', 'No target loaded yet. The machines are warming up.', 'muted'));
+    return;
+  }
+  const pct = (a, b) => (b ? (a / b) * 100 : 0);
+  const kb = (n) => `${(n / 1024).toLocaleString(undefined, { maximumFractionDigits: 0 })} KB`;
+  const bars = el('div', null, 'progress-bars');
+  const bar = (key, label, done, of, f) => {
+    const total = done.identical + done.confirmed;
+    const row = el('div', null, 'pbar');
+    row.append(el('div', `${pct(total, of).toFixed(2)}%`, 'readout'));
+    const right = el('div', null, 'pbar-body');
+    right.append(el('div', `${label}: ${f(total)} of ${f(of)} done`, 'pbar-label'));
+    const meter = el('div', null, 'meter');
+    meter.setAttribute('role', 'progressbar');
+    meter.setAttribute('aria-label', label);
+    meter.setAttribute('aria-valuemin', '0');
+    meter.setAttribute('aria-valuemax', '100');
+    meter.setAttribute('aria-valuenow', pct(total, of).toFixed(2));
+    for (const [cls, w, title] of [
+      ['identical', pct(done.identical, of), `byte-identical: ${f(done.identical)}`],
+      ['confirmed', pct(done.confirmed, of), `confirmed by peer review: ${f(done.confirmed)}`],
+    ]) {
+      const seg = el('div', null, `fill ${cls}`);
+      seg.title = title;
+      seg.style.setProperty('width', `${Math.min(100, lastBars[key + cls] ?? 0)}%`);
+      lastBars[key + cls] = w;
+      meter.append(seg);
+      setTimeout(() => seg.style.setProperty('width', `${Math.min(100, w)}%`), 30);
+    }
+    right.append(meter, el('div', `byte-identical ${f(done.identical)} (${pct(done.identical, of).toFixed(2)}%) · peer-confirmed ${f(done.confirmed)} (${pct(done.confirmed, of).toFixed(2)}%)`, 'pbar-detail'));
+    row.append(right);
+    bars.append(row);
+  };
+  bar('fn', 'Functions', { identical: identical.n, confirmed: confirmed.n }, p.functions, fmt);
+  bar('by', 'Code', { identical: identical.bytes, confirmed: confirmed.bytes }, p.bytes, kb);
+  const legend = el('div', null, 'pbar-legend');
+  legend.append(el('span', 'byte-identical', 'swatch identical'), el('span', 'confirmed by peer review', 'swatch confirmed'));
+  bars.append(legend);
+  body.append(bars);
+
+  const states = Object.fromEntries(p.byTaskState.map((s) => [s.state, s.n]));
+  const d = el('details', null, 'fold');
+  d.append(el('summary', 'Every task state'), table(['Task state', 'Count'], p.byTaskState.map((s) => [withInfo(s.state, TASK_STATES[s.state]), fmt(s.n)])));
+  body.append(d);
+
+  // The tiles next to the headline.
+  const tiles = [
+    ['done', `${pct(identical.n + confirmed.n, p.functions).toFixed(2)}%`, 'of functions done'],
+    ['hour', fmt(p.merges?.lastHour ?? 0), 'merged in the last hour'],
+    ['flight', fmt((states.verifying ?? 0) + (states.peer_review ?? 0) + (states.approved ?? 0) + (states.merging ?? 0)), 'on their way to main'],
+    ['review', fmt(p.peerQueue ?? 0), 'waiting for peer review'],
+  ];
+  const box = $('hero-stats');
+  box.replaceChildren();
+  for (const [key, n, label] of tiles) {
+    const t = el('div', null, 'stat-tile');
+    t.append(el('div', n, 'n'), el('div', label, 'l'));
+    if (lastStats[key] !== undefined && lastStats[key] !== n) t.classList.add('tick');
+    lastStats[key] = n;
+    box.append(t);
+  }
+}
+
+// Feed
+
+let lastFeedId = 0;
+const FEED = {
+  submit: (e) => ['📤', `${e.user} submitted ${e.functions} function${e.functions === 1 ? '' : 's'}`],
+  merged: (e) => ['✅', `${e.functions} function${e.functions === 1 ? '' : 's'} by ${e.user} landed on main`],
+  auto_accepted: () => ['🗳️', 'five agents confirmed a function'],
+  region_claim: (e) => ['📌', `${e.user} took ${shortPath(e.key)}${e.shared ? ' (shared)' : ''}`],
+  game_win: (e) => ['🎰', `${e.user} won ${fmt(e.payout)} credits at ${e.game}!`],
+  user_approved: () => ['👋', 'a new crew member joined'],
+  no_decompile_claim: (e) => ['🧹', `${e.user} marked ${e.functions} function${e.functions === 1 ? '' : 's'} as needing no source`],
+};
+const shortPath = (p) => (p ? p.split('/').slice(-2).join('/') : '?');
+
+async function loadFeed() {
+  const items = await api('/api/feed');
+  $('feed-list').replaceChildren();
+  addFeed(items.slice().reverse(), false);
+}
+
+async function pollFeed() {
+  const items = await api(`/api/feed?after=${lastFeedId}`);
+  addFeed(items.slice().reverse(), true);
+}
+
+// Items come oldest first; the newest ends up on top.
+function addFeed(items, live) {
+  const list = $('feed-list');
+  for (const e of items) {
+    if (e.id <= lastFeedId) continue;
+    lastFeedId = e.id;
+    const f = FEED[e.type];
+    if (!f) continue;
+    const [icon, text] = f(e);
+    const li = el('li', null, e.type);
+    li.append(el('span', icon, 'ico'), el('span', text), el('span', ago(e.at), 'when'));
+    li.dataset.at = e.at;
+    if (live) li.classList.add('new');
+    list.prepend(li);
+    if (live && e.type === 'merged' && currentView === 'home') {
+      const r = $('map-canvas').getBoundingClientRect();
+      sparks(r.left + r.width / 2, r.top + 30, 10);
+    }
+    if (live && e.type === 'game_win' && me && e.user === me.name) sparks(window.innerWidth - 80, 40, 18, ['🪙', '✨', '🎉']);
+  }
+  while (list.children.length > 60) list.lastChild.remove();
+}
+setInterval(() => {
+  for (const li of $('feed-list').children) li.lastChild.textContent = ago(Number(li.dataset.at));
+}, 30_000);
+
+// Map
+
+const STATE_INFO = {
+  d: ['byte-identical', '--st-d'],
+  c: ['peer-confirmed', '--st-c'],
+  s: ['needs no source', '--st-s'],
+  f: ['on its way to main', '--st-f'],
+  l: ['claimed', '--st-l'],
+  b: ['sent back', '--st-b'],
+  o: ['open', '--st-o'],
+};
+const map = { states: '', units: [], unitOf: [], cell: 4, cols: 1, colors: {}, highlight: null, pulses: new Map() };
+
+async function loadMap() {
+  const m = await api('/api/map');
+  map.states = m.states;
+  map.units = m.units;
+  map.unitOf = m.unitOf;
+  drawMap();
+}
+
+function mapColors() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const [k, [, v]] of Object.entries(STATE_INFO)) map.colors[k] = cs.getPropertyValue(v).trim();
+}
+
+function drawMap() {
+  const canvas = $('map-canvas');
+  const n = map.states.length;
+  if (!n) return;
+  mapColors();
+  const width = canvas.parentElement.clientWidth;
+  // Cells as big as fit into about 560 px of height, at least 3 px.
+  const cell = Math.max(3, Math.min(14, Math.floor(Math.sqrt((width * 560) / n))));
+  map.cell = cell;
+  map.cols = Math.max(1, Math.floor(width / cell));
+  const rows = Math.ceil(n / map.cols);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = map.cols * cell * dpr;
+  canvas.height = rows * cell * dpr;
+  canvas.style.setProperty('height', `${rows * cell}px`);
+  canvas.style.setProperty('width', `${map.cols * cell}px`);
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, map.cols * cell, rows * cell);
+  for (let i = 0; i < n; i++) drawCell(g, i);
+  renderLegend();
+}
+
+function drawCell(g, i, flash = 0) {
+  const x = (i % map.cols) * map.cell;
+  const y = Math.floor(i / map.cols) * map.cell;
+  const gap = map.cell >= 5 ? 1 : 0;
+  const dim = map.highlight && !map.highlight.has(map.unitOf[i]);
+  g.globalAlpha = dim ? 0.18 : 1;
+  g.fillStyle = map.colors[map.states[i]] || map.colors.o;
+  g.fillRect(x, y, map.cell - gap, map.cell - gap);
+  if (flash > 0) {
+    g.globalAlpha = flash;
+    g.fillStyle = '#ffffff';
+    g.fillRect(x, y, map.cell - gap, map.cell - gap);
+  }
+  g.globalAlpha = 1;
+}
+
+function renderLegend() {
+  const counts = {};
+  for (const c of map.states) counts[c] = (counts[c] ?? 0) + 1;
+  const box = $('map-legend');
+  box.replaceChildren();
+  for (const [k, [label, v]] of Object.entries(STATE_INFO)) {
+    const s = el('span', label, 'sw');
+    s.style.setProperty('--c', `var(${v})`);
+    s.append(el('span', fmt(counts[k] ?? 0), 'n'));
+    box.append(s);
+  }
+}
+
+// Changed squares flash white and fade back to their new colour.
+function applyMapChanges(changes) {
+  if (!map.states) return;
+  const arr = map.states.split('');
+  for (const [i, c] of changes) {
+    arr[i] = c;
+    map.pulses.set(i, 1);
+  }
+  map.states = arr.join('');
+  renderLegend();
+  if (!pulsing) requestAnimationFrame(pulseFrame);
+}
+let pulsing = false;
+function pulseFrame() {
+  const g = $('map-canvas').getContext('2d');
+  pulsing = map.pulses.size > 0;
+  for (const [i, v] of map.pulses) {
+    const next = v - 0.04;
+    drawCell(g, i, reducedMotion() ? 0 : Math.max(0, next));
+    if (next <= 0) map.pulses.delete(i);
+    else map.pulses.set(i, next);
+  }
+  if (map.pulses.size) requestAnimationFrame(pulseFrame);
+  else pulsing = false;
+}
+
+function mapIndexAt(ev) {
+  const r = $('map-canvas').getBoundingClientRect();
+  const col = Math.floor((ev.clientX - r.left) / map.cell);
+  const row = Math.floor((ev.clientY - r.top) / map.cell);
+  if (col < 0 || col >= map.cols) return -1;
+  const i = row * map.cols + col;
+  return i >= 0 && i < map.states.length ? i : -1;
+}
+
+let tipTimer = null;
+$('map-canvas').addEventListener('mousemove', (ev) => {
+  const i = mapIndexAt(ev);
+  const tip = $('map-tip');
+  if (i < 0) return (tip.hidden = true);
+  const wrap = $('map-wrap').getBoundingClientRect();
+  tip.hidden = false;
+  tip.replaceChildren(el('div', map.units[map.unitOf[i]]), el('div', STATE_INFO[map.states[i]][0], 'muted'));
+  const x = Math.min(ev.clientX - wrap.left + 14, wrap.width - 240);
+  tip.style.setProperty('left', `${Math.max(4, x)}px`);
+  tip.style.setProperty('top', `${ev.clientY - wrap.top + 14}px`);
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(async () => {
+    try {
+      const f = await api(`/api/map/${i}`);
+      if (!tip.hidden) tip.prepend(el('div', `${f.symbol}${f.name ? ` ${f.name}` : ''}`));
+    } catch {}
+  }, 250);
+});
+$('map-canvas').addEventListener('mouseleave', () => ($('map-tip').hidden = true));
+$('map-canvas').addEventListener('click', async (ev) => {
+  const i = mapIndexAt(ev);
+  if (i < 0) return;
+  const f = await api(`/api/map/${i}`).catch(() => null);
+  if (!f) return;
+  const d = $('map-detail');
+  d.hidden = false;
+  d.replaceChildren(
+    el('div', `${f.symbol}  ${f.name ?? '(unnamed)'}  ·  ${f.size ?? '?'} bytes`),
+    el('div', `${f.unit ?? 'not placed in a source file yet'}  ·  ${f.state}${f.holder ? ` (claimed by ${f.holder})` : ''}`, 'muted'),
+  );
+  if (f.unit) d.append(button(`Highlight ${shortPath(f.unit)}`, () => { $('map-search').value = f.unit; highlight(f.unit); }));
+});
+function highlight(q) {
+  q = q.trim().toLowerCase();
+  if (!q) map.highlight = null;
+  else map.highlight = new Set(map.units.map((u, i) => (u.toLowerCase().includes(q) ? i : -1)).filter((i) => i >= 0));
+  drawMap();
+}
+$('map-search').addEventListener('input', (e) => highlight(e.target.value));
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => currentView === 'home' && drawMap(), 150);
+});
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => drawMap());
+
+// Crew and leaderboards
+
+async function loadCrew() {
+  const c = await api('/api/crew');
+  const active = $('active-body');
+  active.replaceChildren();
+  active.classList.remove('muted');
+  if (!c.active.length) {
+    active.append(el('p', `No agent has checked in during the last ${c.activeMinutes} minutes.`, 'muted'));
+  } else {
+    active.append(
+      table(
+        ['User', 'Working on', 'Peer reviews', 'Being checked', 'Submitted (24 h)', 'Last seen'],
+        c.active.map((a) => {
+          const work = a.units.length
+            ? a.units.map((u) => el('div', `${u.unit} · ${u.functions} function${u.functions > 1 ? 's' : ''}`))
+            : [el('span', a.reviewing ? 'reviewing' : 'between regions', 'muted')];
+          return [`${a.name}${a.agents > 1 ? ` (${a.agents} agents)` : ''}`, work, a.reviewing || '', a.verifying || '', a.submittedToday, ago(a.lastSeen)];
+        }),
+      ),
+    );
+  }
+  $('users-count').textContent = `${c.users.length} approved`;
+  $('users-body').replaceChildren(
+    table(
+      ['User', 'Role', 'Merged', 'Submitted', 'Peer reviews', 'Joined', 'Agent last seen'],
+      c.users.map((u) => [u.name, u.role, u.merged, u.submitted, u.peer_reviews, u.joined ? new Date(u.joined).toLocaleDateString() : '', ago(u.last_seen)]),
+    ),
+  );
+}
+
+let board = 'merged';
+for (const t of document.querySelectorAll('#board-tabs .tab')) {
+  t.addEventListener('click', () => {
+    board = t.dataset.board;
+    for (const x of document.querySelectorAll('#board-tabs .tab')) x.classList.toggle('active', x === t);
+    loadBoard().catch(() => {});
+  });
+}
+
+async function loadBoard() {
+  const body = $('board-body');
+  body.classList.remove('muted');
+  const medal = (i) => ['🥇', '🥈', '🥉'][i] ?? `${i + 1}.`;
+  if (board === 'merged') {
+    const p = lastProgress ?? (await api('/api/progress'));
+    body.replaceChildren(table(['', 'Crew', 'Merged'], p.contributors.slice(0, 15).map((c, i) => [medal(i), c.name, fmt(c.merged)])));
+    return;
+  }
+  const b = await api('/api/credits/leaderboard');
+  if (board === 'credits') body.replaceChildren(table(['', 'Player', 'Credits', 'Earned'], b.rich.map((r, i) => [medal(i), r.name, fmt(r.balance), fmt(r.earned)])));
+  else body.replaceChildren(b.wins.length ? table(['Player', 'Game', 'Bet', 'Won'], b.wins.map((w) => [w.name, w.game, fmt(w.bet), fmt(w.payout)])) : el('p', 'No big wins today. Yet.', 'muted'));
+}
 
 // --- account
 
-async function loadTokens() {
-  const tokens = await api('/api/me/tokens');
+async function loadAccount() {
+  const [tokens, wallet] = await Promise.all([api('/api/me/tokens'), api('/api/credits/me').catch(() => null)]);
+  const sum = $('account-summary');
+  sum.replaceChildren();
+  const tile = (n, l) => {
+    const t = el('div', null, 'stat-tile');
+    t.append(el('div', n, 'n'), el('div', l, 'l'));
+    return t;
+  };
+  sum.append(tile(me.name, me.role));
+  if (wallet) sum.append(tile(fmt(wallet.balance), 'credits'));
+  sum.append(tile(fmt(me.leases?.length ?? 0), 'functions held'));
+  if (me.regions?.length) sum.append(tile(fmt(me.regions.length), `region${me.regions.length > 1 ? 's' : ''} claimed`));
+  renderTokens(tokens);
+}
+
+function renderTokens(tokens) {
   const box = $('tokens');
   box.replaceChildren();
   const active = tokens.filter((t) => !t.revoked_at);
@@ -235,7 +681,7 @@ async function loadTokens() {
           async () => {
             if (!confirm(`Revoke token "${t.label}"? Agents using it stop working immediately.`)) return;
             await post(`/api/me/tokens/${t.id}/revoke`);
-            await loadTokens();
+            renderTokens(await api('/api/me/tokens'));
           },
           'danger',
         ),
@@ -250,35 +696,15 @@ $('token-form').addEventListener('submit', async (e) => {
     const t = await post('/api/me/tokens', formData(e.target));
     e.target.reset();
     $('new-token-value').textContent = t.token;
-    const origin = location.origin;
-    $('install-win').textContent = `$env:TD_TOKEN='${t.token}'; irm ${origin}/install.ps1 | iex`;
-    $('install-linux').textContent = `curl -fsSL ${origin}/install.sh | TD_TOKEN=${t.token} sh`;
+    $('install-win').textContent = `$env:TD_TOKEN='${t.token}'; irm ${location.origin}/install.ps1 | iex`;
+    $('install-linux').textContent = `curl -fsSL ${location.origin}/install.sh | TD_TOKEN=${t.token} sh`;
     $('new-token').hidden = false;
-    await loadTokens();
+    addCopyButtons($('new-token'));
+    renderTokens(await api('/api/me/tokens'));
   } catch (err) {
-    alert(err.message);
+    toast(err.message);
   }
 });
-
-// Every command or message the reader has to paste gets its own copy button.
-for (const code of document.querySelectorAll('code.cmd')) {
-  const wrap = el('div', null, 'cmd-row');
-  code.replaceWith(wrap);
-  const btn = button('Copy', async () => {
-    try {
-      await navigator.clipboard.writeText(code.textContent);
-      btn.textContent = 'Copied';
-    } catch {
-      btn.textContent = 'Select and copy';
-    }
-    setTimeout(() => (btn.textContent = 'Copy'), 2000);
-  }, 'copy');
-  wrap.append(code, btn);
-}
-
-// Links to the guide open it before scrolling there.
-for (const a of document.querySelectorAll('a[href="#guide"]')) a.addEventListener('click', () => ($('guide').open = true));
-if (location.hash === '#guide') $('guide').open = true;
 
 $('password-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -286,6 +712,7 @@ $('password-form').addEventListener('submit', async (e) => {
     await post('/api/me/password', formData(e.target));
     e.target.reset();
     await refresh();
+    location.hash = '#/login';
     $('login-msg').textContent = 'Password changed. Log in with the new password.';
   } catch (err) {
     $('password-msg').textContent = err.message;
@@ -297,39 +724,44 @@ $('password-form').addEventListener('submit', async (e) => {
 async function adminAction(name, action, body) {
   $('admin-msg').textContent = '';
   try {
-    await post(`/api/admin/users/${encodeURIComponent(name)}/${action}`, body);
+    const r = await post(`/api/admin/users/${encodeURIComponent(name)}/${action}`, body);
+    await loadAdmin();
+    return r;
   } catch (err) {
     $('admin-msg').textContent = err.message;
+    return null;
   }
-  await loadUsers();
 }
 
-async function loadUsers() {
-  const { users, roles, work = {}, reviewers = [] } = await api('/api/admin/users');
-  const box = $('users');
-  box.replaceChildren();
+let adminData = null;
+async function loadAdmin() {
+  adminData = await api('/api/admin/users');
+  renderAdmin();
+}
+
+function renderAdmin() {
+  const { users, roles, work = {}, reviewers = [] } = adminData;
+  const q = $('user-filter').value.trim().toLowerCase();
   const pending = users.filter((u) => u.status === 'pending');
-  box.append(el('h3', `Waiting for approval (${pending.length})`));
+  const box = $('pending');
+  box.replaceChildren(el('h3', `Waiting for approval (${pending.length})`));
   if (pending.length) {
     box.append(
       table(
         ['User', 'Registered', ''],
-        pending.map((u) => [
-          u.name,
-          date(u.created_at),
-          [
-            button('Approve', () => adminAction(u.name, 'approve'), 'primary'),
-            button('Reject', () => confirm(`Delete the registration of ${u.name}?`) && adminAction(u.name, 'reject'), 'danger'),
-          ],
-        ]),
+        pending.map((u) => {
+          const actions = el('div', null, 'row-actions');
+          actions.append(button('Approve', () => adminAction(u.name, 'approve'), 'primary'), button('Reject', () => confirm(`Delete the registration of ${u.name}?`) && adminAction(u.name, 'reject'), 'danger'));
+          return [u.name, date(u.created_at), actions];
+        }),
       ),
     );
   }
-  const others = users.filter((u) => u.status !== 'pending');
-  box.append(el('h3', 'Accounts'));
-  box.append(
+  const others = users.filter((u) => u.status !== 'pending' && (!q || u.name.toLowerCase().includes(q)));
+  $('users').replaceChildren(
+    el('h3', `Accounts (${others.length})`),
     table(
-      ['User', 'Role', 'Status', 'Claimed work', 'Active tokens', 'Approved', ''],
+      ['User', 'Role', 'Status', 'Claimed work', 'Tokens', 'Approved', ''],
       others.map((u) => {
         const select = el('select');
         roles.forEach((r) => {
@@ -340,38 +772,55 @@ async function loadUsers() {
         });
         select.disabled = u.name === me.name;
         select.addEventListener('change', () => adminAction(u.name, 'role', { role: select.value }));
-        const action =
-          u.status === 'active'
-            ? button('Revoke', () => confirm(`Revoke ${u.name}? All their tokens and sessions stop working immediately.`) && adminAction(u.name, 'revoke'), 'danger')
-            : button('Reinstate', () => adminAction(u.name, 'reinstate'));
-        if (u.name === me.name) action.disabled = true;
-        return [u.name, select, status(u.status), claimedWork(work[u.name]), u.active_tokens, `${date(u.approved_at)}${u.approved_by ? ` by ${u.approved_by}` : ''}`, action];
+        const actions = el('div', null, 'row-actions');
+        const self = u.name === me.name;
+        if (u.status === 'active') actions.append(button('Revoke', () => confirm(`Revoke ${u.name}? All their tokens and sessions stop working immediately.`) && adminAction(u.name, 'revoke'), 'danger'));
+        else actions.append(button('Reinstate', () => adminAction(u.name, 'reinstate')));
+        actions.append(
+          button('Reset password', async () => {
+            if (!confirm(`Give ${u.name} a new random password? Their browser sessions end.`)) return;
+            const r = await adminAction(u.name, 'reset-password');
+            if (r?.password) showSecret(`New password for ${r.name} (shown once, send it to them privately):`, r.password);
+          }),
+          button('Delete', async () => {
+            const typed = prompt(`Delete ${u.name}? Accounts with work on record stay as deleted_<id> so the history keeps its author; others are removed. Type the name to confirm.`);
+            if (typed !== u.name) return;
+            const r = await adminAction(u.name, 'delete');
+            if (r) toast(r.keptAs ? `${r.name} deleted; their work stays under ${r.keptAs}` : `${r.name} deleted`);
+          }, 'danger'),
+        );
+        for (const b of actions.querySelectorAll('button')) b.disabled = self;
+        return [u.name, select, status(u.status), claimedWork(work[u.name]), u.active_tokens, `${date(u.approved_at)}${u.approved_by ? ` by ${u.approved_by}` : ''}`, actions];
       }),
     ),
   );
-  box.append(el('h3', 'Peer reviewers'));
-  box.append(el('p', 'How reviewers judge: agreement with the other reviewers of the same function and with your decisions, and how many verdicts came within 10 seconds of a verdict on a different batch (a sign of not reading). Pausing someone stops new peer reviews from them; their verdicts so far stay.', 'muted'));
-  if (!reviewers.length) box.append(el('p', 'No peer reviews yet.', 'muted'));
-  else {
-    const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}% (${b})` : '-');
-    box.append(
-      table(
-        ['Reviewer', 'Reviews', 'Same / different', 'Agrees with peers', 'Agrees with you', 'Quick verdicts', ''],
-        reviewers.map((r) => {
-          const flags = [];
-          if (r.reviews >= 15 && r.different === 0) flags.push('never objects');
-          if (r.reviews >= 15 && r.same / r.reviews < 0.3) flags.push('mostly objects');
-          if (r.reviews >= 10 && r.quick / r.reviews > 0.5) flags.push('very fast');
-          const cell = [el('span', r.name)];
-          if (flags.length) cell.push(el('div', flags.join(', '), 'warn'));
-          const action = r.blocked
-            ? button('Allow reviews', () => adminAction(r.name, 'allow-reviews'))
-            : button('Pause reviews', () => confirm(`Pause peer reviews from ${r.name}?`) && adminAction(r.name, 'block-reviews'), 'danger');
-          return [cell, r.reviews, `${r.same} / ${r.different}`, pct(r.peerAgreed, r.peerCompared), pct(r.humanAgreed, r.humanCompared), pct(r.quick, r.reviews), action];
-        }),
-      ),
-    );
-  }
+  const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}% (${b})` : '-');
+  $('reviewers').replaceChildren(
+    reviewers.length
+      ? table(
+          ['Reviewer', 'Reviews', 'Same / different', 'Agrees with peers', 'Agrees with humans', 'Quick verdicts', ''],
+          reviewers.map((r) => {
+            const flags = [];
+            if (r.reviews >= 15 && r.different === 0) flags.push('never objects');
+            if (r.reviews >= 15 && r.same / r.reviews < 0.3) flags.push('mostly objects');
+            if (r.reviews >= 10 && r.quick / r.reviews > 0.5) flags.push('very fast');
+            const cell = [el('span', r.name)];
+            if (flags.length) cell.push(el('div', flags.join(', '), 'warn'));
+            const action = r.blocked
+              ? button('Allow reviews', () => adminAction(r.name, 'allow-reviews'))
+              : button('Pause reviews', () => confirm(`Pause peer reviews from ${r.name}?`) && adminAction(r.name, 'block-reviews'), 'danger');
+            return [cell, r.reviews, `${r.same} / ${r.different}`, pct(r.peerAgreed, r.peerCompared), pct(r.humanAgreed, r.humanCompared), pct(r.quick, r.reviews), action];
+          }),
+        )
+      : el('p', 'No peer reviews yet.', 'muted'),
+  );
+}
+$('user-filter').addEventListener('input', () => adminData && renderAdmin());
+
+function showSecret(label, value) {
+  const s = $('admin-secret');
+  s.hidden = false;
+  s.replaceChildren(el('p', label), el('code', value));
 }
 
 // Summary of what a user holds right now; the units it covers open below it.
@@ -392,168 +841,130 @@ function claimedWork(w) {
   return [d, ...(seen ? [seen] : [])];
 }
 
-// --- public crew views
-
-const ago = (t) => {
-  if (!t) return 'never';
-  const m = Math.round((Date.now() - t) / 60_000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60);
-  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
-};
-
-async function loadCrew() {
-  const c = await api('/api/crew');
-  const active = $('active-body');
-  active.replaceChildren();
-  active.classList.remove('muted');
-  if (!c.active.length) {
-    active.append(el('p', `No agent has checked in during the last ${c.activeMinutes} minutes.`, 'muted'));
-  } else {
-    active.append(
-      table(
-        ['User', 'Working on', 'Peer reviews', 'Being checked', 'Submitted (24 h)', 'Last seen'],
-        c.active.map((a) => {
-          const work = a.units.length
-            ? a.units.map((u) => el('div', `${u.unit} · ${u.functions} function${u.functions > 1 ? 's' : ''}`))
-            : [el('span', a.reviewing ? 'reviewing' : 'between tasks', 'muted')];
-          return [`${a.name}${a.agents > 1 ? ` (${a.agents} agents)` : ''}`, work, a.reviewing || '', a.verifying || '', a.submittedToday, ago(a.lastSeen)];
-        }),
-      ),
-    );
-  }
-  $('users-count').textContent = `${c.users.length} approved`;
-  $('users-body').replaceChildren(
-    table(
-      ['User', 'Role', 'Merged', 'Submitted', 'Peer reviews', 'Joined', 'Agent last seen'],
-      c.users.map((u) => [u.name, u.role, u.merged, u.submitted, u.peer_reviews, u.joined ? new Date(u.joined).toLocaleDateString() : '', ago(u.last_seen)]),
-    ),
-  );
-}
-
 // --- review
 
-async function loadQueue() {
+let queue = { peer: [], later: [] };
+let queueTab = 'peer';
+let queueOrder = [];
+let currentAttempt = null;
+
+async function loadReview() {
   const [q, later] = await Promise.all([api('/api/review/queue'), api('/api/review/later').catch(() => [])]);
-  const body = $('queue-body');
-  body.replaceChildren();
-  if (later.length) {
-    // Merged although a peer objected: for a closer look once there is time.
-    const d = el('details', null, 'fold');
-    d.append(
-      el('summary', `Flagged for later review (${later.length}): merged although a peer said "different"`),
-      table(
-        ['Function', 'Name', 'Author', 'Objections', 'Merged', ''],
-        later.map((l) => [l.symbol_id, l.name || '', l.author, l.objections, (l.merged_commit || '').slice(0, 10), [
-          button('Open', () => openAttempt(l.attempt_id)),
-          button('Reviewed', async () => {
-            try {
-              await post(`/api/review/later/${l.id}/clear`);
-              await loadQueue();
-            } catch (e) {
-              alert(e.message);
-            }
-          }),
-        ]]),
-      ),
-    );
-    body.append(d);
-  }
-  if (!q.length) return body.append(el('p', 'Nothing waiting for review. Byte-identical work merges on its own; this queue holds functions in peer review and the ones peers confirmed.', 'muted'));
-  const canSkipPeers = atLeast('maintainer');
-  const ready = q.filter((a) => a.state === 'in_review');
-  const inPeer = q.filter((a) => a.state === 'peer_review');
-  if (ready.length) {
-    body.append(el('h3', `Confirmed by peers, waiting for you (${ready.length})`));
-    queueBatches(body, ready, false);
-  }
-  if (inPeer.length) {
-    body.append(el('h3', `In peer review (${inPeer.length})`));
-    body.append(
-      el(
-        'p',
-        canSkipPeers
-          ? 'Each needs three agreeing verdicts: three "same" send it to you, three "different" send it back. You can open one to judge it yourself, or approve it now and skip the peer review.'
-          : 'Three agents still have to confirm these before you can approve them. Maintainers can decide them right away.',
-        'muted',
-      ),
-    );
-    queueBatches(body, inPeer, canSkipPeers);
-  }
+  queue = { peer: q, later };
+  renderQueue();
 }
 
-// One block per batch, approved together with one click.
-function queueBatches(body, items, skipsPeers) {
+for (const t of document.querySelectorAll('#queue-tabs .tab')) {
+  t.addEventListener('click', () => {
+    queueTab = t.dataset.queue;
+    for (const x of document.querySelectorAll('#queue-tabs .tab')) x.classList.toggle('active', x === t);
+    renderQueue();
+  });
+}
+$('queue-filter').addEventListener('input', () => renderQueue());
+
+function pips(same, different, need = 5) {
+  const p = el('span', null, 'pips');
+  for (let i = 0; i < Math.max(need, same); i++) p.append(el('span', null, `pip${i < same ? ' same' : ''}`));
+  for (let i = 0; i < different; i++) p.append(el('span', null, 'pip diff'));
+  p.title = `${same} same, ${different} different`;
+  return p;
+}
+
+function renderQueue() {
+  const list = $('queue-list');
+  list.replaceChildren();
+  const q = $('queue-filter').value.trim().toLowerCase();
+  const match = (...xs) => !q || xs.some((x) => String(x ?? '').toLowerCase().includes(q));
+  queueOrder = [];
+  if (queueTab === 'later') {
+    const items = queue.later.filter((l) => match(l.symbol_id, l.name, l.author));
+    $('queue-count').textContent = `${items.length} flagged`;
+    if (!items.length) return list.append(el('p', 'Nothing flagged. Functions merged over a "different" verdict show up here for a closer look.', 'muted'));
+    const g = el('div', null, 'qgroup');
+    g.append(el('header', 'Merged although a peer objected'));
+    for (const l of items) {
+      const b = button('', () => openAttempt(l.attempt_id), 'qitem');
+      b.append(el('span', `${l.symbol_id} ${l.name || ''}`, 'qname'), el('span', `${l.objections}✗`, 'warn'), el('span', `by ${l.author} · ${(l.merged_commit || '').slice(0, 10)}`, 'qsub'));
+      b.dataset.attempt = l.attempt_id;
+      queueOrder.push(l.attempt_id);
+      const done = button('Reviewed', async (ev) => {
+        ev.stopPropagation();
+        await post(`/api/review/later/${l.id}/clear`).catch((e) => toast(e.message));
+        loadReview();
+      });
+      done.classList.add('ghost');
+      g.append(b, done);
+    }
+    list.append(g);
+    return;
+  }
+  const items = queue.peer.filter((a) => match(a.symbol_id, a.name, a.author, a.batch_id));
+  $('queue-count').textContent = `${items.length} waiting`;
+  if (!items.length) return list.append(el('p', 'Nothing waiting. Byte-identical work merges on its own; this list holds functions in peer review.', 'muted'));
   const batches = new Map();
   for (const a of items) {
     const key = a.batch_id ?? `a${a.id}`;
     if (!batches.has(key)) batches.set(key, []);
     batches.get(key).push(a);
   }
-  for (const [key, list] of batches) {
-    const head = el('div', null, 'batch-head');
-    head.append(el('strong', typeof key === 'number' ? `Batch #${key}` : `Attempt #${list[0].id}`), el('span', ` by ${list[0].author} · ${list.length} function${list.length > 1 ? 's' : ''}`, 'muted'));
-    const decidable = !list.some((a) => a.state === 'peer_review') || skipsPeers;
-    if (typeof key === 'number' && decidable) {
-      const label = skipsPeers ? 'Approve all, skip peer review' : 'Approve batch';
-      head.append(
-        button(
-          label,
-          async () => {
-            if (skipsPeers && !confirm(`Approve all ${list.length} functions of batch #${key} without waiting for peer review? They merge right away.`)) return;
-            try {
-              // Exactly the functions shown here; peer review is only skipped from its own section.
-              await post(`/api/batches/${key}/review`, { action: 'approve', attemptIds: list.map((a) => a.id), skipPeerReview: skipsPeers });
-              await loadQueue();
-            } catch (e) {
-              alert(e.message);
-            }
-          },
-          'primary',
-        ),
-      );
+  for (const [key, rows] of batches) {
+    const g = el('div', null, 'qgroup');
+    const head = el('header');
+    head.append(el('span', typeof key === 'number' ? `Batch #${key} · ${rows[0].author}` : `#${rows[0].id} · ${rows[0].author}`), el('span', `${rows.length}`));
+    g.append(head);
+    for (const a of rows) {
+      const b = button('', () => openAttempt(a.id), 'qitem');
+      b.append(el('span', `${a.symbol_id} ${a.name || ''}`, 'qname'), pips(a.peer_same, a.peer_different), el('span', `${((a.score || 0) * 100).toFixed(0)}% bytes${a.peer_working ? ` · ${a.peer_working} reviewing now` : ''}${a.reviewed_by_me ? ' · you reviewed' : ''}`, 'qsub'));
+      b.dataset.attempt = a.id;
+      if (currentAttempt?.id === a.id) b.classList.add('active');
+      queueOrder.push(a.id);
+      g.append(b);
     }
-    body.append(head);
-    const peerCol = (a) => {
-      const working = a.peer_working ? ` · ${a.peer_working} reviewing` : '';
-      if (a.state === 'peer_review') return `${a.peer_same} same · ${a.peer_different} different${working}`;
-      // Waiting for a human: more peers can still accept it (5 agreeing, no objection).
-      return `${a.peer_same} same · accepts itself at 5${a.peer_different ? ` · ${a.peer_different} different: flagged for later` : ''}${working}`;
-    };
-    body.append(
-      table(
-        ['Attempt', 'Symbol', 'Name', 'Score', 'Peers', 'Approvals', ''],
-        list.map((a) => [`#${a.id}`, a.symbol_id, a.name || '', `${(a.score * 100).toFixed(1)}%`, peerCol(a), a.approvals, button(a.reviewed_by_me ? 'Reviewed' : 'Open', () => openAttempt(a.id))]),
-      ),
-    );
+    if (typeof key === 'number' && atLeast('maintainer')) {
+      const all = button('Approve batch, skip peer review', async () => {
+        if (!confirm(`Approve all ${rows.length} functions of batch #${key} without waiting for peer review? They merge right away.`)) return;
+        try {
+          await post(`/api/batches/${key}/review`, { action: 'approve', attemptIds: rows.map((a) => a.id), skipPeerReview: true });
+          toast(`Batch #${key} approved`);
+          loadReview();
+        } catch (e) {
+          toast(e.message);
+        }
+      });
+      all.classList.add('ghost');
+      g.append(all);
+    }
+    list.append(g);
   }
 }
 
 async function openAttempt(id) {
   const a = await api(`/api/attempts/${id}`);
   currentAttempt = a;
+  for (const b of document.querySelectorAll('.qitem')) b.classList.toggle('active', Number(b.dataset.attempt) === id);
+  $('attempt-empty').hidden = true;
+  $('attempt-body').hidden = false;
+  if (!location.hash.startsWith(`#/review/${id}`)) history.replaceState(null, '', `#/review/${id}`);
   const f = a.feedback || {};
   const t = f.target;
-  $('attempt').hidden = false;
-  $('attempt-title').textContent = `Attempt #${a.id} by ${a.author}${t ? `: ${t.demangled || t.id}` : ''}`;
-  $('attempt-meta').replaceChildren(
-    el('p', `${t ? `${t.id} · ` : ''}${a.state.replace('_', ' ')} · score ${((a.score || 0) * 100).toFixed(1)}% · size ${t?.size?.ours ?? '?'} / ${t?.size?.original ?? '?'} bytes · base ${a.baseCommit.slice(0, 10)}`, 'muted'),
-  );
-  if (a.changedHeaders.length) $('attempt-meta').append(el('p', `Changes headers: ${a.changedHeaders.join(', ')} (needs extra approval)`, 'warn'));
+  $('attempt-title').textContent = `${t ? t.demangled || t.id : `Attempt #${a.id}`}`;
+  $('attempt-meta').textContent = `#${a.id} by ${a.author} · ${t ? `${t.id} · ` : ''}${a.state.replace('_', ' ')} · ${((a.score || 0) * 100).toFixed(1)}% of bytes · size ${t?.size?.ours ?? '?'} / ${t?.size?.original ?? '?'} · base ${a.baseCommit.slice(0, 10)}`;
+  const n = (v) => (a.peerReviews ?? []).filter((p) => p.verdict === v).length;
+  const vm = $('attempt-verdicts');
+  vm.replaceChildren(el('span', 'same'), pips(n('same'), 0, a.peerRequired ?? 5), el('span', 'different'), pips(0, n('different'), 0));
 
   const r = $('attempt-result');
   r.replaceChildren(el('p', f.summary || ''));
+  if (a.changedHeaders.length) r.append(el('p', `Changes headers: ${a.changedHeaders.join(', ')}`, 'warn'));
   if (a.claim) r.append(el('p', `Claimed: needs no decompilation (${a.claim.category}). Reason (untrusted): ${a.claim.reason}`, 'warn'));
   if (a.peerReviews?.length) {
-    const n = (v) => a.peerReviews.filter((p) => p.verdict === v).length;
-    r.append(el('h3', `Peer review: ${n('same')} same, ${n('different')} different (${a.peerRequired} agreeing verdicts decide)`));
-    r.append(table(['Reviewer', 'Verdict', 'Reason (untrusted)'], a.peerReviews.map((p) => [p.reviewer, status(p.verdict === 'same' ? 'exact' : 'revoked'), p.reason?.text ?? ''])));
-  } else if (a.state === 'in_review' && t && t.status !== 'exact' && t.status !== 'match_unresolved') {
-    r.append(el('p', 'Not byte-identical and no peer verdicts recorded.', 'warn'));
+    const d = el('details', null, 'fold');
+    d.open = true;
+    d.append(el('summary', `Peer verdicts (${a.peerReviews.length})`), table(['Reviewer', 'Verdict', 'Reason (untrusted)'], a.peerReviews.map((p) => [p.reviewer, status(p.verdict === 'same' ? 'exact' : 'revoked'), p.reason?.text ?? ''])));
+    r.append(d);
   }
 
-  // Side by side: the submission on the left, the original on the right.
   compare = { source: a.targetSource, ourAsm: t?.asm ?? null, original: null, error: null };
   showCompare(compareView);
   if (t?.id) {
@@ -563,7 +974,6 @@ async function openAttempt(id) {
       .finally(() => currentAttempt === a && showCompare(compareView));
   }
 
-  // Everything else folds away.
   const details = $('attempt-details');
   details.replaceChildren();
   const fold = (title, ...content) => {
@@ -577,34 +987,30 @@ async function openAttempt(id) {
     const exact = f.otherFunctions.filter((x) => x.status === 'exact' || x.status === 'match_unresolved').length;
     fold(`Other functions in the file (${f.otherFunctions.length}, ${exact} byte-identical)`, table(['Function', 'Status', 'Score'], f.otherFunctions.map((x) => [x.id, x.status, `${(x.score * 100).toFixed(1)}%`])));
   }
-  const files = Object.entries(a.mergedFiles || a.files);
-  fold(
-    `Submitted files (${files.length})`,
-    ...files.map(([p, content]) => {
-      const d = el('details');
-      d.append(el('summary', p), el('pre', content, 'code'));
-      return d;
-    }),
-  );
+  const files = Object.entries(a.mergedFiles || a.files || {});
+  fold(`Submitted files (${files.length})`, ...files.map(([p, content]) => {
+    const d = el('details');
+    d.append(el('summary', p), el('pre', content, 'code'));
+    return d;
+  }));
   fold(a.notes ? 'Notes from the author (untrusted)' : 'Notes from the author (none)', el('pre', a.notes || '(none)', 'notes'));
 
-  // Deciding a function before three peers confirmed it is for maintainers.
-  const early = a.state === 'peer_review';
-  for (const btn of document.querySelectorAll('.actions button')) btn.disabled = early && !atLeast('maintainer');
-  document.querySelector('.actions [data-action="approve"]').textContent = early ? 'Approve, skip peer review' : 'Approve';
-  $('attempt-peer-note').hidden = !early;
+  // Deciding a function still in peer review is for maintainers.
+  const open = a.state === 'peer_review' || a.state === 'in_review';
+  $('decision').hidden = !open && a.state !== 'approved';
+  for (const btn of document.querySelectorAll('.actions button')) btn.disabled = a.state === 'peer_review' && !atLeast('maintainer');
+  document.querySelector('.actions [data-action="approve"]').textContent = a.state === 'peer_review' ? 'Approve, skip peer review' : 'Approve';
+  $('attempt-peer-note').hidden = a.state !== 'peer_review';
   $('review-status').textContent = a.reviews.map((x) => `${x.reviewer}: ${x.action}${x.comment ? ` - ${x.comment}` : ''}`).join('\n');
-  $('attempt').scrollIntoView({ behavior: 'smooth' });
 }
 
 let compare = null;
 let compareView = 'code';
-
-for (const tab of document.querySelectorAll('.compare-tabs .tab')) tab.addEventListener('click', () => showCompare(tab.dataset.view));
+for (const tab of document.querySelectorAll('#compare-tabs .tab')) tab.addEventListener('click', () => showCompare(tab.dataset.view));
 
 function showCompare(view) {
   compareView = view;
-  for (const tab of document.querySelectorAll('.compare-tabs .tab')) tab.classList.toggle('active', tab.dataset.view === view);
+  for (const tab of document.querySelectorAll('#compare-tabs .tab')) tab.classList.toggle('active', tab.dataset.view === view);
   const body = $('compare-body');
   body.replaceChildren();
   if (!compare) return;
@@ -618,7 +1024,7 @@ function showCompare(view) {
       ),
     );
   } else if (!compare.ourAsm || !o) {
-    body.append(twoPanes(['Our compiled code', compare.ourAsm ?? 'Not recorded for this attempt (it was submitted before the compiled code was kept). Newer attempts have it.'], [o ? `Original at ${o.addr}` : 'Original', o?.asm ?? pending]));
+    body.append(twoPanes(['Our compiled code', compare.ourAsm ?? 'Not recorded for this attempt.'], [o ? `Original at ${o.addr}` : 'Original', o?.asm ?? pending]));
   } else {
     body.append(alignedAsm(compare.ourAsm, o.asm, o.addr));
   }
@@ -665,7 +1071,6 @@ function alignedAsm(oursText, origText, addr) {
   const orig = parseOriginal(origText);
   const origInsns = orig.filter((x) => !x.label);
   const rows = alignRows(ours, origInsns);
-  // Labels of the original go back in above the instruction they name.
   const labelsBefore = new Map();
   let labels = [];
   for (const x of orig) {
@@ -706,10 +1111,7 @@ function asmCell(x) {
   return c;
 }
 
-// For colouring only: case, spacing and size keywords differ between the two disassemblers.
-function looseOperands(text) {
-  return text.toLowerCase().replace(/;.*$/, '').replace(/\s+/g, '').replace(/(qword|dword|word|byte)ptr/g, '$1');
-}
+const looseOperands = (text) => text.toLowerCase().replace(/;.*$/, '').replace(/\s+/g, '').replace(/(qword|dword|word|byte)ptr/g, '$1');
 
 function alignRows(a, b) {
   const n = Math.min(a.length, 1500);
@@ -726,7 +1128,6 @@ function alignRows(a, b) {
   }
   while (i < a.length) rows.push({ a: a[i++], b: null });
   while (j < b.length) rows.push({ a: null, b: b[j++] });
-  // A gap on each side right after each other is one changed instruction: show it on one row.
   const out = [];
   for (const r of rows) {
     const prev = out[out.length - 1];
@@ -743,12 +1144,201 @@ document.querySelectorAll('.actions button').forEach((b) =>
       const r = await post(`/api/attempts/${currentAttempt.id}/review`, { action: b.dataset.action, comment: $('review-comment').value, skipPeerReview: currentAttempt.state === 'peer_review' });
       $('review-status').textContent = `Recorded. Attempt is now ${r.state}${r.approvalsNeeded ? ` (${r.approvalsNeeded} more approval needed)` : ''}.`;
       $('review-comment').value = '';
-      await loadQueue();
+      await loadReview();
     } catch (e) {
       $('review-status').textContent = e.message;
     }
   }),
 );
+
+// Keyboard: j/k move through the queue, 1/2 switch the comparison.
+document.addEventListener('keydown', (e) => {
+  if (currentView !== 'review' || e.target.closest('input, textarea, select') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === '1') showCompare('code');
+  else if (e.key === '2') showCompare('asm');
+  else if (e.key === 'j' || e.key === 'k') {
+    if (!queueOrder.length) return;
+    const at = queueOrder.indexOf(currentAttempt?.id);
+    const next = queueOrder[Math.max(0, Math.min(queueOrder.length - 1, at + (e.key === 'j' ? 1 : -1)))] ?? queueOrder[0];
+    openAttempt(next).then(() => document.querySelector(`.qitem[data-attempt="${next}"]`)?.scrollIntoView({ block: 'nearest' }));
+  }
+});
+
+// --- arcade
+
+let wallet = null;
+async function loadArcade() {
+  wallet = await api('/api/credits/me');
+  setCredits(wallet.balance, false);
+  const earn = $('earn');
+  earn.replaceChildren();
+  const labels = { identical: 'per byte-identical merge', confirmed: 'per peer-confirmed merge', skip: 'per accepted "no source"', submitted: 'per submitted function that compiles', review: 'per review that matched the outcome' };
+  for (const [k, v] of Object.entries(wallet.awards)) earn.append(el('span', `+${v} ${labels[k] ?? k}${wallet.earned[k] ? ` · earned ${fmt(wallet.earned[k].credits)}` : ''}`, 'chip'));
+  $('bailout').hidden = !wallet.bailout;
+  for (const b of document.querySelectorAll('.bet')) b.max = String(wallet.maxBet);
+  const pt = $('paytable');
+  pt.replaceChildren(...wallet.slots.map((s) => el('span', `${s.symbol}×3 = ${s.three}×`)), el('span', '⚙️⚙️ = 1×'));
+  renderRounds(wallet.recent);
+  const b = await api('/api/credits/leaderboard');
+  $('arcade-wins').replaceChildren(b.wins.length ? table(['Player', 'Game', 'Won'], b.wins.map((w) => [w.name, w.game, fmt(w.payout)])) : el('p', 'No big wins today. Yet.', 'muted'));
+}
+
+function renderRounds(rounds) {
+  $('rounds').replaceChildren(
+    rounds.length
+      ? table(['When', 'Game', 'Bet', 'Result', 'Paid'], rounds.map((r) => [ago(r.created_at), r.game, fmt(r.bet), describeRound(r), r.payout ? `+${fmt(r.payout)}` : '0']))
+      : el('p', 'No rounds yet. Merged functions earn credits; spend them here.', 'muted'),
+  );
+}
+
+function describeRound(r) {
+  const d = r.detail ?? {};
+  if (r.game === 'coinflip') return `called ${d.side}, got ${d.result}`;
+  if (r.game === 'dice') return `rolled ${d.result} (under ${d.under})`;
+  if (r.game === 'slots') return (d.reels ?? []).join(' ');
+  return '';
+}
+
+async function play(game, body, msgEl) {
+  msgEl.textContent = '';
+  msgEl.className = 'msg game-msg';
+  const r = await post(`/api/games/${game}`, body);
+  return r;
+}
+
+function finish(r, msgEl, text) {
+  const won = r.payout > 0;
+  msgEl.textContent = won ? `${text} +${fmt(r.payout)} credits!` : `${text} No luck.`;
+  msgEl.classList.add(won ? 'win' : 'lose');
+  setCredits(r.balance, false);
+  if (won && r.payout >= r.bet * 3) {
+    const box = msgEl.getBoundingClientRect();
+    sparks(box.left + 60, box.top, r.payout >= r.bet * 20 ? 30 : 14, ['🪙', '✨', '🎉']);
+  }
+  wallet.recent.unshift({ game: r.game, bet: r.bet, payout: r.payout, detail: r.detail, created_at: Date.now() });
+  renderRounds(wallet.recent.slice(0, 15));
+}
+
+const betOf = (id) => Math.max(1, Math.floor(Number($(id).value) || 1));
+
+let coinTurns = 0;
+for (const b of document.querySelectorAll('#game-coin [data-side]')) {
+  b.addEventListener('click', async () => {
+    const msg = $('coin-msg');
+    const buttons = document.querySelectorAll('#game-coin button');
+    buttons.forEach((x) => (x.disabled = true));
+    try {
+      const r = await play('coinflip', { bet: betOf('coin-bet'), side: b.dataset.side }, msg);
+      coinTurns += 5;
+      const deg = coinTurns * 360 + (r.detail.result === 'tails' ? 180 : 0);
+      $('coin').style.setProperty('transform', `rotateY(${deg}deg)`);
+      await new Promise((res) => setTimeout(res, reducedMotion() ? 0 : 1250));
+      finish(r, msg, `It's ${r.detail.result}.`);
+    } catch (e) {
+      msg.textContent = e.message;
+    } finally {
+      buttons.forEach((x) => (x.disabled = false));
+    }
+  });
+}
+
+function diceOdds() {
+  const u = Number($('dice-under').value);
+  $('dice-under-out').textContent = String(u);
+  $('dice-pays').textContent = `${(Math.floor((97 / (u - 1)) * 100) / 100).toFixed(2)}×`;
+}
+$('dice-under').addEventListener('input', diceOdds);
+diceOdds();
+$('dice-roll').addEventListener('click', async () => {
+  const msg = $('dice-msg');
+  const die = $('die');
+  $('dice-roll').disabled = true;
+  try {
+    const r = await play('dice', { bet: betOf('dice-bet'), under: Number($('dice-under').value) }, msg);
+    die.classList.add('rolling');
+    const spin = setInterval(() => (die.textContent = String(1 + Math.floor(Math.random() * 100))), 60);
+    await new Promise((res) => setTimeout(res, reducedMotion() ? 0 : 900));
+    clearInterval(spin);
+    die.classList.remove('rolling');
+    die.textContent = String(r.detail.result);
+    finish(r, msg, `Rolled ${r.detail.result}.`);
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    $('dice-roll').disabled = false;
+  }
+});
+
+const REEL_FACES = ['⚙️', '🔩', '💾', '🐞', '👾', '7️⃣'];
+$('slots-spin').addEventListener('click', async () => {
+  const msg = $('slots-msg');
+  const reels = [...document.querySelectorAll('#reels .reel')];
+  $('reels').classList.remove('win');
+  $('slots-spin').disabled = true;
+  try {
+    const r = await play('slots', { bet: betOf('slots-bet') }, msg);
+    const timers = reels.map((reel) => {
+      reel.classList.add('spinning');
+      return setInterval(() => (reel.textContent = REEL_FACES[Math.floor(Math.random() * REEL_FACES.length)]), 70);
+    });
+    for (let i = 0; i < reels.length; i++) {
+      await new Promise((res) => setTimeout(res, reducedMotion() ? 0 : 450 + i * 250));
+      clearInterval(timers[i]);
+      reels[i].classList.remove('spinning');
+      reels[i].textContent = r.detail.reels[i];
+    }
+    if (r.payout > r.bet) $('reels').classList.add('win');
+    finish(r, msg, r.payout > r.bet ? 'Jackpot-ish!' : r.payout === r.bet ? 'Two gears: bet back.' : '');
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    $('slots-spin').disabled = false;
+  }
+});
+
+$('bailout').addEventListener('click', async () => {
+  try {
+    const r = await post('/api/credits/bailout');
+    setCredits(r.balance, false);
+    toast(`+${r.granted} credits. Spend them wisely (or merge a function).`, { icon: '🛟' });
+    loadArcade();
+  } catch (e) {
+    toast(e.message);
+  }
+});
+
+// --- little things
+
+const TAGLINES = [
+  'Matching decompilation // byte for byte',
+  'Teaching machines to write 2012-era C++',
+  'Every byte counts. Literally.',
+  'mov eax, progress // add eax, you',
+  'No function left behind',
+  'Compiled locally, judged globally',
+  'Five agents walk into a peer review…',
+];
+let tag = 0;
+setInterval(() => {
+  if (document.visibilityState !== 'visible' || reducedMotion()) return;
+  tag = (tag + 1) % TAGLINES.length;
+  $('tagline').textContent = TAGLINES[tag];
+}, 9000);
+
+// The classic: up up down down left right left right b a.
+const KONAMI = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
+let konami = 0;
+document.addEventListener('keydown', (e) => {
+  konami = e.key === KONAMI[konami] ? konami + 1 : e.key === KONAMI[0] ? 1 : 0;
+  if (konami === KONAMI.length) {
+    konami = 0;
+    document.querySelector('.gears').style.setProperty('animation', 'spin 0.4s linear 6');
+    sparks(window.innerWidth / 2, window.innerHeight / 3, 40);
+    toast('+30 lives. (Not credits. Nice try.)', { icon: '🕹️' });
+  }
+});
+
+// --- start
 
 api('/api/info')
   .then((info) => {
@@ -760,21 +1350,11 @@ api('/api/info')
     }
     // The guide's workspace paths use the installer's default folder name.
     const folder = String(info.project ?? 'project').replace(/[^A-Za-z0-9_.-]/g, '-');
-    for (const c of document.querySelectorAll('.ws-win, .ws-linux, #open-win, #open-linux'))
-      c.textContent = c.textContent.replace('wowdecomp', folder);
+    for (const c of document.querySelectorAll('.ws-win, .ws-linux, #open-win, #open-linux')) c.textContent = c.textContent.replace('wowdecomp', folder);
     if (info.gitWeb) $('source-link').href = info.gitWeb;
     $('clone-cmd').textContent = `git clone ${info.git}`;
   })
   .catch(() => {});
-loadProgress().catch((e) => ($('progress-body').textContent = e.message));
-loadCrew().catch((e) => ($('active-body').textContent = e.message));
-// Live numbers: progress and the crew views refresh on their own.
-// Live numbers, only while the page is visible (background tabs would otherwise keep polling).
-const refreshLive = () => {
-  if (document.visibilityState !== 'visible') return;
-  loadProgress().catch(() => {});
-  loadCrew().catch(() => {});
-};
-setInterval(refreshLive, 60_000);
-document.addEventListener('visibilitychange', refreshLive);
+for (const c of document.querySelectorAll('code[data-origin]')) c.textContent = c.textContent.replace('{origin}', location.origin);
+addCopyButtons();
 refresh();

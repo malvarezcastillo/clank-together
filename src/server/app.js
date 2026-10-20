@@ -23,6 +23,7 @@ import { inferUnits } from './grouping.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { Regions } from './regions.js';
 import { Credits, SLOT_TABLE } from './credits.js';
+import { Live } from './live.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
@@ -248,7 +249,8 @@ export function createApp(ctx) {
     return { activeMinutes: ACTIVE_MS / 60_000, users, active };
   }));
 
-  router.on('GET', '/api/progress', () => cached('progress', 20_000, () => {
+  router.on('GET', '/api/progress', () => progressData());
+  const progressData = () => cached('progress', 10_000, () => {
     // Functions accepted as needing no decompilation (thunks, runtime library, ...) do not count.
     const total = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE s.kind = 'function' AND s.library = 0 AND s.skip_reason IS NULL`);
     const byStatus = store.all(`SELECT fs.status, COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 GROUP BY fs.status`);
@@ -260,7 +262,7 @@ export function createApp(ctx) {
     const mergedSince = (ms) => store.get(`SELECT COALESCE(SUM(json_extract(data, '$.functions')), 0) AS n FROM events WHERE type = 'merged' AND at > ?`, Date.now() - ms).n;
     const merges = { lastHour: mergedSince(3600_000), perHourDay: mergedSince(24 * 3600_000) / 24 };
     return { functions: total.n, bytes: total.bytes, byStatus, confirmed, peerQueue, byTaskState, contributors, merges };
-  }));
+  });
 
   // --- accounts
 
@@ -551,7 +553,10 @@ export function createApp(ctx) {
   router.on('GET', '/api/feed', ({ query }) => {
     const after = Number(query.get('after') ?? 0) || 0;
     // The first view is cached; later polls ask for what came after (a primary key range).
-    const load = () => {
+    return after > 0 ? feedSince(after) : cached('feed', 5_000, () => feedSince(0));
+  });
+  const feedSince = (after) => {
+    {
       const rows = store.all(
         `SELECT e.id, e.at, e.type, e.data, u.name FROM events e LEFT JOIN users u ON u.id = e.user_id
           WHERE e.id > ? AND e.type IN (${FEED_TYPES.map(() => '?').join(',')}) ORDER BY e.id DESC LIMIT 40`,
@@ -568,14 +573,13 @@ export function createApp(ctx) {
         return {};
       };
       return rows.map((r) => ({ id: r.id, at: r.at, type: r.type, user: r.name ?? null, ...pick(r.type, JSON.parse(r.data ?? '{}')) }));
-    };
-    return after > 0 ? load() : cached('feed', 5_000, load);
-  });
+    }
+  };
 
   // Every function in address order, one letter each: d byte-identical, c peer-confirmed, s needs no
   // decompilation, f on its way to main, l claimed, b sent back, o open; plus its source file.
   const mapData = () =>
-    cached('map', 60_000, () => {
+    cached('map', 15_000, () => {
       const v = store.currentVersion();
       if (!v) return { functions: 0, states: '', units: [], unitOf: [], ids: [] };
       const rows = store.all(
@@ -705,7 +709,7 @@ export function createApp(ctx) {
       kind: a.kind,
       claim: a.kind === 'skip' ? { category: a.skip_category, reason: a.notes } : undefined,
       peerReviews: peers.verdicts(a.id),
-      peerRequired: peers.required,
+      peerRequired: peers.autoAccept, // "same" verdicts that accept it (peers.required "different" send it back)
       targetSource: targetSource(result?.feedback?.target?.id, batchResult.mergedFiles ?? store.attemptFiles(a)),
     };
   });
@@ -994,7 +998,21 @@ export function createApp(ctx) {
       }
     }
   };
-  return http.createServer(handler);
+  const server = http.createServer(handler);
+  // What the live socket pushes (live.js), from the same shared caches as the routes.
+  const origin = new URL(config.publicUrl).origin;
+  server.liveSources = {
+    feed: feedSince,
+    progress: progressData,
+    map: mapData,
+    userFromCookie: (req) => {
+      const c = sessionCookie(req);
+      return c ? accounts.userBySession(c) : null;
+    },
+    allowedOrigins: [origin, `http://${config.listen.host}:${config.listen.port}`],
+    clientIp,
+  };
+  return server;
 }
 
 // Public downloads of the td binaries (tools/build-td output copied to <dataDir>/downloads).
@@ -1104,6 +1122,9 @@ export async function startServer(dataDir, { role = 'all' } = {}) {
     stops.push(() => clearInterval(booker));
     stops.push(() => clearInterval(sweeper));
     server = createApp(ctx);
+    const live = new Live({ store: ctx.store, credits: ctx.credits, ...server.liveSources });
+    live.attach(server);
+    stops.push(() => live.stop());
     await new Promise((r) => server.listen(ctx.config.listen.port, ctx.config.listen.host, r));
     console.log(`clank together coordinator listening on http://${ctx.config.listen.host}:${ctx.config.listen.port} (public url ${ctx.config.publicUrl})`);
   }

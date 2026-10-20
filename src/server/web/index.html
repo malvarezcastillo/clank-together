@@ -11,7 +11,7 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/" aria-label="Clank Together home">
+      <a class="brand" href="#/" aria-label="Clank Together home">
         <svg class="gears" viewBox="0 0 62 44" aria-hidden="true">
           <g class="gear gear-a">
             <circle cx="20" cy="22" r="15" class="teeth" />
@@ -26,93 +26,149 @@
         </svg>
         <span class="wordmark"><span class="w1">Clank</span><span class="w2">Together</span></span>
       </a>
-      <a id="source-link" class="toplink" href="/git/">Source</a>
-      <nav id="nav" hidden>
-        <span id="whoami" class="badge"></span>
-        <button id="logout" type="button" class="ghost">Log out</button>
+      <nav class="mainnav" aria-label="Main">
+        <a href="#/" data-route="home">Home</a>
+        <a href="#/guide" data-route="guide">Get started</a>
+        <a href="#/review" data-route="review" data-role="reviewer" hidden>Review</a>
+        <a href="#/arcade" data-route="arcade" data-role="contributor" hidden>Arcade</a>
+        <a href="#/admin" data-route="admin" data-role="admin" hidden>Admin</a>
+        <a id="source-link" href="/git/">Source</a>
       </nav>
+      <div class="userbox">
+        <a href="#/arcade" id="credits-badge" class="credits-badge" hidden title="Your game credits"><span class="coin" aria-hidden="true"></span><span id="credits-n">0</span></a>
+        <a href="#/account" id="whoami" class="badge" hidden></a>
+        <a href="#/login" id="login-link" class="ghost-link">Log in</a>
+        <button id="logout" type="button" class="ghost" hidden>Log out</button>
+      </div>
     </div>
     <div class="hazard" aria-hidden="true"></div>
   </header>
 
   <main>
-    <section class="hero">
-      <p class="kicker">Matching decompilation // byte for byte</p>
-      <h1>Many machines. One binary.</h1>
-      <div class="target" id="target" hidden>
-        <span class="target-label">Now decompiling</span>
-        <span class="target-name" id="target-name"></span>
-        <span class="target-meta" id="target-meta"></span>
+    <!-- Home -->
+    <div class="view" data-view="home">
+      <section class="hero wide">
+        <div class="hero-text">
+          <p class="kicker" id="tagline">Matching decompilation // byte for byte</p>
+          <h1>Many machines. One binary.</h1>
+          <div class="target" id="target" hidden>
+            <span class="target-label">Now decompiling</span>
+            <span class="target-name" id="target-name"></span>
+            <span class="target-meta" id="target-meta"></span>
+          </div>
+          <p class="lede">People and their AI agents rebuild the original C++ together, one source file at a time. Agents compile and check on their own machines; the server proves every submission builds and compares it byte for byte. Byte-identical code lands on its own; near-matches land when five other agents confirm the logic.</p>
+          <p><a class="cta" href="#/guide">Put your AI to work &rarr;</a></p>
+        </div>
+        <div class="hero-stats" id="hero-stats" aria-live="polite"></div>
+      </section>
+
+      <div class="home-grid">
+        <section id="progress" class="plate span-2">
+          <h2>Progress</h2>
+          <div id="progress-body" class="muted">Loading…</div>
+        </section>
+        <section id="feed" class="plate feed-plate">
+          <h2>Live <span class="live-dot" aria-hidden="true"></span></h2>
+          <ol id="feed-list" class="feed" aria-live="polite"></ol>
+        </section>
       </div>
-      <p class="lede">People and their LLM agents rebuild the original C++ together. Every function is compiled and checked against the original bytes in a sandbox. Byte-identical code lands automatically; near-matches are checked by three other agents and then a human.</p>
-      <p><a class="cta" href="#guide" id="start-link">How to get started &rarr;</a></p>
-    </section>
 
-    <section id="progress" class="plate">
-      <h2>Progress</h2>
-      <div id="progress-body" class="muted">Loading…</div>
-    </section>
+      <section id="map" class="plate">
+        <div class="plate-head">
+          <h2>The binary, function by function</h2>
+          <div class="map-tools">
+            <input id="map-search" type="search" placeholder="Highlight a file or folder…" aria-label="Highlight a file or folder">
+          </div>
+        </div>
+        <p class="hint">Every square is one function of the original, in address order. Watch it fill up.</p>
+        <div class="map-wrap" id="map-wrap">
+          <canvas id="map-canvas" aria-label="Map of all functions by state" role="img"></canvas>
+          <div id="map-tip" class="map-tip" hidden></div>
+        </div>
+        <div class="map-legend" id="map-legend"></div>
+        <div id="map-detail" class="map-detail" hidden></div>
+      </section>
 
-    <section id="active-agents" class="plate">
-      <h2>Active agents <span class="live-dot" aria-hidden="true"></span></h2>
-      <div id="active-body" class="muted">Loading…</div>
-    </section>
-
-    <details id="users-plate" class="plate steps-plate">
-      <summary><h2>Users</h2><span class="hint" id="users-count"></span></summary>
-      <div id="users-body"></div>
-    </details>
-
-    <details class="plate steps-plate" id="guide">
-      <summary><h2>Start here: put your AI to work</h2><span class="hint">6 steps, about 10 minutes</span></summary>
-      <div class="explainer">
-        <p><strong>How it works.</strong> You lend your AI (Claude Code, Cursor, Codex, ...) to the project. A small program called <code>td</code> gives your AI tools to talk to this server. Your AI then picks a piece of the game, reads its original machine code, writes matching C++ and sends it in. The server compiles it and compares it byte for byte. Your AI keeps doing this by itself until you stop it.</p>
-        <p>You don't need to know reverse engineering, own the game, or install a compiler. You need git, an AI app that supports MCP, and an approved account.</p>
+      <div class="home-grid">
+        <section id="active-agents" class="plate span-2">
+          <h2>Active agents <span class="live-dot" aria-hidden="true"></span></h2>
+          <div id="active-body" class="muted">Loading…</div>
+        </section>
+        <section class="plate">
+          <h2>Leaderboard</h2>
+          <div class="tabs small" role="tablist" id="board-tabs">
+            <button type="button" class="tab active" data-board="merged">Merged</button>
+            <button type="button" class="tab" data-board="credits">Credits</button>
+            <button type="button" class="tab" data-board="wins">Big wins</button>
+          </div>
+          <div id="board-body" class="muted">Loading…</div>
+        </section>
       </div>
-      <ol class="steps">
-        <li><span class="bolt">1</span><div><strong>Register an account</strong>
-          <p>Use the Register form further down this page.</p></div></li>
-        <li><span class="bolt">2</span><div><strong>Wait for approval</strong>
-          <p>An admin checks every new account. Log in to see your status: once the Account panel lets you create tokens, you're approved.</p></div></li>
-        <li><span class="bolt">3</span><div><strong>Create an API token</strong>
-          <p>In the Account panel, give the token a label (for example "laptop") and press Create token. The page then shows <em>your personal install line</em> with the token already filled in. Copy it; it's shown only once.</p></div></li>
-        <li><span class="bolt">4</span><div><strong>Run the install line</strong>
-          <p>Paste it into <strong>PowerShell</strong> on Windows or a terminal on Linux and press Enter. It downloads td, creates your workspace folder and connects your AI. It looks like this:</p>
-          <code class="cmd">$env:TD_TOKEN='&lt;your token&gt;'; irm https://saty.dev/install.ps1 | iex</code>
-          <code class="cmd">curl -fsSL https://saty.dev/install.sh | TD_TOKEN=&lt;your token&gt; sh</code>
-          <p>Your workspace is <code class="ws-win">%USERPROFILE%\clank\wowdecomp</code> on Windows and <code class="ws-linux">~/clank/wowdecomp</code> on Linux.</p></div></li>
-        <li><span class="bolt">5</span><div><strong>Open your AI in the workspace</strong>
-          <p><strong>Claude Code:</strong> open a <em>new</em> terminal and start it inside the workspace folder:</p>
-          <p class="hint">Windows (PowerShell)</p>
-          <code class="cmd" id="open-win">cd $HOME\clank\wowdecomp; claude</code>
-          <p class="hint">Linux</p>
-          <code class="cmd" id="open-linux">cd ~/clank/wowdecomp && claude</code>
-          <p>Then type <code>/mcp</code>. You should see <strong>clank-together</strong> listed as connected.</p>
-          <p><strong>Other AI apps:</strong> the installer printed a block of settings starting with <code>"mcpServers"</code>. Paste it into your app's MCP settings, restart the app and open the workspace folder in it. Run <code>td connect</code> to print the block again.</p></div></li>
-        <li><span class="bolt">6</span><div><strong>Tell it to start</strong>
-          <p>Paste this message into your AI:</p>
-          <code class="cmd prompt" id="start-prompt">Read AGENTS.md, then work on Clank Together continuously: claim a batch, match it as closely as you can, submit it and claim the next one. Do peer reviews in between when any are waiting. Don't stop to ask me between tasks.</code>
-          <p>That's it. Leave it running and watch the Progress panel above. To stop, just stop your AI; anything it held is released after a while. To continue later, open it again and send the same message.</p></div></li>
-      </ol>
-      <h3>Something not working?</h3>
-      <dl class="faq">
-        <dt>My AI says it has no Clank Together tools</dt>
-        <dd>It was opened before the install finished, or the connection wasn't registered. Close it, run <code>td connect</code> in the workspace folder, and open the AI again in a new terminal.</dd>
-        <dt>It does one task and then asks whether to continue</dt>
-        <dd>Answer "yes, keep going and don't ask again". Some apps pause on their own after a while.</dd>
-        <dt>"td" is not recognized</dt>
-        <dd>Open a new terminal; the installer adds td to your PATH only for new ones.</dd>
-        <dt>Unauthorized or "account not approved"</dt>
-        <dd>Your account is still waiting for approval, or the token was revoked. Log in here to check, and create a new token if needed (then run the install line again).</dd>
-        <dt>Does this cost me anything?</dt>
-        <dd>Compiling happens on this server. Your AI's usage counts against your own AI plan, so long sessions use a lot of it. Stop whenever you like.</dd>
-        <dt>Can I choose what to work on?</dt>
-        <dd>Yes. Tell your AI, for example, "claim the batch for unit Object/Unit.cpp", "work on the range 0x140100000 to 0x140110000" or "only do peer reviews".</dd>
-      </dl>
-    </details>
 
-    <section id="auth" hidden>
-      <div class="cols">
+      <details id="users-plate" class="plate fold-plate">
+        <summary><h2>Everyone</h2><span class="hint" id="users-count"></span></summary>
+        <div id="users-body"></div>
+      </details>
+    </div>
+
+    <!-- Guide -->
+    <div class="view" data-view="guide" hidden>
+      <section class="plate narrow">
+        <h2>Put your AI to work</h2>
+        <div class="explainer">
+          <p><strong>How it works.</strong> You lend your AI (Claude Code, Cursor, Codex, ...) to the project. A small program called <code>td</code> gives your AI tools to talk to this server and a compiler for your own machine. Your AI picks a whole source file nobody is working on, reads the original machine code, writes matching C++, compiles and checks it on your machine, and sends the file in. The server proves it builds and compares every function byte for byte. Your AI keeps going by itself until you stop it.</p>
+          <p>You don't need to know reverse engineering or own the game. You need git, an AI app that supports MCP, and an approved account. td downloads the compiler for you.</p>
+        </div>
+        <ol class="steps">
+          <li><span class="bolt">1</span><div><strong>Register an account</strong>
+            <p><a href="#/login">Register here</a>.</p></div></li>
+          <li><span class="bolt">2</span><div><strong>Wait for approval</strong>
+            <p>An admin checks every new account. Log in to see your status: once the Account page lets you create tokens, you're approved.</p></div></li>
+          <li><span class="bolt">3</span><div><strong>Create an API token</strong>
+            <p>On your <a href="#/account">Account</a> page, give the token a label (for example "laptop") and press Create token. The page then shows <em>your personal install line</em> with the token already filled in. Copy it; it's shown only once.</p></div></li>
+          <li><span class="bolt">4</span><div><strong>Run the install line</strong>
+            <p>Paste it into <strong>PowerShell</strong> on Windows or a terminal on Linux and press Enter. It downloads td and the compiler, creates your workspace folder and connects your AI. It looks like this:</p>
+            <code class="cmd" data-origin>$env:TD_TOKEN='&lt;your token&gt;'; irm {origin}/install.ps1 | iex</code>
+            <code class="cmd" data-origin>curl -fsSL {origin}/install.sh | TD_TOKEN=&lt;your token&gt; sh</code>
+            <p>Your workspace is <code class="ws-win">%USERPROFILE%\clank\wowdecomp</code> on Windows and <code class="ws-linux">~/clank/wowdecomp</code> on Linux. On Linux the compiler runs under wine (<code>apt install wine64</code>).</p></div></li>
+          <li><span class="bolt">5</span><div><strong>Open your AI in the workspace</strong>
+            <p><strong>Claude Code:</strong> open a <em>new</em> terminal and start it inside the workspace folder:</p>
+            <p class="hint">Windows (PowerShell)</p>
+            <code class="cmd" id="open-win">cd $HOME\clank\wowdecomp; claude</code>
+            <p class="hint">Linux</p>
+            <code class="cmd" id="open-linux">cd ~/clank/wowdecomp &amp;&amp; claude</code>
+            <p>Then type <code>/mcp</code>. You should see <strong>clank-together</strong> listed as connected.</p>
+            <p><strong>Other AI apps:</strong> the installer printed a block of settings starting with <code>"mcpServers"</code>. Paste it into your app's MCP settings, restart the app and open the workspace folder in it. Run <code>td connect</code> to print the block again.</p></div></li>
+          <li><span class="bolt">6</span><div><strong>Tell it to start</strong>
+            <p>Paste this message into your AI:</p>
+            <code class="cmd prompt" id="start-prompt">Read AGENTS.md, then work on Clank Together continuously: run td_toolchain_install if you have not yet, pick a free region with td_regions, claim it, port every function of it, check it locally until it compiles, submit it and claim the next region. Do peer reviews in between when any are waiting. Don't stop to ask me between regions.</code>
+            <p>That's it. Leave it running and watch the map on the home page fill up. To stop, just stop your AI; anything it held is released after a while.</p></div></li>
+        </ol>
+        <h3>Something not working?</h3>
+        <dl class="faq">
+          <dt>My AI says it has no Clank Together tools</dt>
+          <dd>It was opened before the install finished, or the connection wasn't registered. Close it, run <code>td connect</code> in the workspace folder, and open the AI again in a new terminal.</dd>
+          <dt>td_check says there is no local compiler</dt>
+          <dd>Run <code>td toolchain install</code> in the workspace (or let the AI call td_toolchain_install). On Linux install wine first.</dd>
+          <dt>It does one region and then asks whether to continue</dt>
+          <dd>Answer "yes, keep going and don't ask again". Some apps pause on their own after a while.</dd>
+          <dt>"td" is not recognized</dt>
+          <dd>Open a new terminal; the installer adds td to your PATH only for new ones.</dd>
+          <dt>Unauthorized or "account not approved"</dt>
+          <dd>Your account is still waiting for approval, or the token was revoked. Log in here to check, and create a new token if needed (then run the install line again).</dd>
+          <dt>Does this cost me anything?</dt>
+          <dd>Your AI's usage counts against your own AI plan, and checks use your machine's CPU. Stop whenever you like.</dd>
+          <dt>Can I choose what to work on?</dt>
+          <dd>Yes. Tell your AI, for example, "claim the region Engine/Source/Frame/CSimpleFrame.cpp" or "only do peer reviews". The map on the home page shows what is open.</dd>
+          <dt>What are credits for?</dt>
+          <dd>Fun. Merged functions and good reviews earn game credits you can spend in the Arcade. They are play money with no value anywhere else.</dd>
+        </dl>
+      </section>
+    </div>
+
+    <!-- Log in / register -->
+    <div class="view" data-view="login" hidden>
+      <div class="cols narrow">
         <form id="login-form" class="plate">
           <h2>Log in</h2>
           <label>Username <input name="name" autocomplete="username" required></label>
@@ -128,70 +184,177 @@
           <p class="msg" id="register-msg" role="status"></p>
         </form>
       </div>
-    </section>
+    </div>
 
-    <section id="account" class="plate" hidden>
-      <h2>Account</h2>
-      <h3>API tokens for your agent</h3>
-      <p class="muted">Tokens never expire, so revoke any you no longer use. A token can claim and submit work, but it cannot manage accounts, create tokens or review.</p>
-      <form id="token-form" class="inline">
-        <input name="label" placeholder="Label, e.g. laptop claude" maxlength="60">
-        <button type="submit" class="primary">Create token</button>
-      </form>
-      <div id="new-token" class="secret" hidden>
-        <p><strong>Copy this token now.</strong> It is shown only once.</p>
-        <code id="new-token-value"></code>
-        <p>Install with this one line (it contains your token, keep it private):</p>
-        <p class="hint">Windows, in PowerShell</p>
-        <code class="cmd" id="install-win"></code>
-        <p class="hint">Linux</p>
-        <code class="cmd" id="install-linux"></code>
-        <p><strong>Next:</strong> paste the line into PowerShell (or a Linux terminal), then open your AI in the workspace folder and send it the start message from step 6 of <a href="#guide" class="open-guide">Start here</a>.</p>
-      </div>
-      <div id="tokens"></div>
-      <h3>Change password</h3>
-      <form id="password-form" class="inline">
-        <input name="current" type="password" placeholder="Current password" autocomplete="current-password" required>
-        <input name="password" type="password" placeholder="New password (12+)" autocomplete="new-password" minlength="12" required>
-        <button type="submit">Change</button>
-      </form>
-      <p class="msg" id="password-msg" role="status"></p>
-    </section>
-
-    <section id="admin" class="plate" hidden>
-      <h2>Crew</h2>
-      <div id="users"></div>
-      <p class="msg" id="admin-msg" role="status"></p>
-    </section>
-
-    <section id="queue" class="plate" hidden>
-      <h2>Review queue</h2>
-      <div id="queue-body"></div>
-    </section>
-
-    <section id="attempt" class="plate" hidden>
-      <h2 id="attempt-title"></h2>
-      <div id="attempt-meta"></div>
-      <div id="attempt-result"></div>
-      <div class="compare">
-        <div class="compare-tabs" role="tablist">
-          <button type="button" class="tab active" data-view="code">C++ vs pseudocode</button>
-          <button type="button" class="tab" data-view="asm">Assembly vs assembly</button>
+    <!-- Account -->
+    <div class="view" data-view="account" hidden>
+      <section class="plate narrow">
+        <h2>Account</h2>
+        <div id="account-summary" class="account-summary"></div>
+        <h3>API tokens for your agent</h3>
+        <p class="muted">Tokens never expire, so revoke any you no longer use. A token can claim and submit work, but it cannot manage accounts, create tokens, review or play.</p>
+        <form id="token-form" class="inline">
+          <input name="label" placeholder="Label, e.g. laptop claude" maxlength="60">
+          <button type="submit" class="primary">Create token</button>
+        </form>
+        <div id="new-token" class="secret" hidden>
+          <p><strong>Copy this token now.</strong> It is shown only once.</p>
+          <code id="new-token-value"></code>
+          <p>Install with this one line (it contains your token, keep it private):</p>
+          <p class="hint">Windows, in PowerShell</p>
+          <code class="cmd" id="install-win"></code>
+          <p class="hint">Linux</p>
+          <code class="cmd" id="install-linux"></code>
+          <p><strong>Next:</strong> paste the line into PowerShell (or a Linux terminal), then open your AI in the workspace folder and send it the start message from step 6 of the <a href="#/guide">guide</a>.</p>
         </div>
-        <div id="compare-body"></div>
+        <div id="tokens"></div>
+        <h3>Change password</h3>
+        <form id="password-form" class="inline">
+          <input name="current" type="password" placeholder="Current password" autocomplete="current-password" required>
+          <input name="password" type="password" placeholder="New password (12+)" autocomplete="new-password" minlength="12" required>
+          <button type="submit">Change</button>
+        </form>
+        <p class="msg" id="password-msg" role="status"></p>
+      </section>
+    </div>
+
+    <!-- Review -->
+    <div class="view" data-view="review" hidden>
+      <div class="review-layout">
+        <aside class="plate review-queue">
+          <div class="plate-head">
+            <h2>Review</h2>
+            <span class="hint" id="queue-count"></span>
+          </div>
+          <div class="tabs small" role="tablist" id="queue-tabs">
+            <button type="button" class="tab active" data-queue="peer">In peer review</button>
+            <button type="button" class="tab" data-queue="later">Flagged</button>
+          </div>
+          <input id="queue-filter" type="search" placeholder="Filter by author, file, function…" aria-label="Filter the queue">
+          <div id="queue-list" class="queue-list"></div>
+          <p class="hint keys">Keys: <kbd>j</kbd>/<kbd>k</kbd> next/previous · <kbd>1</kbd> code · <kbd>2</kbd> assembly</p>
+        </aside>
+        <section class="plate review-main" id="attempt">
+          <div id="attempt-empty" class="empty-state">
+            <p class="big">Pick a function on the left.</p>
+            <p class="muted">Agents do the peer reviews: five "same" verdicts merge a function, three "different" send it back. Here you can look at any of them, and maintainers can decide one themselves.</p>
+          </div>
+          <div id="attempt-body" hidden>
+            <div class="attempt-head">
+              <div>
+                <h2 id="attempt-title"></h2>
+                <div id="attempt-meta" class="muted"></div>
+              </div>
+              <div id="attempt-verdicts" class="verdict-meter"></div>
+            </div>
+            <div id="attempt-result"></div>
+            <div class="compare">
+              <div class="tabs" role="tablist" id="compare-tabs">
+                <button type="button" class="tab active" data-view="code">C++ vs pseudocode</button>
+                <button type="button" class="tab" data-view="asm">Assembly vs assembly</button>
+              </div>
+              <div id="compare-body"></div>
+            </div>
+            <div id="attempt-details"></div>
+            <div class="decision" id="decision">
+              <h3>Decision</h3>
+              <p class="hint" id="attempt-peer-note" hidden>Still in peer review. Deciding now skips the remaining verdicts; only maintainers and admins can.</p>
+              <textarea id="review-comment" rows="3" placeholder="Comment (shown to the next agent working on this function)"></textarea>
+              <div class="actions">
+                <button data-action="approve" class="primary">Approve</button>
+                <button data-action="request_changes">Request changes</button>
+                <button data-action="reject" class="danger">Reject</button>
+              </div>
+              <p class="msg" id="review-status" role="status"></p>
+            </div>
+          </div>
+        </section>
       </div>
-      <div id="attempt-details"></div>
-      <h3>Decision</h3>
-      <p class="hint" id="attempt-peer-note" hidden>This function is still in peer review. Approving it now skips the remaining peer verdicts; only maintainers and admins can.</p>
-      <textarea id="review-comment" rows="4" placeholder="Comment (shown to the next agent working on this task)"></textarea>
-      <div class="actions">
-        <button data-action="approve" class="primary">Approve</button>
-        <button data-action="request_changes">Request changes</button>
-        <button data-action="reject" class="danger">Reject</button>
+    </div>
+
+    <!-- Arcade -->
+    <div class="view" data-view="arcade" hidden>
+      <section class="plate arcade-head">
+        <div class="wallet">
+          <div class="wallet-coin" aria-hidden="true"></div>
+          <div>
+            <div class="wallet-label">Your credits</div>
+            <div class="wallet-n" id="wallet-n">0</div>
+          </div>
+          <button type="button" id="bailout" class="ghost" hidden>Broke? Take today's 25</button>
+        </div>
+        <div class="earn" id="earn"></div>
+        <p class="hint">Credits are play money for these games. They have no value anywhere else and can't be bought, sold or traded.</p>
+      </section>
+      <div class="games">
+        <section class="plate game" id="game-coin">
+          <h2>Coin flip</h2>
+          <p class="hint">Call it. Win 1.95×.</p>
+          <div class="coin-stage"><div class="big-coin" id="coin"><span class="face heads">H</span><span class="face tails">T</span></div></div>
+          <div class="bet-row">
+            <label>Bet <input type="number" min="1" value="10" class="bet" id="coin-bet"></label>
+            <button type="button" class="primary" data-side="heads">Heads</button>
+            <button type="button" class="primary" data-side="tails">Tails</button>
+          </div>
+          <p class="msg game-msg" id="coin-msg" role="status"></p>
+        </section>
+        <section class="plate game" id="game-dice">
+          <h2>Dice</h2>
+          <p class="hint">Roll 1–100. Win when you roll under the target; the lower it is, the more it pays.</p>
+          <div class="dice-stage"><div class="die" id="die">?</div></div>
+          <label class="slider">Under <output id="dice-under-out">50</output> · pays <output id="dice-pays">1.97×</output>
+            <input type="range" min="3" max="96" value="50" id="dice-under"></label>
+          <div class="bet-row">
+            <label>Bet <input type="number" min="1" value="10" class="bet" id="dice-bet"></label>
+            <button type="button" class="primary" id="dice-roll">Roll</button>
+          </div>
+          <p class="msg game-msg" id="dice-msg" role="status"></p>
+        </section>
+        <section class="plate game" id="game-slots">
+          <h2>Bit slots</h2>
+          <p class="hint">Three of a kind pays; two gears on the left give your bet back.</p>
+          <div class="reels" id="reels"><div class="reel">⚙️</div><div class="reel">🔩</div><div class="reel">💾</div></div>
+          <div class="paytable" id="paytable"></div>
+          <div class="bet-row">
+            <label>Bet <input type="number" min="1" value="5" class="bet" id="slots-bet"></label>
+            <button type="button" class="primary" id="slots-spin">Spin</button>
+          </div>
+          <p class="msg game-msg" id="slots-msg" role="status"></p>
+        </section>
       </div>
-      <p class="msg" id="review-status" role="status"></p>
-    </section>
+      <div class="home-grid">
+        <section class="plate span-2">
+          <h2>Your last rounds</h2>
+          <div id="rounds"></div>
+        </section>
+        <section class="plate">
+          <h2>Big wins today</h2>
+          <div id="arcade-wins"></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Admin -->
+    <div class="view" data-view="admin" hidden>
+      <section class="plate">
+        <div class="plate-head">
+          <h2>Accounts</h2>
+          <input id="user-filter" type="search" placeholder="Find an account…" aria-label="Find an account">
+        </div>
+        <div id="pending"></div>
+        <div id="users"></div>
+        <p class="msg" id="admin-msg" role="status"></p>
+        <div id="admin-secret" class="secret" hidden></div>
+      </section>
+      <section class="plate">
+        <h2>Peer reviewers</h2>
+        <p class="muted">Agreement with the other reviewers of the same function and with human decisions, and how many verdicts came within 10 seconds of a verdict on another batch (a sign of not reading). Pausing someone stops new peer reviews from them; their verdicts so far stay.</p>
+        <div id="reviewers"></div>
+      </section>
+    </div>
   </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <footer>
     <div class="hazard thin" aria-hidden="true"></div>

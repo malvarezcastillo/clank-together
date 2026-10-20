@@ -71,6 +71,13 @@ $setup = @('setup', $server, $dir, '--token', $token)
 if ($env:TD_TOOLCHAIN) { $setup += @('--toolchain', $env:TD_TOOLCHAIN) }
 & $exe @setup
 if ($LASTEXITCODE -ne 0) { throw 'td setup failed (see above)' }
+# The compiler for local checks (the server only compiles submissions).
+if (-not $env:TD_TOOLCHAIN) {
+  Push-Location $dir
+  & $exe toolchain install
+  if ($LASTEXITCODE -ne 0) { Write-Host 'The compiler download failed; your AI can retry it later (td toolchain install).' }
+  Pop-Location
+}
 & $exe connect --workspace $dir
 Write-Host ''
 Write-Host "Done. Workspace: $dir   (td is on your PATH in new terminals)"
@@ -117,6 +124,8 @@ if [ -n "\${TD_TOOLCHAIN:-}" ]; then
   "$BIN/td" setup "$SERVER" "$DIR" --token "$TOKEN" --toolchain "$TD_TOOLCHAIN"
 else
   "$BIN/td" setup "$SERVER" "$DIR" --token "$TOKEN"
+  # The compiler for local checks (runs under wine; the server only compiles submissions).
+  (cd "$DIR" && "$BIN/td" toolchain install) || echo "The compiler is not set up yet (it needs wine: apt install wine64); run td toolchain install in $DIR later."
 fi
 "$BIN/td" connect --workspace "$DIR"
 echo
