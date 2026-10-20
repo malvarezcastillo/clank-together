@@ -6,6 +6,7 @@ import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
 import { returnBatch, batchAttempts, settleBatch } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
+import { addUnitsToCompileCommands } from '../shared/project.js';
 import { RANK, bestResults, BIG_BATCH } from './verify.js';
 
 // Merges run in two lanes: one big merge (a header batch that must recompile many units) at a
@@ -353,7 +354,12 @@ export class Merger {
       (!reviewers.length && !confirmedIds.size ? '\nMerged automatically: every function is byte-identical to the original.' : '') +
       (!reviewers.length && confirmedIds.size ? `\nAccepted without human review: at least ${this.peers?.autoAccept ?? 5} peers confirmed the logic.` : '') +
       '\n';
-    const commit = this.repo.commitFiles(merged.files, message, `${author} <${author.replace(/[^A-Za-z0-9_.-]/g, '_')}@users.clank-together.invalid>`);
+    // New source files join the build list in the same commit (with the flags of their folder).
+    const listFile = this.project.compileCommands ?? null;
+    const grown = listFile ? addUnitsToCompileCommands(this.project, this.repo.show(head, listFile), Object.keys(merged.files)) : null;
+    const filesToCommit = grown ? { ...merged.files, [listFile]: grown.text } : merged.files;
+    const commit = this.repo.commitFiles(filesToCommit, grown ? `${message}Adds to the build: ${grown.added.join(', ')}\n` : message, `${author} <${author.replace(/[^A-Za-z0-9_.-]/g, '_')}@users.clank-together.invalid>`);
+    if (grown) this.project.compile.units = grown.units;
 
     this.store.tx(() => {
       this.applyCheckToDatabase(check, rec, commit, batch.user_id, { confirmedIds });

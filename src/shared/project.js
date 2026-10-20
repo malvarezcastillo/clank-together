@@ -35,6 +35,41 @@ export function loadProject(repoDir) {
   return project;
 }
 
+/**
+ * The command shape a unit that is not in the build list yet gets: the one most units of its
+ * folder use (or of the nearest parent folder that has units), else the most common one.
+ */
+export function inferShape(project, file) {
+  const units = project.compile?.units;
+  if (!units) return null;
+  if (units[file] !== undefined) return units[file];
+  const tally = (prefix) => {
+    const n = new Map();
+    for (const [f, s] of Object.entries(units)) if (f.startsWith(prefix)) n.set(s, (n.get(s) ?? 0) + 1);
+    return [...n].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
+  };
+  const parts = file.split('/');
+  for (let i = parts.length - 1; i > 0; i--) {
+    const s = tally(parts.slice(0, i).join('/') + '/');
+    if (s !== undefined) return s;
+  }
+  return tally('') ?? 0;
+}
+
+/**
+ * The build list with new units added (each with its inferred shape), as the text the repository
+ * stores it in, or null when nothing is new. `text` is the list as it is on main.
+ */
+export function addUnitsToCompileCommands(project, text, files) {
+  if (!project.compile?.units || text === null) return null;
+  const doc = JSON.parse(text);
+  const added = files.filter((f) => isUnit(f) && doc.units[f] === undefined && !/(^|\/)Win32\//.test(f));
+  if (!added.length) return null;
+  for (const f of added) doc.units[f] = inferShape({ compile: doc }, f);
+  doc.units = Object.fromEntries(Object.entries(doc.units).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return { text: JSON.stringify(doc, null, 1), added, units: doc.units };
+}
+
 export function loadToolchainLock(repoDir) {
   const file = path.join(repoDir, 'toolchain.lock.json');
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
@@ -42,8 +77,9 @@ export function loadToolchainLock(repoDir) {
 
 /** Compiler flags and toolchain for one translation unit. */
 export function unitSettings(project, file) {
-  const shape = project.compile?.units?.[file];
-  if (shape !== undefined) return { cflags: project.compile.shapes[shape], toolchain: project.toolchain, env: project.compile.env ?? {} };
+  // A unit the build list does not have yet compiles the way it will once it is added (merge.js).
+  const shape = project.compile?.units ? inferShape(project, file) : undefined;
+  if (shape !== undefined && shape !== null) return { cflags: project.compile.shapes[shape], toolchain: project.toolchain, env: project.compile.env ?? {} };
   let cflags = project.cflags;
   let toolchain = project.toolchain;
   for (const o of project.fileOverrides ?? []) {

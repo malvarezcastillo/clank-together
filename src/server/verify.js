@@ -221,6 +221,38 @@ export class Verifier {
     return errors;
   }
 
+  /**
+   * Annotations of functions of the current version that the submission removes although it does
+   * not hold them (not in the batch, not leased, not in a claimed region). Removing a duplicate is
+   * fine: the function stays annotated elsewhere on main.
+   */
+  droppedAnnotations(files, baseCommit, attempts, userId) {
+    const ANN = /\/\/\s*(?:FUNCTION|STUB)\s*:\s*(fn_\d+)/g;
+    const ids = (t) => new Set([...String(t ?? '').matchAll(ANN)].map((m) => m[1]));
+    const before = new Set();
+    const after = new Set();
+    for (const [f, text] of Object.entries(files)) {
+      for (const id of ids(this.repo.show(baseCommit, f))) before.add(id);
+      for (const id of ids(text)) after.add(id);
+    }
+    const held = new Set(attempts.map((a) => a.symbol_id));
+    const v = this.store.currentVersion();
+    const out = [];
+    for (const id of before) {
+      if (after.has(id) || held.has(id)) continue;
+      if (!this.store.get('SELECT 1 FROM symbol_addresses WHERE symbol_id = ? AND version_id = ?', id, v.id)) continue; // not in this build
+      const t = this.store.get('SELECT * FROM tasks WHERE symbol_id = ?', id);
+      if (t && ((t.state === 'leased' && t.lease_user === userId) || this.regions?.covers({ id: userId }, t))) continue;
+      try {
+        if (this.repo.git(['grep', '-l', '-w', '-e', `FUNCTION: ${id}`, 'HEAD', '--', '.', ...Object.keys(files).map((f) => `:(exclude)${f}`)]).trim()) continue;
+      } catch {
+        // not annotated anywhere else
+      }
+      out.push(id);
+    }
+    return out;
+  }
+
   /** Functions the submission declares that nothing defines (undefined.js). */
   undefinedGate(files, baseCommit) {
     const submitted = Object.keys(files);
@@ -412,6 +444,13 @@ export class Verifier {
     if (!this.repo.isAncestor(batch.base_commit)) return finishAll('rejected', { summary: `base commit ${batch.base_commit} is not part of main; sync and resubmit` });
     const textErrors = this.freeTextGate(submitted, batch.base_commit);
     if (textErrors.length) return finishAll('rejected', { summary: 'rejected: the submission adds comments or strings that are not allowed (see lintErrors)', lintErrors: textErrors });
+    const dropped = this.droppedAnnotations(submitted, batch.base_commit, attempts, batch.user_id);
+    if (dropped.length) {
+      return finishAll('needs_cleanup', {
+        summary: `removes the annotation of ${dropped.join(', ')}, which this submission does not hold: functions of the original lose their match that way. Keep the annotation (and the code), or claim the function too`,
+        droppedAnnotations: dropped,
+      });
+    }
     const undefinedNames = this.undefinedGate(submitted, batch.base_commit);
     if (undefinedNames.length) {
       return finishAll('needs_cleanup', {
