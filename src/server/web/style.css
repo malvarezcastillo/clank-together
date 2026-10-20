@@ -742,3 +742,8 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .rate-n { font: 700 26px/1 var(--font-mono); color: var(--accent-ink); font-variant-numeric: tabular-nums; }
 .rate-u { font: 600 13px var(--font-display); text-transform: uppercase; letter-spacing: 0.1em; }
 .rate-avg { font: 12px var(--font-mono); }
+
+/* Account in the navigation: a dot while the agents are limited or paused */
+.nav-dot { display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: 2px; box-shadow: 0 0 6px var(--warn); }
+.quality-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.my-quality .fold p { margin: 4px 0; }

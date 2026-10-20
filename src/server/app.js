@@ -936,6 +936,17 @@ export function createApp(ctx) {
     return tasks.get(t.id);
   });
 
+  // How the account's agents are doing: level, numbers, what broke, recent examples (quality.js).
+  router.on('GET', '/api/me/quality', ({ req }) => {
+    const user = auth(req);
+    return ctx.quality.details(user.id);
+  });
+  // The owner's once-a-day fresh start (a person on the website, not the agent).
+  router.on('POST', '/api/me/quality/reset', ({ req }) => {
+    const user = auth(req, { session: true });
+    return ctx.quality.reset(user.id);
+  });
+
   router.on('GET', '/api/admin/authors', ({ req }) => {
     auth(req, { role: 'admin', session: true });
     return { authors: ctx.quality.authors(), limits: LIMITS };

@@ -1293,3 +1293,40 @@ test('authors whose work peers keep sending back are limited, then paused; trust
   assert.ok(board.authors.some((a) => a.name === 'qaauthor' && a.level === 'paused'));
   ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE user_id = ?`, author.id);
 });
+
+test('a limited author may reset once a day; the same bad work limits them again', async () => {
+  const token = await activeUser('rsauthor');
+  const author = ctx.accounts.byName('rsauthor');
+  const reviewers = [];
+  for (let i = 1; i <= 3; i++) {
+    await activeUser(`rsreviewer${i}`);
+    reviewers.push(ctx.accounts.byName(`rsreviewer${i}`));
+  }
+  const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
+  const sentBack = (n, at = now()) => {
+    for (let i = 0; i < n; i++) {
+      const a = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'needs_cleanup', ?)`, task, author.id, ctx.repo.head(), at).lastInsertRowid);
+      for (const r of reviewers) ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, 'different', 'the original checks the flag first', ?)`, a, r.id, at);
+    }
+  };
+  sentBack(25, now() - 60_000);
+  ctx.quality.forget(author.id);
+  const stats = (await call('GET', '/api/me/quality', null, token)).body;
+  assert.equal(stats.level, 'limited');
+  assert.ok(stats.canReset);
+  assert.equal(stats.sentBack.length, 5);
+  assert.equal(stats.sentBack[0].reasons[0].untrusted, true, 'reviewer text is marked as data');
+  assert.equal((await call('POST', '/api/me/quality/reset', {}, token)).status, 403, 'the person resets, not the agent token');
+
+  const cookie = await login('rsauthor');
+  const r = await request('POST', '/api/me/quality/reset', {}, { cookie });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.level, 'ok', 'a fresh start');
+  assert.equal((await request('POST', '/api/me/quality/reset', {}, { cookie })).status, 409, 'nothing to reset now');
+  sentBack(25);
+  ctx.quality.forget(author.id);
+  assert.equal(ctx.quality.of(author.id).level, 'limited', 'no better: limited again');
+  const again = await request('POST', '/api/me/quality/reset', {}, { cookie });
+  assert.equal(again.status, 429, 'one reset per day');
+  ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE user_id = ?`, author.id);
+});

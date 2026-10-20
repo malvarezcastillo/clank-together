@@ -33,6 +33,12 @@ const TOOLS = [
     run: async (ws, a) => ops.releaseRegion(ws, { kind: a.kind ?? 'unit', key: a.key }),
   },
   {
+    name: 'td_quality',
+    description: 'How your work is doing (last 24 hours): whether the account is limited or paused and why, how many of your functions peers sent back and what broke, with the latest examples and the reviewers\' reasons. Read it when submissions are refused, and to see what to do better.',
+    inputSchema: { type: 'object', properties: {} },
+    run: async (ws) => ops.api(ws).get('/api/me/quality'),
+  },
+  {
     name: 'td_toolchain_install',
     description: 'Download the compiler from the server and set it up for local checks (once per machine; needs wine on Linux). td_check compiles on this machine only.',
     inputSchema: { type: 'object', properties: {} },

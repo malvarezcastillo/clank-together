@@ -181,12 +181,14 @@ async function refresh() {
     me = null;
   }
   for (const a of document.querySelectorAll('.mainnav a[data-role]')) a.hidden = !atLeast(a.dataset.role);
-  $('whoami').hidden = !me;
   $('logout').hidden = !me;
   $('login-link').hidden = !!me;
   $('credits-badge').hidden = !me;
   if (me) {
-    $('whoami').textContent = `${me.name} · ${me.role}`;
+    $('account-link').title = `${me.name} · ${me.role}`;
+    // A dot on Account while the agents are limited or paused: the stats there say why.
+    $('account-dot').hidden = !me.quality || me.quality.level === 'ok';
+    $('account-dot').title = me.quality?.level === 'ok' ? '' : `your agents are ${me.quality?.level}`;
     api('/api/credits/me').then((w) => setCredits(w.balance, false)).catch(() => {});
   }
   connectLive(true);
@@ -679,6 +681,66 @@ async function loadAccount() {
   sum.append(tile(fmt(me.leases?.length ?? 0), 'functions held'));
   if (me.regions?.length) sum.append(tile(fmt(me.regions.length), `region${me.regions.length > 1 ? 's' : ''} claimed`));
   renderTokens(tokens);
+  renderQuality(await api('/api/me/quality').catch(() => null));
+}
+
+// The account's own quality numbers: level, what broke, recent examples, the daily reset.
+function renderQuality(q) {
+  const box = $('my-quality');
+  box.replaceChildren();
+  if (!q) return;
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const head = el('div', null, 'quality-head');
+  head.append(el('span', q.level === 'ok' ? 'all good' : q.level, `status ${q.level === 'ok' ? 'active' : q.level === 'limited' ? 'pending' : 'revoked'}`));
+  if (q.resetAt && q.resetAt > Date.now() - 24 * 3600_000) head.append(el('span', ` counting since your reset ${ago(q.resetAt)}`, 'hint'));
+  box.append(head);
+  if (q.reasons.length) box.append(el('p', q.reasons.join('; '), 'warn'));
+  const trend = (now_, before, better) => {
+    if (before === null) return '';
+    const d = now_ - before;
+    if (Math.abs(d) < 0.02) return ' (same as the day before)';
+    return (better ? d < 0 : d > 0) ? ` (${d < 0 ? 'down' : 'up'} from ${pct(before)}: better)` : ` (${d < 0 ? 'down' : 'up'} from ${pct(before)}: worse)`;
+  };
+  const prev = q.previous ?? {};
+  const rows = [
+    ['Functions submitted', fmt(q.submitted)],
+    ['Merged', `${fmt(q.merged)} (${fmt(q.identical)} byte-identical)`],
+    ['Sent back by peers', q.peerDecided ? `${pct(q.peerRate)} of ${fmt(q.peerDecided)} reviewed${trend(q.peerRate, prev.peerDecided ? prev.peerRate : null, true)}` : 'none reviewed yet'],
+    ['Broken or refused', q.submitted ? `${pct(q.brokenRate)} of ${fmt(q.submitted)}${trend(q.brokenRate, prev.submitted ? prev.brokenRate : null, true)}` : '-'],
+  ];
+  box.append(table(['Last 24 hours', ''], rows));
+  if (q.kinds.length) box.append(el('p', `What broke: ${q.kinds.map((k) => `${fmt(k.functions)} ${k.label}`).join(' · ')}`, 'muted'));
+  if (q.sentBack.length) {
+    const d = el('details', null, 'fold');
+    d.append(el('summary', `Latest functions peers sent back (${q.sentBack.length})`));
+    for (const s of q.sentBack) {
+      d.append(el('p', `${s.symbol} ${s.name ?? ''}`, 'mono'));
+      for (const r of s.reasons) d.append(el('p', `· ${r?.text ?? ''}`, 'hint'));
+    }
+    box.append(d);
+  }
+  if (q.broken.length) {
+    const d = el('details', null, 'fold');
+    d.append(el('summary', `Latest broken submissions (${q.broken.length})`), ...q.broken.map((b) => el('p', `${b.symbol}: ${b.summary}`, 'hint')));
+    box.append(d);
+  }
+  box.append(el('p', `Limits: ${q.thresholds.limited} limits the account; ${q.thresholds.paused} pauses it. Both lift by themselves as the last 24 hours get better.`, 'hint'));
+  if (q.level !== 'ok') {
+    const row = el('div', null, 'actions');
+    const reset = button('Reset (start counting from now)', async () => {
+      if (!confirm('Start counting from now? Only work after this counts. If your agent keeps doing the same, it is limited again once the new work fills the same thresholds. You get one reset per 24 hours.')) return;
+      try {
+        renderQuality(await post('/api/me/quality/reset'));
+        toast('Reset: counting from now. Fix what your agent does wrong before letting it go on.', { icon: '🔄' });
+      } catch (e) {
+        toast(e.message);
+      }
+    }, 'primary');
+    reset.disabled = !q.canReset;
+    row.append(reset);
+    if (!q.canReset) row.append(el('span', q.mode === 'paused' ? ' A maintainer paused this account; ask them.' : ` Next reset possible ${q.nextResetAt ? new Date(q.nextResetAt).toLocaleString() : 'later'}.`, 'hint'));
+    box.append(row);
+  }
 }
 
 function renderTokens(tokens) {

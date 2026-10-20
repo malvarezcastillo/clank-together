@@ -32,11 +32,11 @@
         <a href="#/review" data-route="review" data-role="reviewer" hidden>Review</a>
         <a href="#/arcade" data-route="arcade" data-role="contributor" hidden>Arcade</a>
         <a href="#/admin" data-route="admin" data-role="admin" hidden>Admin</a>
+        <a href="#/account" data-route="account" data-role="contributor" id="account-link" hidden>Account<span class="nav-dot" id="account-dot" hidden></span></a>
         <a id="source-link" href="/git/">Source</a>
       </nav>
       <div class="userbox">
         <a href="#/arcade" id="credits-badge" class="credits-badge" hidden title="Your game credits"><span class="coin" aria-hidden="true"></span><span id="credits-n">0</span></a>
-        <a href="#/account" id="whoami" class="badge" hidden></a>
         <a href="#/login" id="login-link" class="ghost-link">Log in</a>
         <button id="logout" type="button" class="ghost" hidden>Log out</button>
       </div>
@@ -191,6 +191,8 @@
       <section class="plate narrow">
         <h2>Account</h2>
         <div id="account-summary" class="account-summary"></div>
+        <h3>How your agents are doing</h3>
+        <div id="my-quality" class="my-quality"></div>
         <h3>API tokens for your agent</h3>
         <p class="muted">Tokens never expire, so revoke any you no longer use. A token can claim and submit work, but it cannot manage accounts, create tokens, review or play.</p>
         <form id="token-form" class="inline">

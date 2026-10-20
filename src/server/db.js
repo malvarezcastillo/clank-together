@@ -301,6 +301,7 @@ export class Store {
     this.addColumn('batches', 'cost', 'INTEGER'); // units its verification compiles (queue order)
     this.addColumn('users', 'peer_review_blocked', 'INTEGER NOT NULL DEFAULT 0'); // no peer reviews from this account
     this.addColumn('users', 'submit_mode', "TEXT NOT NULL DEFAULT 'auto'"); // auto (quality.js) | trusted | paused
+    this.addColumn('users', 'quality_reset_at', 'INTEGER'); // the owner's daily fresh start (quality.js)
     // "No decompile" claims: an attempt that says a function needs no source (peer reviewed like code).
     this.addColumn('attempts', 'kind', "TEXT NOT NULL DEFAULT 'code'"); // code | skip
     this.addColumn('attempts', 'skip_category', 'TEXT');
