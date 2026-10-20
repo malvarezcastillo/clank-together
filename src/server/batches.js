@@ -21,8 +21,15 @@ export function returnBatch(store, batchId, reason) {
     );
   }
   store.run(`UPDATE batches SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ?`, reason, batchId);
-  store.run('DELETE FROM batch_checks WHERE batch_id = ?', batchId);
+  dropMergeData(store, batchId);
   store.event('batch_returned', b.user_id, { batch: batchId, reason });
+}
+
+// What only a merge needs (the verification's compile, the merged files): a returned batch never
+// merges, and with a header change it can be hundreds of megabytes.
+export function dropMergeData(store, batchId) {
+  store.run('DELETE FROM batch_checks WHERE batch_id = ?', batchId);
+  store.run(`UPDATE batches SET result_json = json_remove(result_json, '$.check', '$.mergedFiles') WHERE id = ? AND json_valid(result_json)`, batchId);
 }
 
 // Attempts still on their way to main; the others were sent back or rejected.
@@ -33,7 +40,8 @@ export function settleBatch(store, batchId, reason) {
   if (!batchId) return;
   const ph = LIVE_STATES.map(() => '?').join(',');
   if (store.get(`SELECT 1 FROM attempts WHERE batch_id = ? AND state IN (${ph})`, batchId, ...LIVE_STATES)) return;
-  store.run(`UPDATE batches SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ? AND state = 'open'`, reason, batchId);
+  const r = store.run(`UPDATE batches SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ? AND state = 'open'`, reason, batchId);
+  if (r.changes) dropMergeData(store, batchId);
 }
 
 /** Attempts of a batch with their task's symbol. */
