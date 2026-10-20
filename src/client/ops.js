@@ -13,6 +13,8 @@ import { isUnit, loadToolchainLock } from '../shared/project.js';
 import { hex } from '../shared/annotations.js';
 import { run } from '../shared/build.js';
 import { rememberServer } from './update.js';
+import { extractTarGz } from '../shared/tar.js';
+import { functionRegions } from '../server/split.js';
 
 export function api(ws) {
   return new Api(ws.config.server, ws.config.token);
@@ -150,19 +152,34 @@ export async function sync(ws) {
   return { head: ws.head(), fastForwarded: pulled, symbols: snap.symbols.length, ghidra, note: pulled ? null : 'could not fast-forward (local commits or conflicting changes); merge origin/main yourself' };
 }
 
-/** Compiles and compares locally with the same pipeline the server uses. */
-export async function check(ws, files, { wait = true } = {}) {
+/**
+ * Compiles and compares locally with the same pipeline the server uses. `includers`: also every
+ * unit that includes a changed header (what the server compiles before it merges), so a header
+ * change is known to build everywhere before it is submitted.
+ */
+export async function check(ws, files, { wait = true, includers = false } = {}) {
   const project = ws.project;
   const targets = files?.length ? files : ws.changedFiles();
-  const units = targets.filter(isUnit);
-  if (!units.length) throw new Error('nothing to check: pass .cpp files or modify some');
   const runner = ws.config.runners?.[project.toolchain];
-  if (!runner || runner.type === 'remote') return remoteCheck(ws, targets, { wait });
+  if (!runner || runner.type === 'remote') {
+    if (ws.config.remoteChecks) return remoteCheck(ws, targets, { wait });
+    throw new Error('no local compiler set up: run "td toolchain install" once (it downloads the compiler from the server, for approved accounts), then check again. The server only compiles submissions.');
+  }
+  const units = new Set(targets.filter(isUnit));
+  const headers = targets.filter((f) => !isUnit(f) && /\.(h|hpp|inl)$/i.test(f));
+  if (headers.length) {
+    const { includers: map } = await api(ws).post('/api/includers', { headers });
+    for (const list of Object.values(map)) {
+      // Without includers: one unit per header, enough to see it compile and what it expands to.
+      for (const u of includers ? list : list.slice(0, 1)) units.add(u);
+    }
+  }
+  if (!units.size) throw new Error('nothing to check: pass .cpp files or modify some');
   const result = await checkUnits({
     repoDir: ws.dir,
     jobDir: path.join(ws.tdDir, 'build'),
     project,
-    units,
+    units: [...units],
     symbols: ws.symbols,
     nameIndex: ws.nameIndex,
     pe: ws.pe,
@@ -217,9 +234,19 @@ export async function original(ws, query, kind) {
  */
 export async function submit(ws, taskIds = [], { files, notes, agentMeta } = {}) {
   const me = await api(ws).get('/api/me');
-  const ids = taskIds.length ? taskIds.map(Number) : me.leases;
-  if (!ids.length) throw new Error('you hold no tasks; claim one (td claim) or a whole unit (td claim --unit <file>)');
-  const allowed = taskIds.length ? [...new Set((await Promise.all(ids.map((id) => api(ws).get(`/api/tasks/${id}`)))).flatMap((c) => c.allowedPaths))] : me.leasedAllowedPaths;
+  let ids = taskIds.length ? taskIds.map(Number) : me.leases;
+  let allowed = taskIds.length ? [...new Set((await Promise.all(ids.map((id) => api(ws).get(`/api/tasks/${id}`)))).flatMap((c) => c.allowedPaths))] : me.leasedAllowedPaths;
+  // Shared regions: functions another agent holds are submitted as competing candidates, but only
+  // the ones this agent actually rewrote.
+  if (!taskIds.length && me.regionTasks?.length) {
+    const rewritten = rewrittenFunctions(ws, me.regionAllowedPaths ?? []);
+    const extra = me.regionTasks.filter((t) => rewritten.has(t.symbol)).map((t) => t.taskId);
+    if (extra.length) {
+      ids = [...new Set([...ids, ...extra])];
+      allowed = [...new Set([...allowed, ...(me.regionAllowedPaths ?? [])])];
+    }
+  }
+  if (!ids.length) throw new Error('you hold no tasks; claim a region first (td_regions, then td_claim_region)');
   const candidates = files?.length ? files : ws.changedFiles().filter((f) => matchesAny(f, allowed));
   if (!candidates.length) throw new Error(`no changed files match the allowed paths of your tasks (${allowed.join(', ')})`);
   const contents = {};
@@ -231,6 +258,86 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta } = {})
     throw e;
   }
   return api(ws).post('/api/batches', { taskIds: ids, baseCommit: ws.head(), files: contents, notes, agentMeta, envDigest: ws.config.envDigest });
+}
+
+/** Annotated functions whose definition differs from HEAD in the changed files under allowed paths. */
+function rewrittenFunctions(ws, allowed) {
+  const out = new Set();
+  for (const f of ws.changedFiles().filter((x) => matchesAny(x, allowed))) {
+    const abs = path.join(ws.dir, f);
+    if (!fs.existsSync(abs)) continue;
+    const text = fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n');
+    let before = null;
+    try {
+      before = ws.gitRaw('show', 'HEAD:' + f.replace(/\\/g, '/'));
+    } catch {}
+    const now = functionRegions(text);
+    const old = before ? functionRegions(before) : new Map();
+    if (!now) continue;
+    const body = (t, r) => t.split('\n').slice(r.start, r.end).join('\n');
+    for (const [id, r] of now) {
+      const o = old?.get(id);
+      if (!o || body(before, o) !== body(text, r)) out.add(id);
+    }
+  }
+  return out;
+}
+
+// --- regions (a source file or class worked on as a whole)
+
+export function regions(ws, { free = false, prefix = null, limit = 30 } = {}) {
+  return api(ws).get('/api/regions?limit=' + limit + (free ? '&free=1' : '') + (prefix ? '&prefix=' + encodeURIComponent(prefix) : ''));
+}
+
+export function claimRegion(ws, { kind = 'unit', key }) {
+  if (!key) throw new Error('name the region: the source file (kind unit) or the class (kind class)');
+  return api(ws).post('/api/regions/claim', { kind, key });
+}
+
+export function releaseRegion(ws, { kind = 'unit', key }) {
+  return api(ws).post('/api/regions/release', { kind, key });
+}
+
+/**
+ * Downloads the compiler package from the server (approved accounts only), unpacks it into
+ * ~/.clank/toolchains/<hash> (shared by every workspace) and points this workspace at it.
+ */
+export async function toolchainInstall(ws, { log = console.log } = {}) {
+  const meta = await api(ws).get('/api/toolchain');
+  if (!meta.available) throw new Error(meta.note ?? 'the server has no compiler package');
+  if (os.platform() !== 'win32') {
+    try {
+      execFileSync('wine', ['--version'], { stdio: 'ignore' });
+    } catch {
+      throw new Error('the compiler is a Windows program: install wine first (e.g. apt install wine64), then run td toolchain install again');
+    }
+  }
+  const base = path.join(os.homedir(), '.clank', 'toolchains', meta.sha256.slice(0, 16));
+  const done = path.join(base, '.complete');
+  if (!fs.existsSync(done)) {
+    fs.mkdirSync(base, { recursive: true });
+    const archive = path.join(base, 'toolchain.tar.gz');
+    if (!fs.existsSync(archive) || sha256File(archive) !== meta.sha256) {
+      log('downloading the compiler package (' + (meta.size / 1048576).toFixed(0) + ' MB)');
+      await api(ws).download(ws.config.server + '/api/toolchain/download', archive, meta.sha256);
+    }
+    log('unpacking');
+    const n = await extractTarGz(archive, base);
+    fs.rmSync(archive, { force: true });
+    fs.writeFileSync(done, JSON.stringify({ files: n, sha256: meta.sha256, at: new Date().toISOString() }));
+  }
+  const root = path.join(base, meta.root ?? 'toolchain');
+  ws.config.runners = { [ws.project.toolchain]: runnerConfig({ toolchain: root, project: ws.project }) };
+  ws.config.envDigest = await computeEnvDigest(ws, ws.project.toolchain);
+  ws.save();
+  const pinned = loadToolchainLock(ws.dir)[ws.project.toolchain]?.clSha256;
+  return {
+    installed: root,
+    runner: ws.config.runners[ws.project.toolchain].type,
+    clSha256: ws.config.envDigest,
+    matchesServer: !pinned || pinned === ws.config.envDigest,
+    note: 'td_check now compiles on this machine. Check your whole region (and td_check includers: true after header changes) before td_submit.',
+  };
 }
 
 /** Claims every open function of a unit (source file) or an address range, as one batch. */

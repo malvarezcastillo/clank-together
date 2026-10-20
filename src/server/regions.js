@@ -164,6 +164,18 @@ export class Regions {
     });
   }
 
+  /** Unfinished functions of `user`'s regions that someone else holds or has on its way. */
+  sharedTasks(user, own = new Set()) {
+    const out = [];
+    for (const r of this.mine(user)) {
+      for (const m of this.members(r.kind, r.key)) {
+        if (own.has(m.id) || FINISHED.includes(m.state) || m.state === 'merging' || CLAIMABLE.includes(m.state)) continue;
+        out.push({ taskId: m.id, symbol: m.symbol_id, state: m.state });
+      }
+    }
+    return out;
+  }
+
   /** The regions `user` holds. */
   mine(user) {
     return this.store.all('SELECT kind, key, created_at, expires_at FROM region_claims WHERE user_id = ? AND expires_at > ? ORDER BY created_at', user.id, now());

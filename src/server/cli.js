@@ -47,7 +47,43 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   ghidra build | refresh                 the server's Ghidra project (download, pseudocode); refresh also runs after merges
   rebuild                                compile all of main and refresh match status
   tasks generate                         create tasks for functions that have none
+  toolchain pack [--image I]             package the compiler from the compile image for td toolchain
+                                         install (downloads: approved accounts only)
 `;
+
+/**
+ * The compiler package contributors download (td toolchain install): /opt/toolchain of the compile
+ * image, as toolchain.tar.gz with its hash, next to the data. Needs docker (run it as root or as a
+ * member of the docker group).
+ */
+async function packToolchain(dataDir, image) {
+  const { spawn } = await import('node:child_process');
+  const zlib = await import('node:zlib');
+  const { pipeline } = await import('node:stream/promises');
+  const config = JSON.parse(fs.readFileSync(path.join(dataDir, 'server.json'), 'utf8'));
+  const runner = Object.values(config.runners ?? {}).find((r) => r.type === 'docker');
+  image ??= runner?.image;
+  if (!image) throw new Error('no docker image: pass --image');
+  const out = path.join(dataDir, 'toolchain');
+  fs.mkdirSync(out, { recursive: true });
+  const id = execFileSync('docker', ['create', image], { encoding: 'utf8' }).trim();
+  const tmp = path.join(out, 'toolchain.tar.gz.part');
+  try {
+    const cp = spawn('docker', ['cp', `${id}:/opt/toolchain`, '-'], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const done = new Promise((resolve, reject) => cp.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`docker cp exited with ${code}`)))));
+    await pipeline(cp.stdout, zlib.createGzip({ level: 9 }), fs.createWriteStream(tmp));
+    await done;
+  } finally {
+    execFileSync('docker', ['rm', id], { stdio: 'ignore' });
+  }
+  const hash = crypto.createHash('sha256');
+  for await (const c of fs.createReadStream(tmp)) hash.update(c);
+  const sha256 = hash.digest('hex');
+  fs.renameSync(tmp, path.join(out, 'toolchain.tar.gz'));
+  const meta = { sha256, size: fs.statSync(path.join(out, 'toolchain.tar.gz')).size, root: 'toolchain', image, packedAt: new Date().toISOString() };
+  fs.writeFileSync(path.join(out, 'toolchain.json'), JSON.stringify(meta, null, 2) + '\n');
+  console.log(`toolchain package: ${(meta.size / 1048576).toFixed(0)} MB, sha256 ${sha256}`);
+}
 
 function parseCsv(file) {
   return fs
@@ -74,6 +110,7 @@ async function main() {
       version: { type: 'string' },
       from: { type: 'string' },
       hours: { type: 'string', default: '24' },
+      image: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -83,6 +120,7 @@ async function main() {
   if (!cmd || values.help) return console.log(HELP);
 
   if (cmd === 'init') return init(dataDir);
+  if (cmd === 'toolchain' && sub === 'pack') return packToolchain(dataDir, values.image);
   if (cmd === 'start') return startServer(dataDir, { role: sub ?? 'all' });
 
   if (cmd === 'stats') {

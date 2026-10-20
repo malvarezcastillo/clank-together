@@ -19,6 +19,7 @@ Setup
        [--runner docker|native|wine]          configure the compiler
        [--toolchain <toolchain root>]         compiler layout of the project (e.g. re/toolchain)
        [--vc <VC dir>] [--sdk <SDK dir>] [--image <docker image>]
+  td toolchain install                        download the compiler (approved accounts) for local checks
   td sync                                     pull main and refresh the symbol database snapshot
   td ghidra download                          the server's Ghidra project (names applied, refreshed after merges)
   td ghidra install | build | sync            pinned Ghidra: install it, analyze locally, re-apply symbols
@@ -26,13 +27,18 @@ Setup
   td connect [--workspace <dir>]              connect your AI (registers with Claude Code, prints MCP settings)
   td mcp [--workspace <dir>]                  run the MCP server for your agent (stdio)
 
-Work
+Work (a region: a source file or class, done as a whole)
+  td regions [--free] [--prefix P]            regions with open functions: free ones first
+  td region claim <file> | --class <Name>     claim a region (several agents may share one)
+  td region release <file> | --class <Name>   give a region back
+  td check [files...] [--includers]           compile + compare on this machine (--includers: every
+                                              unit that includes a changed header, as the merge does)
+  td submit [--notes T]                       submit the region's work as one batch
   td tasks [--state S] [--limit N]            list claimable tasks
   td claim [taskId]                           claim a task, prints its context
   td claim --unit <file> [--limit N]          claim every open function of a source file (a batch)
   td claim --range <start>-<end> [--limit N]  claim every open function of an address range
   td task <taskId>                            show a task's context
-  td check [files...]                         compile + compare locally (default: changed files)
   td submit [taskId...] [--notes T]           submit everything you hold (or these tasks) as one batch
   td batch <batchId>                          state of a submitted batch, per function
   td result <attemptId>                       show a verification result
@@ -110,6 +116,10 @@ async function main() {
       files: { type: 'string' },
       reason: { type: 'string' },
       json: { type: 'boolean', default: false },
+      free: { type: 'boolean', default: false },
+      includers: { type: 'boolean', default: false },
+      prefix: { type: 'string' },
+      class: { type: 'string' },
       force: { type: 'boolean', default: false },
       workspace: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
@@ -130,7 +140,7 @@ async function main() {
     const ws = await ops.setup({ server, dir, token: values.token, exe: values.exe, toolchain: values.toolchain, runner: values.runner, vc: values.vc, sdk: values.sdk, image: values.image });
     const remote = ws.config.runners?.[ws.project.toolchain]?.type === 'remote';
     console.log(`\nworkspace ready at ${ws.dir}
-  compiling: ${remote ? "on the server (no local compiler needed); add one later with td setup ... --toolchain <dir>" : 'locally'}
+  compiling: ${remote ? 'not set up yet: run td toolchain install (downloads the compiler; checks compile on your machine)' : 'locally'}
   original code: ${ws.config.ghidraHome ? 'local Ghidra' : "from the server; a local Ghidra is optional (td ghidra install && td ghidra build)"}
 connect your AI with:  td connect --workspace "${ws.dir}"`);
     return;
@@ -165,8 +175,26 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       return print(await client.get(`/api/batches/${args[0]}`));
     case 'release':
       return print(await client.post(`/api/tasks/${args[0]}/release`));
+    case 'toolchain':
+      if (args[0] === 'install') return print(await ops.toolchainInstall(ws));
+      throw new Error('usage: td toolchain install');
+    case 'regions': {
+      const r = await ops.regions(ws, { free: values.free, prefix: values.prefix, limit: Number(values.limit) || 30 });
+      if (values.json) return print(r);
+      for (const g of r.regions) {
+        console.log(`${g.free ? 'free   ' : g.blocked ? 'blocked' : 'shared '} ${String(g.open).padStart(4)} open ${String(g.done).padStart(4)} done  ${g.key}${g.claimedBy.length ? `  (claimed by ${g.claimedBy.join(', ')})` : ''}`);
+      }
+      return console.log(`${r.regions.length} of ${r.total} regions`);
+    }
+    case 'region': {
+      const [sub, key] = args;
+      const target = values.class ? { kind: 'class', key: values.class } : { kind: 'unit', key: key ? ops.relPath(ws, key) : null };
+      if (sub === 'claim') return print(await ops.claimRegion(ws, target));
+      if (sub === 'release') return print(await ops.releaseRegion(ws, target));
+      throw new Error('usage: td region claim|release <file> | --class <Name>');
+    }
     case 'check': {
-      const r = await ops.check(ws, args.map((f) => ops.relPath(ws, f)));
+      const r = await ops.check(ws, args.map((f) => ops.relPath(ws, f)), { includers: values.includers });
       return values.json ? print(r) : printCheck(r);
     }
     case 'submit': {

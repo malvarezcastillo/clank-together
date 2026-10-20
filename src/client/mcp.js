@@ -13,6 +13,32 @@ const int = (description) => ({ type: 'integer', description });
 
 const TOOLS = [
   {
+    name: 'td_regions',
+    description:
+      'Regions to work on: source files with functions still open, with counts (open, done, in flight), who claimed them, and whether something blocks them (functions held by others or on their way to main). Unclaimed, unblocked regions come first. Look at the candidates in your checkout, then claim one with td_claim_region.',
+    inputSchema: { type: 'object', properties: { free: { type: 'boolean', description: 'only unclaimed, unblocked regions' }, prefix: str('only files under this path'), limit: int('max results, default 30') } },
+    run: async (ws, a) => ops.regions(ws, { free: a.free, prefix: a.prefix, limit: a.limit ?? 30 }),
+  },
+  {
+    name: 'td_claim_region',
+    description:
+      'Register a region for yourself before working on it: a source file (kind unit, key = repo path) or a class (kind class, key = class name). Leases every open function of it at once. Several agents may claim the same region (each may then submit any function of it; the first accepted candidate of a function merges), but prefer a region nobody claimed.',
+    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['unit', 'class'] }, key: str('repo path of the .cpp file, or the class name') }, required: ['key'] },
+    run: async (ws, a) => ops.claimRegion(ws, { kind: a.kind ?? 'unit', key: a.key }),
+  },
+  {
+    name: 'td_release_region',
+    description: 'Give a region back (its functions you hold become open again).',
+    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['unit', 'class'] }, key: str('repo path or class name') }, required: ['key'] },
+    run: async (ws, a) => ops.releaseRegion(ws, { kind: a.kind ?? 'unit', key: a.key }),
+  },
+  {
+    name: 'td_toolchain_install',
+    description: 'Download the compiler from the server and set it up for local checks (once per machine; needs wine on Linux). td_check compiles on this machine only.',
+    inputSchema: { type: 'object', properties: {} },
+    run: async (ws) => ops.toolchainInstall(ws, { log: () => {} }),
+  },
+  {
     name: 'td_list_tasks',
     description: 'List claimable decompilation tasks (easiest first).',
     inputSchema: { type: 'object', properties: { state: str('comma-separated states, default open,needs_cleanup,hard'), unit: str('only tasks in this translation unit'), limit: int('max results, default 20') } },
@@ -76,15 +102,15 @@ const TOOLS = [
   {
     name: 'td_check',
     description:
-      'Compile translation units and compare every annotated function against the original bytes (on the server unless you have a local compiler). Returns status, score and byte-level diffs. With wait: false it returns a checkId at once: keep working (other functions, peer reviews) and fetch the result with td_check_result instead of waiting for the compile.',
+      'Compile on this machine and compare every annotated function against the original bytes: status, score and byte-level diffs. Default: the changed files (and one unit per changed header). includers: true compiles every unit that includes a changed header, as the merge will; do that before submitting a header change. Needs td_toolchain_install once.',
     inputSchema: {
       type: 'object',
       properties: {
-        files: { type: 'array', items: { type: 'string' }, description: 'repo-relative .cpp files; default: all changed files' },
-        wait: { type: 'boolean', description: 'false: queue the check and return its id right away (recommended)' },
+        files: { type: 'array', items: { type: 'string' }, description: 'repo-relative files; default: all changed files' },
+        includers: { type: 'boolean', description: 'also compile every unit including a changed header' },
       },
     },
-    run: async (ws, a) => ops.check(ws, a.files, { wait: a.wait !== false }),
+    run: async (ws, a) => ops.check(ws, a.files, { includers: !!a.includers }),
   },
   {
     name: 'td_check_result',
@@ -94,7 +120,7 @@ const TOOLS = [
   },
   {
     name: 'td_submit',
-    description: 'Submit your work for server verification, as one batch: every task you hold (default) or the given taskIds, with all changed files they allow. Byte-identical functions are merged automatically; others go to peer review. Ends the leases. Do not wait for the result: claim the next work right away and check results later.',
+    description: 'Submit your region as one batch: every task you hold (default) plus the functions of your shared regions that you rewrote, with the changed files they allow. The server compiles it once: byte-identical functions merge, the others go to peer review (five "same" merge them). Do not wait for the result: claim the next region right away and check results later with td_get_batch.',
     inputSchema: {
       type: 'object',
       properties: { taskIds: { type: 'array', items: { type: 'integer' }, description: 'tasks to submit; default: all you hold' }, taskId: int('a single task (same as taskIds: [id])'), files: { type: 'array', items: { type: 'string' } }, notes: str('short notes for reviewers and later agents') },
@@ -266,13 +292,13 @@ const INSTRUCTIONS = [
   'Clank Together: a collaborative matching decompilation. Read AGENTS.md in the workspace first.',
   'Work continuously until the user tells you to stop; do not wait for confirmation between tasks.',
   'Port first, polish later: write faithful C++ (same logic, calls, conditions, data accesses) and submit it;',
-  'functions that are not byte-identical are confirmed by three other agents in peer review, which is the normal path.',
-  'Loop: td_claim_batch with no arguments (the server hands out a coherent group: a source file, a class, or neighbouring functions) ->',
-  'if the group is in no source file yet, organize it first with td_place (which file, which name) ->',
-  'read the originals (td_disassemble, td_decompile) -> write the C++ with the given annotations ->',
-  'td_check to fix compile errors and clear structural differences (two or three checks per function, do not chase exact bytes) -> td_submit (everything you hold) ->',
-  'immediately claim the next work. Do not wait for verification; look at results later with td_get_batch / td_get_result',
-  'and fix what came back (needs_cleanup).',
+  'functions that are not byte-identical are confirmed by five other agents in peer review, which is the normal path.',
+  'Once per machine: td_toolchain_install (the compiler; checks compile on your machine, the server only compiles submissions).',
+  'Loop: td_regions (free ones first) -> look at the candidates in your checkout and pick a whole source file or class nobody claimed ->',
+  'td_claim_region -> read the originals (td_disassemble, td_decompile) -> port every function of the region with the given annotations ->',
+  'td_check until the region compiles and the structure matches (do not chase exact bytes; includers: true after a header change) -> td_submit (the whole region at once) ->',
+  'immediately claim the next region. Do not wait for verification; look at results later with td_get_batch',
+  'and fix what came back (needs_cleanup). If your code breaks a neighbour, claim and fix it too.',
   'Between batches, take a peer review when one is waiting: td_list_peer_reviews -> td_claim_peer_review ->',
   'read the original and the submission only (no compiling or diffing) -> td_submit_peer_review for every function.',
   'Call td_heartbeat every hour or so while working on a big batch.',

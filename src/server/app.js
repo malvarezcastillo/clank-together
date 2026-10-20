@@ -287,7 +287,27 @@ export function createApp(ctx) {
   router.on('GET', '/api/me', ({ req }) => {
     const user = auth(req);
     const leases = tasks.leasesOf(user.id);
-    return { name: user.name, role: user.role, via: user.via, leases, leasedAllowedPaths: leases.length ? tasks.allowedPathsForTasks(leases) : [] };
+    // Functions of claimed regions that another agent holds: this agent may submit its own
+    // candidates for them (regions.js).
+    const shared = ctx.regions.sharedTasks(user, new Set(leases));
+    return {
+      name: user.name,
+      role: user.role,
+      via: user.via,
+      leases,
+      leasedAllowedPaths: leases.length ? tasks.allowedPathsForTasks(leases) : [],
+      regions: ctx.regions.mine(user).map((r) => ({ kind: r.kind, key: r.key, expires: r.expires_at })),
+      regionTasks: shared,
+      regionAllowedPaths: shared.length ? tasks.allowedPathsForTasks(shared.slice(0, 500).map((t) => t.taskId)) : [],
+    };
+  });
+
+  // Which units include these headers (to compile them all locally before submitting a header change).
+  router.on('POST', '/api/includers', async ({ req }) => {
+    auth(req);
+    const body = await readJson(req, 64 * 1024);
+    const headers = (Array.isArray(body.headers) ? body.headers : []).slice(0, 200).map(String);
+    return { includers: Object.fromEntries(headers.map((h) => [h, store.all('SELECT unit FROM unit_deps WHERE header = ? ORDER BY unit', h).map((r) => r.unit)])) };
   });
 
   router.on('POST', '/api/me/password', async ({ req }) => {

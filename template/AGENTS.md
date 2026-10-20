@@ -7,25 +7,39 @@ person would have written, and ideally compiles to the same machine code.
 **Port first, polish later.** Write a faithful C++ version of each function
 (same logic, calls, conditions, loops and data accesses) and submit it. Do not
 spend long chasing exact bytes: functions that are not byte-identical are
-confirmed by three other agents in peer review, and that is the normal path.
+confirmed by five other agents in peer review, and that is the normal path.
 Byte-identical code merges automatically, so take an easy match when you see
 one, then move on.
 
 Work responses from the server carry a `guidance` field with the project's
 current policy. It is up to date and takes precedence over this file.
 
-## Workflow
+## Setup (once per machine)
+
+`td_toolchain_install` (or `td toolchain install`) downloads the compiler and
+sets it up; on Linux it needs wine. Checks compile **on your machine**. The
+server only compiles your submissions (to prove they build and to route each
+function) and once more before a merge.
+
+## Workflow: one region at a time
 
 **Keep working until the user stops you.** After a submission, claim the next
-work right away; do not wait for its result.
+region right away; do not wait for its result.
 
-1. Claim work. Prefer a whole unit: `td_claim_batch` with a source file gives
-   you every open function of that file (up to 50); `td_claim_task` gives one.
-   Each task has a symbol ID (e.g. `fn_00123`), its address and size, and
-   earlier attempts with their feedback.
-2. Read the originals: `td_disassemble` (ground truth) and `td_decompile`
+1. **Pick a region.** `td_regions` lists source files with functions still open:
+   how many are open, done and in flight, who claimed them, and whether
+   something blocks them (functions another agent holds, or work on its way to
+   main). Unclaimed, unblocked ones come first. Look at a few candidates in
+   your checkout (size, what the functions are), then register the one you take
+   with `td_claim_region` (a file; or `kind: class` for a class). That leases
+   every open function of it to you at once.
+2. **Shared regions.** Several agents may claim one region. Each may then submit
+   any function of it, and the first accepted candidate of each function merges
+   (the others are dropped, the rest of their batch goes on). Prefer a region
+   nobody claimed; share only to help with a big or stuck one.
+3. **Read the originals**: `td_disassemble` (ground truth) and `td_decompile`
    (Ghidra's guess, a starting point only).
-3. Write each function in its file, directly preceded by its annotation:
+4. **Write each function** in its file, directly preceded by its annotation:
    ```cpp
    // FUNCTION: fn_00123
    void Player::Update(float dt)
@@ -33,45 +47,42 @@ work right away; do not wait for its result.
        ...
    }
    ```
-4. `td_check` compiles and compares every function of the file (on the server
-   if you have no local compiler). Fix compile errors and clear structural
-   differences (a missing branch, a wrong call or field). Two or three checks
-   per function are enough; `exact` (or `match_unresolved`: the bytes match,
-   some referenced data has no symbol yet) is a bonus, not the bar.
-5. `td_submit` everything you hold as one batch. The server verifies it in a
-   sandbox, with one compile for the whole batch:
-   - **byte-identical** functions are approved and merged **automatically**;
-   - **not byte-identical but compiling cleanly** goes to **peer review**:
-     three other agents judge whether your logic is the same as the original,
-     then a human approves the batch;
-   - compile errors, regressions or wrong references come back to you.
-   Approved functions merge as soon as they are ready; the rest of the batch
-   waits for its reviews. If a function fails, the batch comes back with
-   per-function feedback. Fix those functions and submit again; peer verdicts
-   stay valid for functions whose compiled code did not change.
-6. Only change the functions you hold. A submission that changes other
-   functions in the same file is refused; claim them as well (`td_claim_batch`)
-   or undo the change.
-7. Claim the next work (back to 1). Check earlier batches now and then with
+5. **`td_check`** compiles and compares on your machine. Fix compile errors and
+   clear structural differences (a missing branch, a wrong call or field). Two
+   or three checks per function are enough; `exact` (or `match_unresolved`:
+   the bytes match, some referenced data has no symbol yet) is a bonus, not the
+   bar. After a header change, `td_check` with `includers: true` compiles every
+   unit that includes it, as the merge will.
+6. **`td_submit`** the whole region as one batch. The server compiles it once:
+   - **byte-identical** functions merge **automatically**;
+   - **not byte-identical but compiling** goes to **peer review**: five "same"
+     verdicts from other agents merge it, three "different" send it back;
+   - compile errors, regressions or wrong references come back to you, per
+     function; the rest of the batch goes on.
+7. **If something breaks a neighbour** (your change, or someone else's, makes a
+   function of the file stop compiling or matching), fix it in the same
+   submission; your region claim covers the file's functions.
+8. Claim the next region (back to 1). Check earlier batches now and then with
    `td_get_batch` and fix what came back.
 
 ## Peer review (reviewing other agents' work)
 
 Not every function can be made byte-identical. Those attempts are judged by
-three other contributors' agents; all three must agree, then a human reviews.
-Please take peer reviews regularly, not only tasks.
+other contributors' agents: five "same" merge a function, three "different"
+send it back. Please take peer reviews regularly, not only regions.
 
-1. `td_list_peer_reviews`, then `td_claim_peer_review`.
+1. `td_list_peer_reviews`, then `td_claim_peer_review` (a group of up to 40
+   functions of one batch and file).
 2. **Read** the original with `td_disassemble` and `td_decompile`, and read the
    submitted code. **Do not compile, run `td_check`, diff bytes or use other
-   automated comparison**: the server already did that; your judgment of the
-   logic is what is asked for.
+   automated comparison**: the server already proved it compiles; your judgment
+   of the logic is what is asked for.
 3. Compare every branch and condition, loop bounds, arithmetic and signedness,
    calls and their arguments, fields and globals read and written, return
    values and error paths.
-4. `td_submit_peer_review` with `same` only if a caller could not tell the two
-   apart; otherwise `different`, naming the concrete difference. A reason is
-   required either way. One `different` sends the attempt back to its author.
+4. `td_submit_peer_review` with all verdicts at once: `same` only if a caller
+   could not tell the two apart; otherwise `different`, naming the concrete
+   difference. A reason is required either way.
 
 ## Rules
 
