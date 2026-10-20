@@ -1294,9 +1294,12 @@ test('authors whose work peers keep sending back are limited, then paused; trust
   ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE user_id = ?`, author.id);
 });
 
-test('a limited author may reset once a day; the same bad work limits them again', async () => {
+test('each agent (token) is judged on its own; the owner resets one agent once a day', async () => {
   const token = await activeUser('rsauthor');
   const author = ctx.accounts.byName('rsauthor');
+  const tid = ctx.accounts.userByApiToken(token).tokenId;
+  const other = ctx.accounts.createApiToken(author.id, 'second agent').token;
+  const otherTid = ctx.accounts.userByApiToken(other).tokenId;
   const reviewers = [];
   for (let i = 1; i <= 3; i++) {
     await activeUser(`rsreviewer${i}`);
@@ -1305,7 +1308,7 @@ test('a limited author may reset once a day; the same bad work limits them again
   const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
   const sentBack = (n, at = now()) => {
     for (let i = 0; i < n; i++) {
-      const a = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'needs_cleanup', ?)`, task, author.id, ctx.repo.head(), at).lastInsertRowid);
+      const a = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, token_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, ?, '{}', 'needs_cleanup', ?)`, task, author.id, tid, ctx.repo.head(), at).lastInsertRowid);
       for (const r of reviewers) ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, 'different', 'the original checks the flag first', ?)`, a, r.id, at);
     }
   };
@@ -1316,17 +1319,20 @@ test('a limited author may reset once a day; the same bad work limits them again
   assert.ok(stats.canReset);
   assert.equal(stats.sentBack.length, 5);
   assert.equal(stats.sentBack[0].reasons[0].untrusted, true, 'reviewer text is marked as data');
-  assert.equal((await call('POST', '/api/me/quality/reset', {}, token)).status, 403, 'the person resets, not the agent token');
+  assert.equal((await call('GET', '/api/me/quality', null, other)).body.level, 'ok', 'the account\'s other agent is not held up');
+  assert.equal((await call('POST', '/api/me/quality/reset', { tokenId: tid }, token)).status, 403, 'the person resets, not the agent token');
 
   const cookie = await login('rsauthor');
-  const r = await request('POST', '/api/me/quality/reset', {}, { cookie });
+  const overview = (await request('GET', '/api/me/quality', null, { cookie })).body;
+  assert.deepEqual(overview.tokens.map((t) => [t.tokenId, t.level]).sort(), [[tid, 'limited'], [otherTid, 'ok']].sort());
+  const r = await request('POST', '/api/me/quality/reset', { tokenId: tid }, { cookie });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.level, 'ok', 'a fresh start');
-  assert.equal((await request('POST', '/api/me/quality/reset', {}, { cookie })).status, 409, 'nothing to reset now');
+  assert.equal((await request('POST', '/api/me/quality/reset', { tokenId: tid }, { cookie })).status, 409, 'nothing to reset now');
   sentBack(25);
   ctx.quality.forget(author.id);
-  assert.equal(ctx.quality.of(author.id).level, 'limited', 'no better: limited again');
-  const again = await request('POST', '/api/me/quality/reset', {}, { cookie });
-  assert.equal(again.status, 429, 'one reset per day');
+  assert.equal(ctx.quality.of(author.id, tid).level, 'limited', 'no better: limited again');
+  assert.equal((await request('POST', '/api/me/quality/reset', { tokenId: tid }, { cookie })).status, 429, 'one reset per agent per day');
+  assert.equal((await request('POST', '/api/me/quality/reset', { tokenId: 999999 }, { cookie })).status, 404);
   ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE user_id = ?`, author.id);
 });

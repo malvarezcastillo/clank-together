@@ -108,10 +108,11 @@ export class Regions {
     if (!['unit', 'class'].includes(kind)) throw new HttpError(400, "kind must be 'unit' or 'class'");
     key = String(key ?? '').trim();
     if (!key || key.length > 300) throw new HttpError(400, 'key must name the source file (kind unit) or the class (kind class)');
-    const q = this.quality?.of(user.id);
+    const q = this.quality?.of(user.id, user.tokenId ?? null);
     if (q?.level === 'paused') throw new HttpError(429, this.quality.constructor.advice(q), { retryAfterSeconds: 3600 });
     if (q?.level === 'limited') {
-      const other = this.mine(user).filter((x) => !(x.kind === kind && x.key === key));
+      const token = user.tokenId ?? null;
+      const other = this.mine(user).filter((x) => !(x.kind === kind && x.key === key) && (x.token_id ?? null) === token);
       if (other.length) throw new HttpError(409, `${this.quality.constructor.advice(q)} Finish or release ${other[0].key} first.`);
     }
     return this.store.tx(() => {
@@ -121,9 +122,9 @@ export class Regions {
       if (!left.length) throw new HttpError(409, `${key} is finished: every function is on main`);
       const expires = now() + this.leaseMs;
       this.store.run(
-        `INSERT INTO region_claims (user_id, kind, key, created_at, expires_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(user_id, kind, key) DO UPDATE SET expires_at = excluded.expires_at`,
-        user.id, kind, key, now(), expires,
+        `INSERT INTO region_claims (user_id, token_id, kind, key, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, kind, key) DO UPDATE SET expires_at = excluded.expires_at, token_id = excluded.token_id`,
+        user.id, user.tokenId ?? null, kind, key, now(), expires,
       );
       const held = this.tasks.leasesOf(user.id).length;
       let room = this.tasks.maxLeased - held;
@@ -187,7 +188,7 @@ export class Regions {
 
   /** The regions `user` holds. */
   mine(user) {
-    return this.store.all('SELECT kind, key, created_at, expires_at FROM region_claims WHERE user_id = ? AND expires_at > ? ORDER BY created_at', user.id, now());
+    return this.store.all('SELECT kind, key, token_id, created_at, expires_at FROM region_claims WHERE user_id = ? AND expires_at > ? ORDER BY created_at', user.id, now());
   }
 
   heartbeat(user) {

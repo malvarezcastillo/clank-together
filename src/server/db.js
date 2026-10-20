@@ -302,6 +302,12 @@ export class Store {
     this.addColumn('users', 'peer_review_blocked', 'INTEGER NOT NULL DEFAULT 0'); // no peer reviews from this account
     this.addColumn('users', 'submit_mode', "TEXT NOT NULL DEFAULT 'auto'"); // auto (quality.js) | trusted | paused
     this.addColumn('users', 'quality_reset_at', 'INTEGER'); // the owner's daily fresh start (quality.js)
+    // Which agent (API token) submitted or claimed what: quality is judged per agent.
+    this.addColumn('attempts', 'token_id', 'INTEGER');
+    this.addColumn('batches', 'token_id', 'INTEGER');
+    this.addColumn('region_claims', 'token_id', 'INTEGER');
+    this.addColumn('api_tokens', 'quality_reset_at', 'INTEGER');
+    this.db.exec('CREATE INDEX IF NOT EXISTS attempts_user_time ON attempts(user_id, created_at)');
     // "No decompile" claims: an attempt that says a function needs no source (peer reviewed like code).
     this.addColumn('attempts', 'kind', "TEXT NOT NULL DEFAULT 'code'"); // code | skip
     this.addColumn('attempts', 'skip_category', 'TEXT');

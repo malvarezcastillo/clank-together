@@ -747,3 +747,8 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .nav-dot { display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: 2px; box-shadow: 0 0 6px var(--warn); }
 .quality-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .my-quality .fold p { margin: 4px 0; }
+
+.agent-card { margin: 10px 0; padding: 10px 14px; border: 1px solid var(--line); border-left: 4px solid var(--ok); border-radius: 3px; background: var(--well); }
+.agent-card.limited { border-left-color: var(--warn); }
+.agent-card.paused { border-left-color: var(--danger); }
+.agent-title { font: 700 15px var(--font-display); text-transform: uppercase; letter-spacing: 0.06em; }

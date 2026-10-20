@@ -188,7 +188,7 @@ async function refresh() {
     $('account-link').title = `${me.name} · ${me.role}`;
     // A dot on Account while the agents are limited or paused: the stats there say why.
     $('account-dot').hidden = !me.quality || me.quality.level === 'ok';
-    $('account-dot').title = me.quality?.level === 'ok' ? '' : `your agents are ${me.quality?.level}`;
+    $('account-dot').title = me.quality?.level === 'ok' ? '' : `${me.quality?.limitedAgents ?? 1} of your agents ${me.quality?.limitedAgents === 1 ? 'is' : 'are'} limited or paused`;
     api('/api/credits/me').then((w) => setCredits(w.balance, false)).catch(() => {});
   }
   connectLive(true);
@@ -684,32 +684,46 @@ async function loadAccount() {
   renderQuality(await api('/api/me/quality').catch(() => null));
 }
 
-// The account's own quality numbers: level, what broke, recent examples, the daily reset.
+// How each agent (API token) of the account is doing: level, what broke, recent examples, the
+// daily reset per agent. Work from before agents were told apart is shown while it still counts.
 function renderQuality(q) {
   const box = $('my-quality');
   box.replaceChildren();
   if (!q) return;
+  if (!q.tokens.length) box.append(el('p', 'No agent tokens yet: create one below, and its stats show up here.', 'muted'));
+  for (const t of q.tokens) box.append(agentCard(t));
+  if (q.legacy) {
+    const l = el('div', null, 'agent-card');
+    l.append(el('div', 'Before agents were told apart (last 24 hours)', 'agent-title'), el('p', `${fmt(q.legacy.submitted)} functions submitted; ${q.legacy.peerDecided ? `${Math.round(q.legacy.peerRate * 100)}% of ${q.legacy.peerDecided} sent back by peers` : 'none reviewed'}; ${Math.round(q.legacy.brokenRate * 100)}% broken or refused.${q.legacy.level !== 'ok' ? ' This still counts for your agents until it ages out, or until you reset them.' : ''}`, 'hint'));
+    box.append(l);
+  }
+  box.append(el('p', 'Each agent is judged on its own. Half of its functions sent back by peers (20+ reviewed) or 60% broken (50+ submitted) limits it; 70% sent back (30+) or 85% broken (80+) pauses it. Both lift by themselves as its last 24 hours get better.', 'hint'));
+}
+
+function agentCard(q) {
   const pct = (x) => `${Math.round(x * 100)}%`;
+  const card = el('div', null, `agent-card ${q.level}`);
   const head = el('div', null, 'quality-head');
-  head.append(el('span', q.level === 'ok' ? 'all good' : q.level, `status ${q.level === 'ok' ? 'active' : q.level === 'limited' ? 'pending' : 'revoked'}`));
-  if (q.resetAt && q.resetAt > Date.now() - 24 * 3600_000) head.append(el('span', ` counting since your reset ${ago(q.resetAt)}`, 'hint'));
-  box.append(head);
-  if (q.reasons.length) box.append(el('p', q.reasons.join('; '), 'warn'));
-  const trend = (now_, before, better) => {
+  head.append(el('span', q.label ?? 'agent', 'agent-title'), el('span', q.level === 'ok' ? 'all good' : q.level, `status ${q.level === 'ok' ? 'active' : q.level === 'limited' ? 'pending' : 'revoked'}`));
+  if (q.resetAt && q.resetAt > Date.now() - 24 * 3600_000) head.append(el('span', `counting since your reset ${ago(q.resetAt)}`, 'hint'));
+  card.append(head);
+  if (q.reasons.length) card.append(el('p', q.reasons.join('; '), 'warn'));
+  const prev = q.previous ?? {};
+  const trend = (now_, before) => {
     if (before === null) return '';
     const d = now_ - before;
     if (Math.abs(d) < 0.02) return ' (same as the day before)';
-    return (better ? d < 0 : d > 0) ? ` (${d < 0 ? 'down' : 'up'} from ${pct(before)}: better)` : ` (${d < 0 ? 'down' : 'up'} from ${pct(before)}: worse)`;
+    return ` (${d < 0 ? 'down' : 'up'} from ${pct(before)}: ${d < 0 ? 'better' : 'worse'})`;
   };
-  const prev = q.previous ?? {};
-  const rows = [
-    ['Functions submitted', fmt(q.submitted)],
-    ['Merged', `${fmt(q.merged)} (${fmt(q.identical)} byte-identical)`],
-    ['Sent back by peers', q.peerDecided ? `${pct(q.peerRate)} of ${fmt(q.peerDecided)} reviewed${trend(q.peerRate, prev.peerDecided ? prev.peerRate : null, true)}` : 'none reviewed yet'],
-    ['Broken or refused', q.submitted ? `${pct(q.brokenRate)} of ${fmt(q.submitted)}${trend(q.brokenRate, prev.submitted ? prev.brokenRate : null, true)}` : '-'],
-  ];
-  box.append(table(['Last 24 hours', ''], rows));
-  if (q.kinds.length) box.append(el('p', `What broke: ${q.kinds.map((k) => `${fmt(k.functions)} ${k.label}`).join(' · ')}`, 'muted'));
+  card.append(
+    table(['Last 24 hours', ''], [
+      ['Functions submitted', fmt(q.submitted)],
+      ['Merged', `${fmt(q.merged)} (${fmt(q.identical)} byte-identical)`],
+      ['Sent back by peers', q.peerDecided ? `${pct(q.peerRate)} of ${fmt(q.peerDecided)} reviewed${trend(q.peerRate, prev.peerDecided ? prev.peerRate : null)}` : 'none reviewed yet'],
+      ['Broken or refused', q.submitted ? `${pct(q.brokenRate)} of ${fmt(q.submitted)}${trend(q.brokenRate, prev.submitted ? prev.brokenRate : null)}` : '-'],
+    ]),
+  );
+  if (q.kinds.length) card.append(el('p', `What broke: ${q.kinds.map((k) => `${fmt(k.functions)} ${k.label}`).join(' · ')}`, 'muted'));
   if (q.sentBack.length) {
     const d = el('details', null, 'fold');
     d.append(el('summary', `Latest functions peers sent back (${q.sentBack.length})`));
@@ -717,21 +731,22 @@ function renderQuality(q) {
       d.append(el('p', `${s.symbol} ${s.name ?? ''}`, 'mono'));
       for (const r of s.reasons) d.append(el('p', `· ${r?.text ?? ''}`, 'hint'));
     }
-    box.append(d);
+    card.append(d);
   }
   if (q.broken.length) {
     const d = el('details', null, 'fold');
     d.append(el('summary', `Latest broken submissions (${q.broken.length})`), ...q.broken.map((b) => el('p', `${b.symbol}: ${b.summary}`, 'hint')));
-    box.append(d);
+    card.append(d);
   }
-  box.append(el('p', `Limits: ${q.thresholds.limited} limits the account; ${q.thresholds.paused} pauses it. Both lift by themselves as the last 24 hours get better.`, 'hint'));
   if (q.level !== 'ok') {
     const row = el('div', null, 'actions');
-    const reset = button('Reset (start counting from now)', async () => {
-      if (!confirm('Start counting from now? Only work after this counts. If your agent keeps doing the same, it is limited again once the new work fills the same thresholds. You get one reset per 24 hours.')) return;
+    const reset = button('Reset this agent', async () => {
+      if (!confirm(`Start counting from now for "${q.label ?? 'this agent'}"? Only its work after this counts. If it keeps doing the same, it is limited again once its new work fills the same thresholds. One reset per agent per 24 hours.`)) return;
       try {
-        renderQuality(await post('/api/me/quality/reset'));
-        toast('Reset: counting from now. Fix what your agent does wrong before letting it go on.', { icon: '🔄' });
+        await post('/api/me/quality/reset', { tokenId: q.tokenId });
+        toast('Reset: counting from now. Fix what the agent does wrong before letting it go on.', { icon: '🔄' });
+        renderQuality(await api('/api/me/quality'));
+        refresh();
       } catch (e) {
         toast(e.message);
       }
@@ -739,8 +754,9 @@ function renderQuality(q) {
     reset.disabled = !q.canReset;
     row.append(reset);
     if (!q.canReset) row.append(el('span', q.mode === 'paused' ? ' A maintainer paused this account; ask them.' : ` Next reset possible ${q.nextResetAt ? new Date(q.nextResetAt).toLocaleString() : 'later'}.`, 'hint'));
-    box.append(row);
+    card.append(row);
   }
+  return card;
 }
 
 function renderTokens(tokens) {
@@ -826,7 +842,7 @@ function renderAuthors(authors) {
   $('authors').replaceChildren(
     authors.length
       ? table(
-          ['Author', 'Level', 'Sent back by peers', 'Broken or refused', 'Why', 'Submissions'],
+          ['Author', 'Agent', 'Level', 'Sent back by peers', 'Broken or refused', 'Why', 'Submissions (account)'],
           authors.map((a) => {
             const modes = el('div', null, 'row-actions');
             for (const [mode, label] of [['auto', 'Auto'], ['trusted', 'Trust'], ['paused', 'Pause']]) {
@@ -839,6 +855,7 @@ function renderAuthors(authors) {
             }
             return [
               a.name,
+              a.token ?? el('span', 'before agents were told apart', 'hint'),
               [chip(a.level), ...(a.mode !== 'auto' ? [el('div', `set: ${a.mode}`, 'hint')] : [])],
               a.peerDecided ? `${pct(a.peerRate)} of ${a.peerDecided}` : '-',
               a.submitted ? `${pct(a.brokenRate)} of ${a.submitted}` : '-',

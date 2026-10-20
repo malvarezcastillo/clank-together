@@ -308,10 +308,13 @@ export class Tasks {
     return this.store.tx(() => {
       const own = new Set(ids.filter((id) => this.requireSubmittable(user, id).own));
       // Authors whose recent work keeps breaking or being sent back slow down (quality.js).
-      const q = this.quality?.of(user.id);
+      const q = this.quality?.of(user.id, user.tokenId ?? null);
+      const token = user.tokenId ?? null;
+      const mine = token == null ? 'token_id IS NULL' : 'token_id = ?';
+      const mineArgs = token == null ? [] : [token];
       if (q?.level === 'paused') throw new HttpError(429, this.quality.constructor.advice(q), { retryAfterSeconds: 3600, quality: q.level });
       if (q?.level === 'limited') {
-        const lastHour = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND created_at > ? AND state != 'skip'`, user.id, now() - 3600_000).n;
+        const lastHour = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND ${mine} AND created_at > ? AND state != 'skip'`, user.id, ...mineArgs, now() - 3600_000).n;
         if (lastHour >= 6) throw new HttpError(429, this.quality.constructor.advice(q), { retryAfterSeconds: 600, quality: q.level });
       }
       // An agent stuck in a loop (every submission refused before it compiled: not synced, conflicts,
@@ -327,22 +330,25 @@ export class Tasks {
         throw new HttpError(429, `your last ${recent.length} submissions were all refused before compiling (latest: ${refused[0].why}). Run td_sync, merge, fix that and check locally (td_check) before submitting again`, { retryAfterSeconds: 600 });
       }
       // Keep the verification queue moving: a few batches waiting per account at a time.
+      // A limited agent: one batch of its own waiting; the account's other agents are not held up by it.
       const max = q?.level === 'limited' ? 1 : this.config.maxQueuedBatches ?? 8;
-      const waiting = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND state IN ('queued', 'verifying')`, user.id).n;
+      const waiting = q?.level === 'limited'
+        ? this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND ${mine} AND state IN ('queued', 'verifying')`, user.id, ...mineArgs).n
+        : this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND state IN ('queued', 'verifying')`, user.id).n;
       if (waiting >= max) {
         throw new HttpError(429, `you have ${waiting} batches waiting for verification (the limit is ${max}); keep your claims, do peer reviews meanwhile (td_list_peer_reviews), and submit again when one is done (td_get_batch shows it)`, { retryAfterSeconds: 120 });
       }
       const b = this.store.run(
-        `INSERT INTO batches (user_id, base_commit, files_json, notes, agent_meta, env_digest, state, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
-        user.id, baseCommit, JSON.stringify(files), notes, agentMeta, envDigest, confirm.length ? JSON.stringify({ confirm: confirm.map(String).slice(0, 500) }) : null, now(),
+        `INSERT INTO batches (user_id, token_id, base_commit, files_json, notes, agent_meta, env_digest, state, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+        user.id, token, baseCommit, JSON.stringify(files), notes, agentMeta, envDigest, confirm.length ? JSON.stringify({ confirm: confirm.map(String).slice(0, 500) }) : null, now(),
       );
       const batchId = Number(b.lastInsertRowid);
       this.store.run('UPDATE batches SET cost = ? WHERE id = ?', this.compileCost(Object.keys(files)), batchId);
       const attempts = [];
       for (const id of ids) {
         const r = this.store.run(
-          `INSERT INTO attempts (task_id, user_id, base_commit, files_json, notes, agent_meta, env_digest, state, batch_id, competing, created_at) VALUES (?, ?, ?, '{}', ?, ?, ?, 'queued', ?, ?, ?)`,
-          id, user.id, baseCommit, notes, agentMeta, envDigest, batchId, own.has(id) ? 0 : 1, now(),
+          `INSERT INTO attempts (task_id, user_id, token_id, base_commit, files_json, notes, agent_meta, env_digest, state, batch_id, competing, created_at) VALUES (?, ?, ?, ?, '{}', ?, ?, ?, 'queued', ?, ?, ?)`,
+          id, user.id, token, baseCommit, notes, agentMeta, envDigest, batchId, own.has(id) ? 0 : 1, now(),
         );
         attempts.push({ taskId: id, attemptId: Number(r.lastInsertRowid), ...(own.has(id) ? {} : { competing: true }) });
         // A competing candidate leaves the task as its holder has it.

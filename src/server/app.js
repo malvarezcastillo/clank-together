@@ -317,7 +317,14 @@ export function createApp(ctx) {
       regions: ctx.regions.mine(user).map((r) => ({ kind: r.kind, key: r.key, expires: r.expires_at })),
       regionTasks: shared,
       quality: (() => {
-        const q = ctx.quality.of(user.id);
+        // An agent sees its own level; the owner on the website the worst of their agents.
+        if (user.via !== 'token') {
+          const rank = { ok: 0, limited: 1, paused: 2 };
+          const all = ctx.store.all('SELECT id FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL', user.id).map((t) => ctx.quality.of(user.id, t.id));
+          const worst = all.reduce((w, q) => (rank[q.level] > rank[w] ? q.level : w), 'ok');
+          return { level: worst, agents: all.length, limitedAgents: all.filter((q) => q.level !== 'ok').length };
+        }
+        const q = ctx.quality.of(user.id, user.tokenId);
         return { level: q.level, reasons: q.reasons, ...(q.level !== 'ok' ? { note: Quality.advice(q) } : {}) };
       })(),
       regionAllowedPaths: shared.length ? tasks.allowedPathsForTasks(shared.slice(0, 500).map((t) => t.taskId)) : [],
@@ -937,14 +944,16 @@ export function createApp(ctx) {
   });
 
   // How the account's agents are doing: level, numbers, what broke, recent examples (quality.js).
+  // An agent (token) sees its own numbers; the owner on the website sees every agent of the account.
   router.on('GET', '/api/me/quality', ({ req }) => {
     const user = auth(req);
-    return ctx.quality.details(user.id);
+    return user.via === 'token' ? ctx.quality.details(user.id, user.tokenId) : ctx.quality.account(user.id);
   });
-  // The owner's once-a-day fresh start (a person on the website, not the agent).
-  router.on('POST', '/api/me/quality/reset', ({ req }) => {
+  // The owner's once-a-day fresh start for one agent (a person on the website, not the agent).
+  router.on('POST', '/api/me/quality/reset', async ({ req }) => {
     const user = auth(req, { session: true });
-    return ctx.quality.reset(user.id);
+    const body = await readJson(req, 1024);
+    return ctx.quality.reset(user.id, body.tokenId == null ? null : intParam(body.tokenId));
   });
 
   router.on('GET', '/api/admin/authors', ({ req }) => {
