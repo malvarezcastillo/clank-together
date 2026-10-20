@@ -22,6 +22,7 @@ import { reviewerStats } from './reviewers.js';
 import { inferUnits } from './grouping.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { Regions } from './regions.js';
+import { Credits, SLOT_TABLE } from './credits.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
@@ -91,7 +92,8 @@ export function openServer(dataDir, { log = console } = {}) {
   const ghidra = new ServerGhidra({ config, store, originals, log });
   merger.onMerged = (commit) => ghidra.scheduleRefresh(commit);
   const checks = new CheckQueue({ store, repo, verifier, config, log });
-  return { config, store, repo, project, tasks, regions, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
+  const credits = new Credits({ store });
+  return { config, store, repo, project, tasks, regions, credits, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
 }
 
 export function createApp(ctx) {
@@ -524,6 +526,96 @@ export function createApp(ctx) {
     return { ...tasks.heartbeatAll(user), regions: ctx.regions.heartbeat(user) };
   });
 
+  // --- the arcade: game credits (credits.js). Play money; humans play, from the website.
+
+  router.on('GET', '/api/credits/me', ({ req }) => {
+    const user = auth(req);
+    return { ...ctx.credits.wallet(user.id), slots: SLOT_TABLE };
+  });
+  router.on('POST', '/api/credits/bailout', ({ req }) => {
+    const user = auth(req, { session: true });
+    return ctx.credits.bailout(user.id);
+  });
+  router.on('GET', '/api/credits/leaderboard', () => cached('credits-board', 20_000, () => ctx.credits.leaderboard()));
+  const gameLimiter = new RateLimiter(600, 600_000);
+  router.on('POST', '/api/games/:game', async ({ req, params }) => {
+    const user = auth(req, { session: true });
+    gameLimiter.check(user.id);
+    const body = await readJson(req, 4096);
+    return ctx.credits.play(user.id, String(params.game), body);
+  });
+
+  // --- the main page: a live feed of what happens, and a map of every function
+
+  const FEED_TYPES = ['submit', 'merged', 'auto_accepted', 'region_claim', 'game_win', 'user_approved', 'no_decompile_claim', 'skip_accepted'];
+  router.on('GET', '/api/feed', ({ query }) => {
+    const after = Number(query.get('after') ?? 0) || 0;
+    // The first view is cached; later polls ask for what came after (a primary key range).
+    const load = () => {
+      const rows = store.all(
+        `SELECT e.id, e.at, e.type, e.data, u.name FROM events e LEFT JOIN users u ON u.id = e.user_id
+          WHERE e.id > ? AND e.type IN (${FEED_TYPES.map(() => '?').join(',')}) ORDER BY e.id DESC LIMIT 40`,
+        after, ...FEED_TYPES,
+      );
+      // Only the fields a public feed needs, never notes or code.
+      const pick = (type, d) => {
+        if (type === 'submit') return { functions: d.tasks };
+        if (type === 'merged') return { functions: d.functions, commit: String(d.commit ?? '').slice(0, 10) };
+        if (type === 'region_claim') return { key: d.key, kind: d.kind, functions: d.leased, shared: d.shared };
+        if (type === 'game_win') return { game: d.game, bet: d.bet, payout: d.payout };
+        if (type === 'no_decompile_claim') return { functions: d.functions };
+        if (type === 'auto_accepted') return {};
+        return {};
+      };
+      return rows.map((r) => ({ id: r.id, at: r.at, type: r.type, user: r.name ?? null, ...pick(r.type, JSON.parse(r.data ?? '{}')) }));
+    };
+    return after > 0 ? load() : cached('feed', 5_000, load);
+  });
+
+  // Every function in address order, one letter each: d byte-identical, c peer-confirmed, s needs no
+  // decompilation, f on its way to main, l claimed, b sent back, o open; plus its source file.
+  const mapData = () =>
+    cached('map', 60_000, () => {
+      const v = store.currentVersion();
+      if (!v) return { functions: 0, states: '', units: [], unitOf: [], ids: [] };
+      const rows = store.all(
+        `SELECT t.symbol_id, t.state, s.unit, a.size, fs.status, fs.confirmed FROM tasks t JOIN symbols s ON s.id = t.symbol_id
+           JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ?
+           LEFT JOIN func_status fs ON fs.symbol_id = s.id ORDER BY a.addr`,
+        v.id,
+      );
+      const code = (r) => {
+        if (r.state === 'skipped') return 's';
+        if (r.state === 'done') return r.status === 'exact' || r.status === 'match_unresolved' ? 'd' : 'c';
+        if (['verifying', 'peer_review', 'in_review', 'approved', 'merging'].includes(r.state)) return 'f';
+        if (r.state === 'leased') return 'l';
+        if (r.state === 'needs_cleanup' || r.state === 'hard') return 'b';
+        return 'o';
+      };
+      const units = [];
+      const index = new Map();
+      const unitOf = rows.map((r) => {
+        const u = r.unit ?? '(not placed yet)';
+        if (!index.has(u)) index.set(u, units.push(u) - 1);
+        return index.get(u);
+      });
+      return { functions: rows.length, states: rows.map(code).join(''), units, unitOf, ids: rows.map((r) => r.symbol_id), sizes: rows.map((r) => r.size ?? 0) };
+    });
+  router.on('GET', '/api/map', () => {
+    const m = mapData();
+    return { functions: m.functions, states: m.states, units: m.units, unitOf: m.unitOf };
+  });
+  router.on('GET', '/api/map/:i', ({ params }) => {
+    const m = mapData();
+    const i = intParam(params.i);
+    if (i < 0 || i >= m.functions) throw new HttpError(404, 'no such function');
+    const s = store.get(
+      `SELECT s.id, s.name, s.unit, t.state, u.name AS holder FROM symbols s JOIN tasks t ON t.symbol_id = s.id LEFT JOIN users u ON u.id = t.lease_user AND t.state = 'leased' WHERE s.id = ?`,
+      m.ids[i],
+    );
+    return { index: i, symbol: s?.id, name: s?.name ?? null, unit: s?.unit ?? null, state: s?.state, holder: s?.holder ?? null, size: m.sizes[i] };
+  });
+
   // --- regions: a source file or class, claimed and worked on as a whole (regions.js)
 
   router.on('GET', '/api/regions', ({ req, query }) => {
@@ -853,6 +945,8 @@ export function createApp(ctx) {
     // Pause or allow an account's peer reviews (e.g. rubber-stamping); its existing verdicts stay.
     'block-reviews': (name, admin) => setReviewBlock(name, 1, admin),
     'allow-reviews': (name, admin) => setReviewBlock(name, 0, admin),
+    delete: (name, admin) => accounts.deleteUser(name, admin.id),
+    'reset-password': (name, admin) => accounts.resetPassword(name, admin.id),
   };
   const setReviewBlock = (name, blocked, admin) => {
     const u = accounts.byName(name);
@@ -1006,6 +1100,8 @@ export async function startServer(dataDir, { role = 'all' } = {}) {
   let server = null;
   if (role !== 'worker') {
     const sweeper = setInterval(() => { try { ctx.tasks.sweepExpired(); ctx.regions.sweepExpired(); } catch (e) { console.error(`lease sweep: ${e.message}`); } }, 60_000);
+    const booker = setInterval(() => { try { ctx.credits.sync(); } catch (e) { console.error(`credits: ${e.message}`); } }, 30_000);
+    stops.push(() => clearInterval(booker));
     stops.push(() => clearInterval(sweeper));
     server = createApp(ctx);
     await new Promise((r) => server.listen(ctx.config.listen.port, ctx.config.listen.host, r));

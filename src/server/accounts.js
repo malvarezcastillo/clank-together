@@ -264,6 +264,52 @@ export class Accounts {
     });
   }
 
+  /**
+   * Deletes an account. One with work on record (submissions, reviews, symbols) stays as
+   * "deleted_<id>" so the history keeps its author; one without is removed. Either way it can no
+   * longer log in and its claims are released.
+   */
+  deleteUser(name, adminId) {
+    return this.store.tx(() => {
+      const u = this.requireUser(name);
+      if (u.role === 'admin' && u.status === 'active' && this.activeAdmins() <= 1) throw new AccountError(409, 'refusing to delete the last active admin');
+      if (u.id === adminId) throw new AccountError(409, 'you cannot delete your own account here');
+      const has = (sql) => !!this.store.get(sql, u.id);
+      const work =
+        has('SELECT 1 FROM attempts WHERE user_id = ? LIMIT 1') ||
+        has('SELECT 1 FROM batches WHERE user_id = ? LIMIT 1') ||
+        has('SELECT 1 FROM peer_reviews WHERE reviewer_id = ? LIMIT 1') ||
+        has('SELECT 1 FROM reviews WHERE reviewer_id = ? LIMIT 1') ||
+        has('SELECT 1 FROM symbols WHERE created_by = ? LIMIT 1');
+      this.store.run(
+        `UPDATE tasks SET state = CASE WHEN best_attempt IS NULL THEN 'open' ELSE 'needs_cleanup' END, lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE lease_user = ? AND state = 'leased'`,
+        now(), u.id,
+      );
+      for (const t of ['sessions', 'api_tokens', 'region_claims']) this.store.run(`DELETE FROM ${t} WHERE user_id = ?`, u.id);
+      this.store.run('DELETE FROM peer_leases WHERE reviewer_id = ?', u.id);
+      if (work) {
+        const newName = `deleted_${u.id}`;
+        this.store.run(`UPDATE users SET name = ?, status = 'revoked', password_hash = NULL, revoked_at = ? WHERE id = ?`, newName, now(), u.id);
+        this.store.event('user_deleted', adminId, { name: u.name, kept: newName });
+        return { name: u.name, deleted: true, keptAs: newName };
+      }
+      for (const t of ['credit_ledger', 'game_rounds']) this.store.run(`DELETE FROM ${t} WHERE user_id = ?`, u.id);
+      this.store.run('UPDATE events SET user_id = NULL WHERE user_id = ?', u.id);
+      this.store.run('UPDATE users SET approved_by = NULL WHERE approved_by = ?', u.id);
+      this.store.run('DELETE FROM users WHERE id = ?', u.id);
+      this.store.event('user_deleted', adminId, { name: u.name });
+      return { name: u.name, deleted: true, keptAs: null };
+    });
+  }
+
+  /** A new random password for an account (shown once to the admin); its sessions end. */
+  async resetPassword(name, adminId) {
+    const pw = crypto.randomBytes(12).toString('base64url');
+    await this.setPassword(name, pw);
+    this.store.event('password_reset', adminId, { name });
+    return { name, password: pw };
+  }
+
   activeAdmins() {
     return this.store.get(`SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active'`).n;
   }

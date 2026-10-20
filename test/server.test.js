@@ -1119,3 +1119,60 @@ test('the server does not compile checks unless remoteChecks is on', async () =>
   assert.match(r.body.error, /td toolchain install/);
   ctx.config.remoteChecks = true;
 });
+
+test('credits: merged work and agreeing reviews pay once; games book bet and payout', async () => {
+  await activeUser('crauthor');
+  await activeUser('crpeer');
+  const author = ctx.accounts.byName('crauthor');
+  const peer = ctx.accounts.byName('crpeer');
+  const v = ctx.store.currentVersion();
+  const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402900, size: 8, unit: 'src/credits.cpp' }).symbol.id;
+  ctx.tasks.generate();
+  const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
+  const attempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, result_json, created_at) VALUES (?, ?, ?, '{}', 'merged', ?, ?)`, task, author.id, ctx.repo.head(), JSON.stringify({ feedback: { target: { status: 'mismatch' } } }), now()).lastInsertRowid);
+  ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, 'same', 'the same calls and returns', ?)`, attempt, peer.id, now());
+  ctx.credits.sync();
+  ctx.credits.sync();
+  assert.equal(ctx.credits.balance(author.id), 6 + 1, 'peer-confirmed merge plus the submission, booked once');
+  assert.equal(ctx.credits.balance(peer.id), 2, 'an agreeing review');
+
+  const cookie = await login('crauthor');
+  const play = (game, body) => request('POST', `/api/games/${game}`, body, { cookie });
+  assert.equal((await play('coinflip', { bet: 100, side: 'heads' })).status, 409, 'cannot bet more than the balance');
+  assert.equal((await play('coinflip', { bet: 3, side: 'edge' })).status, 400);
+  const r = await play('coinflip', { bet: 3, side: 'heads' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.balance, 7 - 3 + r.body.payout);
+  assert.equal(ctx.credits.balance(author.id), r.body.balance);
+  const d = await play('dice', { bet: 1, under: 50 });
+  assert.equal(d.status, 200);
+  assert.ok(d.body.detail.result >= 1 && d.body.detail.result <= 100);
+  const s = await play('slots', { bet: 1 });
+  assert.equal(s.body.detail.reels.length, 3);
+  const token = await activeUser('crbot');
+  assert.equal((await call('POST', '/api/games/slots', { bet: 1 }, token)).status, 403, 'games are for people on the website, not agent tokens');
+  ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE id = ?`, attempt);
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task);
+});
+
+test('deleting an account: kept as deleted_<id> when it has work, removed otherwise', async () => {
+  await ctx.accounts.createUser('deladmin', 'admin', PASSWORD);
+  const admin = await login('deladmin');
+  await activeUser('delworker');
+  await activeUser('delidle');
+  const worker = ctx.accounts.byName('delworker');
+  const task = ctx.store.get(`SELECT id FROM tasks LIMIT 1`).id;
+  ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'rejected', ?)`, task, worker.id, ctx.repo.head(), now());
+  const del = (name) => request('POST', `/api/admin/users/${name}/delete`, {}, { cookie: admin });
+  const kept = await del('delworker');
+  assert.equal(kept.status, 200, JSON.stringify(kept.body));
+  assert.equal(kept.body.keptAs, `deleted_${worker.id}`);
+  assert.equal(ctx.accounts.byName(`deleted_${worker.id}`).status, 'revoked');
+  assert.equal(ctx.accounts.byName(`deleted_${worker.id}`).password_hash, null);
+  const gone = await del('delidle');
+  assert.equal(gone.body.keptAs, null);
+  assert.equal(ctx.accounts.byName('delidle'), null);
+  const reset = await request('POST', '/api/admin/users/deladmin/reset-password', {}, { cookie: admin });
+  assert.equal(reset.status, 200);
+  assert.ok(reset.body.password.length >= 12);
+});
