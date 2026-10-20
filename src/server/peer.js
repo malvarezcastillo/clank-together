@@ -3,12 +3,12 @@
 // A reviewer reads the original function (assembly and pseudocode, from their own pinned Ghidra
 // via `td disasm` / `td decompile`) and the submitted code, and decides whether the logic is the
 // same. No automated verdicts: the context deliberately leaves out the server's byte diff and score.
-// An attempt stays in peer review until `peerReviews` (default 3) different accounts agree: that
-// many "same" verdicts send it on to human review, that many "different" ones send it back to its
-// author with their reasons. With mixed verdicts, further reviewers are let in until one side
-// gets there. A function stays open for more reviewers while it waits for a human: with
-// `peerAutoAccept` (default 5) "same" verdicts it is accepted without human review. If anyone said
-// "different", it is merged all the same and kept in later_review for a human (merge.js).
+// An attempt stays in peer review until one side has enough verdicts from different accounts:
+// `peerAutoAccept` (default 5) "same" verdicts accept it, and it merges with no human step;
+// `peerReviews` (default 3) "different" ones send it back to its author with their reasons. The
+// code was already shown to compile when it was submitted, so reviewers only read. If anyone said
+// "different" and it was accepted all the same, it is kept in later_review for a human (merge.js).
+// (Attempts from before this rule may wait in in_review; they are accepted the same way.)
 
 import { HttpError } from './http.js';
 import { now } from './db.js';
@@ -23,7 +23,7 @@ const REVIEW_GROUP = 40;
 export const PEER_INSTRUCTIONS = [
   'You hold every function listed under functions. Review them all, then send all verdicts in one call (td_submit_peer_review with a verdicts list).',
   'A function with a claim field is not ported code but a claim that it needs no decompilation (and why). Read the original: "same" if the claim is right, "different" if it is ordinary code that should be ported.',
-  'Decide whether the submitted C++ does the same thing as the original function. It is not byte-identical; your judgment is what counts.',
+  'Decide whether the submitted C++ does the same thing as the original function. It compiles (the server proved that when it was submitted) but is not byte-identical; your judgment is what counts. Five "same" verdicts merge it, three "different" send it back.',
   'Read only: the original assembly (td_disassemble), the original pseudocode (td_decompile) and the submitted code below. Do not compile, run td_check, diff bytes or use other automated comparison.',
   'Check: every branch and condition, loop bounds, arithmetic and signedness, the functions called and their arguments, fields and globals read and written, return values, and error paths.',
   'Answer "same" only if a caller could not tell the two apart. Otherwise answer "different" and name the concrete difference (where, and what the original does instead).',
@@ -68,14 +68,11 @@ export class PeerReviews {
             AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
             AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
        )
-       WHERE (state = 'peer_review' AND MAX(confirmations, objections) + in_progress < ?)
-          OR (state = 'in_review' AND ? > ? AND confirmations + in_progress < ?)`,
+       WHERE objections < ? AND confirmations + in_progress < ?`,
       now(),
       user.id,
       user.id,
       user.id,
-      this.required,
-      this.autoAccept,
       this.required,
       this.autoAccept,
     );
@@ -87,11 +84,6 @@ export class PeerReviews {
       r.shuffle = key.get(k);
     }
     return rows.sort((a, b) => a.shuffle - b.shuffle).slice(0, limit);
-  }
-
-  // A function waiting for a human takes further reviewers toward auto-acceptance.
-  openForAutoAccept(r) {
-    return this.autoAccept > this.required && r.confirmations + r.in_progress < this.autoAccept;
   }
 
   /**
@@ -165,7 +157,8 @@ export class PeerReviews {
     const ids = attemptIds ?? (a.batch_id ? this.store.all(`SELECT id FROM attempts WHERE batch_id = ? AND state = 'peer_review' ORDER BY id`, a.batch_id).map((r) => r.id) : [a.id]);
     return {
       attemptId: a.id,
-      required: this.required,
+      required: this.autoAccept, // "same" verdicts that accept it
+      rejectAt: this.required, // "different" verdicts that send it back
       instructions: PEER_INSTRUCTIONS,
       // Every function this review covers (one batch); give one verdict per attemptId.
       functions: (ids.length ? ids : [a.id]).map((id) => this.functionInfo(id, v)),
@@ -199,7 +192,7 @@ export class PeerReviews {
       const leased = this.store.get('SELECT 1 FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ? AND expires_at > ?', attemptId, user.id, now());
       const counts = this.counts(attemptId);
       const others = this.store.get('SELECT COUNT(*) AS n FROM peer_leases WHERE attempt_id = ? AND reviewer_id != ? AND expires_at > ?', attemptId, user.id, now()).n;
-      const full = a.state === 'in_review' ? !this.openForAutoAccept({ objections: counts.different, confirmations: counts.same, in_progress: others }) : Math.max(counts.same, counts.different) + others >= this.required;
+      const full = counts.same + others >= this.autoAccept;
       if (!leased && full) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
 
       this.store.run(
@@ -211,38 +204,31 @@ export class PeerReviews {
 
       const same = counts.same + (verdict === 'same' ? 1 : 0);
       const different = counts.different + (verdict === 'different' ? 1 : 0);
-      if (a.state === 'in_review') {
-        // Already waiting for a human: enough agreeing peers accept it (objections are kept for later).
-        if (same >= this.autoAccept) {
-          this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
-          this.store.run(`UPDATE attempts SET state = 'approved' WHERE id = ?`, attemptId);
-          this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), a.task_id);
-          this.store.event('auto_accepted', null, { attempt: attemptId, same, different });
-          return { state: 'approved', same, different, required: this.required };
-        }
-        return { state: 'in_review', same, different, required: this.required };
+      // A competing candidate does not take a task over from the agent holding it.
+      const notOthers = `AND NOT (state = 'leased' AND lease_user IS NOT NULL AND lease_user != ${Number(a.user_id)})`;
+      if (same >= this.autoAccept) {
+        // Accepted: it merges (objections, if any, are kept for a human to look at later).
+        this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
+        this.store.run(`UPDATE attempts SET state = 'approved' WHERE id = ?`, attemptId);
+        this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ? ${notOthers}`, now(), a.task_id);
+        this.store.event('auto_accepted', null, { attempt: attemptId, same, different });
+        return { state: 'approved', same, different, required: this.autoAccept };
       }
       if (different >= this.required) {
         // Enough independent reviewers found a difference: back to the author with their reasons.
         this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
         this.store.run(`UPDATE attempts SET state = 'needs_cleanup' WHERE id = ?`, attemptId);
         this.store.run(
-          `UPDATE tasks SET state = 'needs_cleanup', cleanup_cycles = cleanup_cycles + 1, preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`,
-          a.user_id, now() + 6 * 3600_000, now(), a.task_id,
+          `UPDATE tasks SET state = 'needs_cleanup', cleanup_cycles = cleanup_cycles + 1, preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ? ${notOthers}
+              AND NOT EXISTS (SELECT 1 FROM attempts o WHERE o.task_id = tasks.id AND o.id != ? AND o.state IN ('queued', 'verifying', 'peer_review', 'in_review', 'approved', 'merging'))`,
+          a.user_id, now() + 6 * 3600_000, now(), a.task_id, attemptId,
         );
         // Only this function goes back; the rest of its batch carries on.
         settleBatch(this.store, a.batch_id, `${different} peer reviews found a difference in ${a.task_id}`);
         return { state: 'needs_cleanup', same, different, required: this.required };
       }
-      if (same >= this.required) {
-        // Leases toward auto-acceptance stay.
-        if (!(this.autoAccept > this.required)) this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
-        this.store.run(`UPDATE attempts SET state = 'in_review' WHERE id = ?`, attemptId);
-        this.store.run(`UPDATE tasks SET state = 'in_review', updated_at = ? WHERE id = ?`, now(), a.task_id);
-        return { state: 'in_review', same, different, required: this.required };
-      }
       // Undecided: it stays in review until one side has enough verdicts.
-      return { state: 'peer_review', same, different, required: this.required };
+      return { state: a.state, same, different, required: this.autoAccept };
     });
   }
 
@@ -274,6 +260,6 @@ export class PeerReviews {
   }
 
   confirmed(attemptId) {
-    return this.counts(attemptId).same >= this.required;
+    return this.counts(attemptId).same >= this.autoAccept;
   }
 }

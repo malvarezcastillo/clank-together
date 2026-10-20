@@ -21,6 +21,7 @@ import { withGuidance } from './guidance.js';
 import { reviewerStats } from './reviewers.js';
 import { inferUnits } from './grouping.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
+import { Regions } from './regions.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
@@ -35,6 +36,7 @@ export const DEFAULT_CONFIG = {
   leaseMinutes: 120,
   maxLeasesPerUser: 3,
   verifyConcurrency: 3,
+  remoteChecks: false, // checks compile on the contributor's machine (td toolchain install)
   buildTimeoutMs: 300000,
   submitsPerHour: 30,
   runners: { msvc2010: { type: 'docker', image: 'togetherdecomp/msvc2010:1', memory: '1g', cpus: 1 } },
@@ -78,15 +80,18 @@ export function openServer(dataDir, { log = console } = {}) {
   }
 
   const tasks = new Tasks({ store, config, repo, project });
+  const regions = new Regions({ store, config, repo, tasks });
+  tasks.regions = regions;
   const peers = new PeerReviews({ store, project });
   const verifier = new Verifier({ store, config, repo, project, tasks, getPe, peers, log });
+  verifier.regions = regions;
   const merger = new Merger({ store, config, repo, project, tasks, verifier, getPe, peers, log });
   const accounts = new Accounts(store);
   const originals = new Originals({ store });
   const ghidra = new ServerGhidra({ config, store, originals, log });
   merger.onMerged = (commit) => ghidra.scheduleRefresh(commit);
   const checks = new CheckQueue({ store, repo, verifier, config, log });
-  return { config, store, repo, project, tasks, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
+  return { config, store, repo, project, tasks, regions, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
 }
 
 export function createApp(ctx) {
@@ -496,7 +501,58 @@ export function createApp(ctx) {
 
   router.on('POST', '/api/tasks/heartbeat-all', ({ req }) => {
     const user = auth(req);
-    return tasks.heartbeatAll(user);
+    return { ...tasks.heartbeatAll(user), regions: ctx.regions.heartbeat(user) };
+  });
+
+  // --- regions: a source file or class, claimed and worked on as a whole (regions.js)
+
+  router.on('GET', '/api/regions', ({ req, query }) => {
+    const user = auth(req);
+    return guided(ctx.regions.list({ user, limit: intParam(query.get('limit') ?? '50'), free: query.get('free') === '1', prefix: query.get('prefix') || null }));
+  });
+
+  router.on('GET', '/api/regions/mine', ({ req }) => {
+    const user = auth(req);
+    return guided({ regions: ctx.regions.mine(user) });
+  });
+
+  router.on('POST', '/api/regions/claim', async ({ req }) => {
+    const user = auth(req);
+    const body = await readJson(req, 4096);
+    reviewFirst(user);
+    const r = ctx.regions.claim(user, { kind: body.kind ?? 'unit', key: body.key });
+    return guided({
+      ...r,
+      baseCommit: repo.head(),
+      note: r.alsoClaimedBy.length
+        ? `Also claimed by ${r.alsoClaimedBy.join(', ')}: you may submit any function of it; the first accepted candidate of each function merges. Prefer an unclaimed region (td_regions free) unless you mean to help here.`
+        : 'Port every function of the region, compile and check locally, then submit them together (td submit --all).',
+    });
+  });
+
+  router.on('POST', '/api/regions/release', async ({ req }) => {
+    const user = auth(req);
+    const body = await readJson(req, 4096);
+    return ctx.regions.release(user, { kind: body.kind ?? 'unit', key: String(body.key ?? '') });
+  });
+
+  // --- the compiler for local checks: only for approved accounts (the Microsoft files are not for
+  // the public). The maintainer puts it at <data>/toolchain/toolchain.tar.gz (td-server toolchain).
+
+  const toolchainFile = () => path.join(config.dataDir, 'toolchain', 'toolchain.tar.gz');
+  router.on('GET', '/api/toolchain', ({ req }) => {
+    auth(req);
+    const f = toolchainFile();
+    if (!fs.existsSync(f)) return { available: false, note: 'no compiler package on this server yet; ask a maintainer' };
+    const meta = JSON.parse(fs.readFileSync(path.join(path.dirname(f), 'toolchain.json'), 'utf8'));
+    return { available: true, ...meta, toolchain: project.toolchain, compiler: project.compile?.compiler ?? null };
+  });
+  router.on('GET', '/api/toolchain/download', ({ req, res }) => {
+    auth(req);
+    const f = toolchainFile();
+    if (!fs.existsSync(f)) throw new HttpError(404, 'no compiler package on this server yet');
+    res.writeHead(200, { 'content-type': 'application/gzip', 'content-length': fs.statSync(f).size, 'content-disposition': 'attachment; filename="toolchain.tar.gz"', 'cache-control': 'private, no-store' });
+    fs.createReadStream(f).pipe(res);
   });
 
   // The submitted definition of one function (annotations through the closing brace).
@@ -598,6 +654,10 @@ export function createApp(ctx) {
 
   router.on('POST', '/api/check', async ({ req, res }) => {
     const user = auth(req);
+    // Checks run on the contributor's machine; the server compiles only submissions and merges.
+    if (!config.remoteChecks) {
+      throw new HttpError(410, 'the server no longer compiles checks: compile locally. Run "td toolchain install" once (downloads the compiler), then td_check works on your machine. Submit with td_submit when your region compiles and matches.');
+    }
     checkLimiter.check(user.id);
     const body = await readJson(req);
     if (typeof body.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(body.baseCommit)) throw new HttpError(400, 'baseCommit must be a full commit hash');
@@ -925,7 +985,7 @@ export async function startServer(dataDir, { role = 'all' } = {}) {
   }
   let server = null;
   if (role !== 'worker') {
-    const sweeper = setInterval(() => { try { ctx.tasks.sweepExpired(); } catch (e) { console.error(`lease sweep: ${e.message}`); } }, 60_000);
+    const sweeper = setInterval(() => { try { ctx.tasks.sweepExpired(); ctx.regions.sweepExpired(); } catch (e) { console.error(`lease sweep: ${e.message}`); } }, 60_000);
     stops.push(() => clearInterval(sweeper));
     server = createApp(ctx);
     await new Promise((r) => server.listen(ctx.config.listen.port, ctx.config.listen.host, r));

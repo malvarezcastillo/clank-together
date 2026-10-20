@@ -314,6 +314,11 @@ export class Verifier {
   }
 
   workedOnByOthers(symbolId, userId) {
+    // A region this user claimed is shared work: changes to its functions are theirs to make too.
+    if (this.regions) {
+      const t = this.store.get('SELECT * FROM tasks WHERE symbol_id = ?', symbolId);
+      if (t && this.regions.covers({ id: userId }, t)) return false;
+    }
     return !!this.store.get(
       `SELECT 1 FROM tasks t WHERE t.symbol_id = ? AND (
          (t.state = 'leased' AND t.lease_user != ?)
@@ -343,7 +348,12 @@ export class Verifier {
   }
 
   async verifyBatch(batch) {
-    const attempts = batchAttempts(this.store, batch.id);
+    // Superseded while it waited (a competing candidate merged first): nothing to judge.
+    const attempts = batchAttempts(this.store, batch.id).filter((a) => a.state === 'verifying' || a.state === 'queued');
+    if (!attempts.length) {
+      this.store.run(`UPDATE batches SET state = 'superseded', finished_at = ? WHERE id = ?`, now(), batch.id);
+      return;
+    }
     const submitted = JSON.parse(batch.files_json);
     const finishAll = (state, feedback) => {
       for (const a of attempts) this.finish(a, state, 0, feedback);
@@ -407,6 +417,7 @@ export class Verifier {
     const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
     this.store.tx(() => {
       this.store.run(`UPDATE attempts SET state = 'withdrawn', finished_at = ?, result_json = ? WHERE id = ?`, now(), JSON.stringify({ feedback: { summary: 'not written: no annotation for it in the submission; it stays in your claim' } }), attempt.id);
+      if (attempt.competing) return; // the task is its holder's
       this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, updated_at = ? WHERE id = ?`, attempt.user_id, expires, now(), attempt.task_id);
     });
   }
@@ -492,6 +503,12 @@ export class Verifier {
       const onTheWay = ['in_review', 'peer_review', 'approved'].includes(state);
       let taskState = onTheWay ? state : 'needs_cleanup';
       const better = state !== 'rejected' && score > task.best_score;
+      // A competing candidate records a better score, but the task stays as its holder has it.
+      if (attempt.competing) {
+        if (better) this.store.run('UPDATE tasks SET best_score = ?, best_attempt = ?, updated_at = ? WHERE id = ?', score, attempt.id, now(), task.id);
+        this.store.event('verified', attempt.user_id, { attempt: attempt.id, state, score, competing: true });
+        return;
+      }
       const cycles = task.cleanup_cycles + (onTheWay ? 0 : 1);
       if (taskState === 'needs_cleanup' && cycles >= this.project.matchPolicy.maxCleanupCycles) taskState = 'hard';
       if (state === 'rejected' && !task.best_attempt) taskState = 'open';

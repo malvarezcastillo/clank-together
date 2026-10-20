@@ -254,6 +254,20 @@ export class Tasks {
     return t;
   }
 
+  /**
+   * A task `user` may submit: one they hold, or (a competing candidate) one in a region they
+   * claimed that is not on main yet. Returns the task and whether it is theirs.
+   */
+  requireSubmittable(user, taskId) {
+    const t = this.get(taskId);
+    if (t.state === 'leased' && t.lease_user === user.id) return { task: t, own: true };
+    if (this.regions?.covers(user, t)) {
+      if (['done', 'skipped', 'merging'].includes(t.state)) throw new HttpError(409, `task ${taskId} (${t.symbol_id}) is ${t.state === 'merging' ? 'being merged' : 'already on main'}; leave it out`);
+      return { task: t, own: CLAIMABLE.includes(t.state) };
+    }
+    throw new HttpError(409, `you do not hold task ${taskId} (${t.symbol_id}) and no region you claimed covers it`);
+  }
+
   heartbeat(user, taskId) {
     this.requireLease(user, taskId);
     const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
@@ -292,7 +306,7 @@ export class Tasks {
     if (!ids.length) throw new HttpError(400, 'taskIds must list the tasks this submission covers');
     if (ids.length > this.maxLeased) throw new HttpError(400, `at most ${this.maxLeased} tasks per submission`);
     return this.store.tx(() => {
-      for (const id of ids) this.requireLease(user, id);
+      const own = new Set(ids.filter((id) => this.requireSubmittable(user, id).own));
       // Keep the verification queue moving: a few batches waiting per account at a time.
       const max = this.config.maxQueuedBatches ?? 8;
       const waiting = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND state IN ('queued', 'verifying')`, user.id).n;
@@ -308,11 +322,12 @@ export class Tasks {
       const attempts = [];
       for (const id of ids) {
         const r = this.store.run(
-          `INSERT INTO attempts (task_id, user_id, base_commit, files_json, notes, agent_meta, env_digest, state, batch_id, created_at) VALUES (?, ?, ?, '{}', ?, ?, ?, 'queued', ?, ?)`,
-          id, user.id, baseCommit, notes, agentMeta, envDigest, batchId, now(),
+          `INSERT INTO attempts (task_id, user_id, base_commit, files_json, notes, agent_meta, env_digest, state, batch_id, competing, created_at) VALUES (?, ?, ?, '{}', ?, ?, ?, 'queued', ?, ?, ?)`,
+          id, user.id, baseCommit, notes, agentMeta, envDigest, batchId, own.has(id) ? 0 : 1, now(),
         );
-        attempts.push({ taskId: id, attemptId: Number(r.lastInsertRowid) });
-        this.store.run(`UPDATE tasks SET state = 'verifying', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), id);
+        attempts.push({ taskId: id, attemptId: Number(r.lastInsertRowid), ...(own.has(id) ? {} : { competing: true }) });
+        // A competing candidate leaves the task as its holder has it.
+        if (own.has(id)) this.store.run(`UPDATE tasks SET state = 'verifying', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), id);
       }
       this.store.event('submit', user.id, { batch: batchId, tasks: ids.length });
       return { batchId, attempts };

@@ -20,7 +20,7 @@ const quiet = { info() {}, error() {}, warn() {} };
 
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'td-test-'));
-  fs.writeFileSync(path.join(dataDir, 'server.json'), JSON.stringify({ listen: { host: '127.0.0.1', port: 0 }, verifyConcurrency: 1 }));
+  fs.writeFileSync(path.join(dataDir, 'server.json'), JSON.stringify({ listen: { host: '127.0.0.1', port: 0 }, verifyConcurrency: 1, remoteChecks: true }));
   const repoDir = path.join(dataDir, 'repo');
   fs.cpSync(path.join(ROOT, 'template'), repoDir, { recursive: true });
   const git = (...a) => execFileSync('git', a, { cwd: repoDir, stdio: 'pipe' });
@@ -297,12 +297,14 @@ test('changing the password logs out browser sessions', async () => {
   await login('erin', 'a brand new password');
 });
 
-test('peer review: three other agents must agree, by reading only', async () => {
+test('peer review: five "same" accept, three "different" send back, by reading only', async () => {
   const author = await activeUser('pauthor');
   const r1 = await activeUser('peer1');
   const r2 = await activeUser('peer2');
   const r3 = await activeUser('peer3');
   const r4 = await activeUser('peer4');
+  const r5 = await activeUser('peer5');
+  const r6 = await activeUser('peer6');
   ctx.merger.pump = async () => {};
 
   const authorId = ctx.accounts.byName('pauthor').id;
@@ -319,23 +321,25 @@ test('peer review: three other agents must agree, by reading only', async () => 
   assert.ok(!(await call('GET', '/api/peer-reviews', null, author)).body.some((x) => x.attempt_id === attempt), 'authors do not see their own attempts');
   const claim = await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r1);
   assert.equal(claim.status, 200);
-  assert.equal(claim.body.required, 3);
+  assert.equal(claim.body.required, 5);
+  assert.equal(claim.body.rejectAt, 3);
   assert.ok(claim.body.instructions.some((i) => /Do not compile/.test(i)));
   assert.equal(JSON.stringify(claim.body).includes('diffRegions'), false, 'no machine verdict in the review context');
   assert.equal(claim.body.original.read[0], `td_disassemble ${task.symbol_id}`);
 
-  await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r2);
-  await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r3);
-  assert.equal((await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r4)).status, 409, 'no more reviewers than needed');
+  for (const r of [r2, r3, r4, r5]) await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r);
+  assert.equal((await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r6)).status, 409, 'no more reviewers than needed');
 
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'short' }, r1)).status, 400);
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'all branches and calls agree' }, author)).status, 403);
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'all branches and calls agree' }, r1)).body.state, 'peer_review');
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'same loop bounds and the same return' }, r1)).status, 409, 'one verdict per account');
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'checked every condition and field access' }, r2)).body.state, 'peer_review');
-  const done = await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'identical behavior, only register use differs' }, r3);
-  assert.equal(done.body.state, 'in_review');
-  assert.equal(ctx.tasks.get(task.id).state, 'in_review');
+  assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'identical behavior, only register use differs' }, r3)).body.state, 'peer_review', 'three are not enough to accept');
+  assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'same calls in the same order, same result' }, r4)).body.state, 'peer_review');
+  const done = await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'same fields read and written, same return' }, r5);
+  assert.equal(done.body.state, 'approved', 'five accept it, with no human step');
+  assert.equal(ctx.tasks.get(task.id).state, 'approved');
   assert.ok(ctx.peers.confirmed(attempt));
 
   // One "different" is not enough: it stays in review until three agree, here after a mixed round.
@@ -436,16 +440,16 @@ test('five agreeing peers accept a function without human review, also over an o
 
   const clean = make(0x401900);
   for (let i = 0; i < 3; i++) await review(clean.attempt, peers[i], 'same');
-  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', clean.attempt).state, 'in_review', 'three send it to a human');
-  assert.equal((await review(clean.attempt, peers[3], 'same')).state, 'in_review', 'it stays open for more reviewers');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', clean.attempt).state, 'peer_review', 'three are not enough');
+  assert.equal((await review(clean.attempt, peers[3], 'same')).state, 'peer_review', 'it stays open for more reviewers');
   assert.equal((await review(clean.attempt, peers[4], 'same')).state, 'approved', 'five accept it');
   assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = ?', clean.task).state, 'approved');
 
   const contested = make(0x401940);
   await review(contested.attempt, peers[0], 'different');
   for (let i = 1; i <= 3; i++) await review(contested.attempt, peers[i], 'same');
-  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', contested.attempt).state, 'in_review');
-  assert.equal((await review(contested.attempt, peers[4], 'same')).state, 'in_review');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', contested.attempt).state, 'peer_review');
+  assert.equal((await review(contested.attempt, peers[4], 'same')).state, 'peer_review');
   assert.equal((await review(contested.attempt, peers[5], 'same')).state, 'approved', 'five "same" accept it over one objection (flagged for later at merge)');
 
   for (const x of [clean, contested]) {
@@ -623,7 +627,7 @@ test('the review list skips fully leased functions before applying its limit', a
   const author = ctx.accounts.byName('rlauthor');
   const viewer = ctx.accounts.byName('rlviewer');
   const others = [];
-  for (let i = 1; i <= 3; i++) {
+  for (let i = 1; i <= 5; i++) {
     await activeUser(`rlpeer${i}`);
     others.push(ctx.accounts.byName(`rlpeer${i}`));
   }
@@ -639,7 +643,7 @@ test('the review list skips fully leased functions before applying its limit', a
   const free = make(0x410040);
   for (const o of others) ctx.store.run('INSERT INTO peer_leases (attempt_id, reviewer_id, expires_at) VALUES (?, ?, ?)', full.attempt, o.id, now() + 3600_000);
   const ids = ctx.peers.available(viewer, 200).map((r) => r.attempt_id);
-  assert.ok(!ids.includes(full.attempt), 'three reviewers on it already');
+  assert.ok(!ids.includes(full.attempt), 'five reviewers on it already');
   assert.ok(ids.includes(free.attempt));
   for (const x of [full, free]) {
     ctx.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', x.attempt);
@@ -872,7 +876,8 @@ test('approving a batch leaves its functions in peer review alone unless asked',
 
 test('split: the approved part of a batch merges while the rest waits for review', async () => {
   const author = await activeUser('sauthor');
-  const peers = [await activeUser('speer1'), await activeUser('speer2'), await activeUser('speer3')];
+  const peers = [];
+  for (let i = 1; i <= 5; i++) peers.push(await activeUser(`speer${i}`));
   await ctx.accounts.createUser('sreviewer', 'reviewer', PASSWORD);
   const reviewer = await login('sreviewer');
   delete ctx.merger.pump;
@@ -917,13 +922,14 @@ test('split: the approved part of a batch merges while the rest waits for review
   assert.equal(rest.base_commit, head1);
   assert.equal(JSON.parse(rest.files_json)['src/split.cpp'], source);
 
-  // D passes review later and merges on top.
+  // D passes review later (five "same", no human step) and merges on top.
   const att = (await batchState(s.body.batchId)).functions.find((f) => f.symbol === d).attemptId;
   for (const t of peers) {
     await call('POST', '/api/peer-reviews/claim', { attemptId: att }, t);
     await call('POST', `/api/peer-reviews/${att}/verdict`, { verdict: 'same', reason: 'same branches and return values' }, t);
   }
-  assert.equal((await request('POST', `/api/batches/${s.body.batchId}/review`, { action: 'approve' }, { cookie: reviewer })).status, 200);
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', att).state, 'approved');
+  void reviewer;
   await ctx.merger.pump();
   assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', s.body.batchId).state, 'merged');
   assert.equal(ctx.repo.show(ctx.repo.head(), 'src/split.cpp'), source);
@@ -933,7 +939,8 @@ test('split: the approved part of a batch merges while the rest waits for review
 
 test('batches: one compile, auto-approval, peer review, one function sent back, carry-over', async () => {
   const author = await activeUser('bauthor');
-  const peers = [await activeUser('bpeer1'), await activeUser('bpeer2'), await activeUser('bpeer3')];
+  const peers = [];
+  for (let i = 1; i <= 5; i++) peers.push(await activeUser(`bpeer${i}`));
   await ctx.accounts.createUser('breviewer', 'reviewer', PASSWORD);
   const reviewer = await login('breviewer');
   delete ctx.merger.pump; // an earlier test stubbed it on the instance; use the real one here
@@ -982,7 +989,7 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   // Round 1: a peer claim covers the batch's waiting functions; all three find a difference.
   const pc = await call('POST', '/api/peer-reviews/claim', { attemptId: r1[b].attemptId }, peers[0]);
   assert.deepEqual(pc.body.functions.map((f) => f.symbol), [b]);
-  for (const t of peers) {
+  for (const t of peers.slice(0, 3)) {
     await call('POST', '/api/peer-reviews/claim', { attemptId: r1[b].attemptId }, t);
     await call('POST', `/api/peer-reviews/${r1[b].attemptId}/verdict`, { verdict: 'different', reason: 'the original checks the flag first, this does not' }, t);
   }
@@ -995,9 +1002,9 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', a).state, 'done');
   assert.equal((await batchState(s1.body.batchId)).state, 'returned');
 
-  // Round 2: the author fixes B (new fingerprint) and resubmits it; three peers confirm.
+  // Round 2: the author fixes B (new fingerprint) and resubmits it; five peers confirm.
   bHash = 'hash-b-2';
-  const objector = await activeUser('bpeer4');
+  const objector = await activeUser('bpeer6');
   const taskOfB = claim.body.tasks.find((t) => t.symbol === b).task;
   assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOfB }, author)).status, 200);
   const s2 = await call('POST', '/api/batches', { taskIds: [taskOfB], baseCommit: ctx.repo.head(), files: { 'src/batch.cpp': source } }, author);
@@ -1009,11 +1016,8 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
     await call('POST', '/api/peer-reviews/claim', { attemptId: r2[b].attemptId }, t);
     await call('POST', `/api/peer-reviews/${r2[b].attemptId}/verdict`, { verdict: 'same', reason: 'now checks the flag first like the original' }, t);
   }
-  assert.equal((await batchState(s2.body.batchId)).functions.find((f) => f.symbol === b).state, 'in_review');
-
-  // One human click for the batch; one merge commit.
-  const rev = await request('POST', `/api/batches/${s2.body.batchId}/review`, { action: 'approve' }, { cookie: reviewer });
-  assert.equal(rev.status, 200, JSON.stringify(rev.body));
+  assert.equal((await batchState(s2.body.batchId)).functions.find((f) => f.symbol === b).state, 'approved', 'five "same" accept it over one objection');
+  void reviewer;
   // Nothing on main changed since verification: the merge reuses that compile.
   let compiles = 0;
   const counted = ctx.verifier.check;
@@ -1040,4 +1044,78 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   assert.deepEqual(outside.map((o) => o.id), [a]);
 
   ctx.verifier.check = realCheck;
+});
+
+test('regions: two agents claim one file, the first accepted candidate merges, the other is superseded', async () => {
+  const first = await activeUser('rgfirst');
+  const second = await activeUser('rgsecond');
+  delete ctx.merger.pump;
+  const v = ctx.store.currentVersion();
+  const e = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402700, size: 8, unit: 'src/region.cpp' }).symbol.id;
+  const f = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402740, size: 8, unit: 'src/region.cpp' }).symbol.id;
+  ctx.tasks.generate();
+
+  // Stubbed compiler: whoever's file has "return 7" in fe matches; fe of the other candidate does not.
+  const realCheck = ctx.verifier.check;
+  ctx.verifier.check = async (files) => {
+    const text = files['src/region.cpp'] ?? '';
+    const functions = [];
+    if (text.includes('int fe()')) functions.push({ id: e, status: text.includes('return 7') ? STATUS.EXACT : STATUS.MISMATCH, score: text.includes('return 7') ? 1 : 0.8, file: 'src/region.cpp', codeHash: text.includes('return 7') ? 'e-good' : 'e-other', relocations: [], size: { ours: 8, original: 8 } });
+    if (text.includes('int ff()')) functions.push({ id: f, status: STATUS.MISMATCH, score: 0.9, file: 'src/region.cpp', codeHash: 'f-1', relocations: [], size: { ours: 8, original: 8 } });
+    return { check: { annotationErrors: [], units: [{ file: 'src/region.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions }] }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: ['src/region.cpp'] };
+  };
+
+  const list = (await call('GET', '/api/regions?prefix=src/region', null, first)).body;
+  const region = list.regions.find((r) => r.key === 'src/region.cpp');
+  assert.deepEqual([region.open, region.free], [2, true], 'unclaimed and open');
+
+  const c1 = await call('POST', '/api/regions/claim', { kind: 'unit', key: 'src/region.cpp' }, first);
+  assert.equal(c1.status, 200, JSON.stringify(c1.body));
+  assert.equal(c1.body.leased.length, 2, 'the whole region at once');
+  const c2 = await call('POST', '/api/regions/claim', { kind: 'unit', key: 'src/region.cpp' }, second);
+  assert.equal(c2.status, 200);
+  assert.deepEqual(c2.body.alsoClaimedBy, ['rgfirst']);
+  assert.ok(c2.body.functions.every((x) => x.shared), 'held by the first agent, shared with the second');
+  assert.equal((await call('GET', '/api/regions?prefix=src/region', null, first)).body.regions[0].free, false);
+
+  const taskOf = (sym) => c1.body.functions.find((x) => x.symbol === sym).taskId;
+  const head = ctx.repo.head();
+  const batchState = async (id, token) => (await call('GET', `/api/batches/${id}`, null, token)).body;
+  const settle = (id, token) => waitFor(async () => { const st = await batchState(id, token); return !['queued', 'verifying'].includes(st.state) && st; });
+
+  // The second agent's candidate of fe matches; the first agent's does not.
+  const s2 = await call('POST', '/api/batches', { taskIds: [taskOf(e)], baseCommit: head, files: { 'src/region.cpp': `// FUNCTION: ${e}\nint fe() { return 7; }\n` } }, second);
+  assert.equal(s2.status, 200, JSON.stringify(s2.body));
+  assert.equal(s2.body.attempts[0].competing, true);
+  assert.equal(ctx.tasks.get(taskOf(e)).state, 'leased', 'a competing candidate leaves the holder\'s lease alone');
+  const s1 = await call('POST', '/api/batches', { taskIds: [taskOf(e), taskOf(f)], baseCommit: head, files: { 'src/region.cpp': `// FUNCTION: ${e}\nint fe() { return 6; }\n\n// FUNCTION: ${f}\nint ff() { return 8; }\n` } }, first);
+  assert.equal(s1.status, 200, JSON.stringify(s1.body));
+  await settle(s2.body.batchId, second);
+  await settle(s1.body.batchId, first);
+
+  await ctx.merger.pump();
+  assert.equal((await batchState(s2.body.batchId, second)).state, 'merged');
+  assert.equal(ctx.tasks.get(taskOf(e)).state, 'done');
+  const loser = (await batchState(s1.body.batchId, first)).functions.find((x) => x.symbol === e);
+  assert.equal(loser.state, 'superseded', 'the other candidate of the merged function is not needed any more');
+  assert.equal((await batchState(s1.body.batchId, first)).functions.find((x) => x.symbol === f).state, 'peer_review', 'the rest of its batch goes on');
+
+  // A done function stays done whatever a late candidate does.
+  ctx.store.run(`UPDATE tasks SET state = 'needs_cleanup' WHERE id = ?`, taskOf(e));
+  assert.equal(ctx.tasks.get(taskOf(e)).state, 'done');
+
+  assert.equal((await call('POST', '/api/regions/release', { kind: 'unit', key: 'src/region.cpp' }, second)).status, 200);
+  ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE batch_id = ?`, s1.body.batchId);
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, taskOf(f));
+  ctx.store.run('DELETE FROM region_claims');
+  ctx.verifier.check = realCheck;
+});
+
+test('the server does not compile checks unless remoteChecks is on', async () => {
+  const user = await activeUser('rcuser');
+  ctx.config.remoteChecks = false;
+  const r = await call('POST', '/api/check', { baseCommit: ctx.repo.head(), files: {} }, user);
+  assert.equal(r.status, 410);
+  assert.match(r.body.error, /td toolchain install/);
+  ctx.config.remoteChecks = true;
 });

@@ -238,6 +238,49 @@ CREATE TABLE IF NOT EXISTS events (
   type TEXT NOT NULL,
   data TEXT
 );
+
+-- A region (a source file or a class) an agent registered to work on as a whole. Several agents
+-- may hold the same region; each may then submit any of its functions, and the first accepted
+-- candidate of a function wins (the others are superseded).
+CREATE TABLE IF NOT EXISTS region_claims (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  kind TEXT NOT NULL CHECK (kind IN ('unit', 'class')),
+  key TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  UNIQUE (user_id, kind, key)
+);
+CREATE INDEX IF NOT EXISTS region_claims_key ON region_claims(kind, key);
+
+-- Game credits: earned for work that reached main and for reviews that agreed with the outcome,
+-- spent and won in the games. Play money only. The balance is the sum.
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  amount INTEGER NOT NULL,
+  reason TEXT NOT NULL,           -- merged, identical, review, game:<name>, grant
+  ref TEXT,                       -- what it was for (attempt, review or round), once per reason
+  created_at INTEGER NOT NULL,
+  UNIQUE (user_id, reason, ref)
+);
+CREATE INDEX IF NOT EXISTS credit_ledger_user ON credit_ledger(user_id);
+
+CREATE TABLE IF NOT EXISTS game_rounds (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  game TEXT NOT NULL,
+  bet INTEGER NOT NULL,
+  payout INTEGER NOT NULL,
+  detail TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS game_rounds_at ON game_rounds(created_at);
+
+-- A function on main stays done: a competing candidate that finishes later must not revive it.
+CREATE TRIGGER IF NOT EXISTS tasks_done_stays_done BEFORE UPDATE OF state ON tasks
+  WHEN OLD.state IN ('done', 'skipped') AND NEW.state NOT IN ('done', 'skipped', 'open')
+  BEGIN SELECT RAISE(IGNORE); END;
 `;
 
 export const now = () => Date.now();
@@ -262,6 +305,8 @@ export class Store {
     this.addColumn('attempts', 'skip_category', 'TEXT');
     this.addColumn('symbols', 'skip_reason', 'TEXT'); // accepted: not ported, not counted in progress // human-readable name, e.g. "World of Warcraft 5.0.3 (build 15890, x64)"
     this.addColumn('attempts', 'batch_id', 'INTEGER REFERENCES batches(id)');
+    // A candidate for a function another agent holds (region claims): it does not move the task.
+    this.addColumn('attempts', 'competing', 'INTEGER NOT NULL DEFAULT 0');
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
   }
 

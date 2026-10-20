@@ -371,6 +371,7 @@ export class Merger {
         }
       }
       this.store.event('merged', batch.user_id, { batch: batch.id, functions: attempts.length, commit });
+      this.supersedeCompetitors(attempts, batch.id, commit);
       if (split) {
         this.rebaseRemainder(split, merged.files, commit);
         settleBatch(this.store, split.parent.id, 'its approved functions merged; the others were sent back');
@@ -386,6 +387,28 @@ export class Merger {
     }
     this.onMerged?.(commit);
     this.log.info(`merged batch ${batch.id} (${attempts.length} functions) as ${commit.slice(0, 10)}`);
+  }
+
+  /**
+   * Other candidates of the functions that just merged (region claims let several agents submit
+   * one function): they are superseded, and the rest of their batches goes on without them.
+   */
+  supersedeCompetitors(merged, batchId, commit) {
+    const batches = new Set();
+    for (const a of merged) {
+      const losers = this.store.all(
+        `SELECT id, batch_id FROM attempts WHERE task_id = ? AND id != ? AND state IN ('queued', 'verifying', 'peer_review', 'in_review', 'approved')`,
+        a.task_id,
+        a.id,
+      );
+      for (const l of losers) {
+        const feedback = { summary: `another candidate for ${a.symbol_id} was accepted and merged first (batch ${batchId}, ${commit.slice(0, 10)}); this one is no longer needed` };
+        this.store.run(`UPDATE attempts SET state = 'superseded', finished_at = ?, result_json = json_set(COALESCE(result_json, '{}'), '$.feedback', json(?)) WHERE id = ?`, now(), JSON.stringify(feedback), l.id);
+        this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', l.id);
+        if (l.batch_id) batches.add(l.batch_id);
+      }
+    }
+    for (const b of batches) settleBatch(this.store, b, 'its other functions were merged from competing submissions');
   }
 
   /**
