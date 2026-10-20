@@ -77,6 +77,15 @@ async function login(name, password = PASSWORD) {
   return r.setCookie.split(';')[0];
 }
 
+// One task leased directly: the API hands out new work only by region (single functions only to fix).
+async function leaseTask(token, taskId) {
+  const me = (await call('GET', '/api/me', null, token)).body;
+  const user = ctx.accounts.byName(me.name);
+  const id = taskId ?? ctx.store.get(`SELECT id FROM tasks WHERE state IN ('open', 'needs_cleanup') ORDER BY id LIMIT 1`).id;
+  ctx.tasks.claim(user, id);
+  return { status: 200, body: ctx.tasks.context(id) };
+}
+
 async function waitFor(fn, ms = 5000) {
   const end = Date.now() + ms;
   for (;;) {
@@ -120,7 +129,7 @@ test('claim and static-gate rejection', async () => {
   assert.equal((await call('GET', '/api/me', null, token)).body.name, 'alice');
   assert.equal((await call('GET', '/api/me', null, 'td_bogus')).status, 401);
 
-  const claim = await call('POST', '/api/tasks/claim', {}, token);
+  const claim = await leaseTask(token);
   assert.equal(claim.status, 200);
   const ctxBody = claim.body;
   // "Next" claims a whole group; this test works on one task.
@@ -211,7 +220,7 @@ test('regressions are detected against func_status', () => {
 
 test('expired leases return to the pool', async () => {
   const token = await activeUser('dave');
-  const c = (await call('POST', '/api/tasks/claim', {}, token)).body;
+  const c = (await leaseTask(token)).body;
   for (const o of c.alsoClaimed ?? []) await call('POST', `/api/tasks/${o.task}/release`, {}, token);
   ctx.store.run('UPDATE tasks SET lease_expires = 1 WHERE id = ?', c.task.id);
   assert.equal(ctx.tasks.sweepExpired(), 1);
@@ -267,7 +276,7 @@ test('API tokens: created in the browser, limited scope, revocable', async () =>
 test('revoking an account kills its tokens, sessions and leases', async () => {
   const token = await activeUser('frank');
   const session = await login('frank');
-  const claim = await call('POST', '/api/tasks/claim', {}, token);
+  const claim = await leaseTask(token);
   assert.equal(claim.status, 200);
 
   const admin = await login('root');
@@ -505,7 +514,7 @@ test('agents place held, unplaced functions into files before porting them', asy
   ctx.store.run('UPDATE symbols SET unit = NULL, name = NULL WHERE id = ?', id);
   ctx.tasks.generate();
   const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
-  assert.equal((await call('POST', '/api/tasks/claim', { taskId: task }, token)).status, 200);
+  assert.equal((await leaseTask(token, task)).status, 200);
 
   const bad = await call('POST', '/api/tasks/place', { assignments: [{ taskId: task, unit: '../etc/x.cpp' }] }, token);
   assert.equal(bad.status, 400);
@@ -665,7 +674,7 @@ test('"no decompile" claims are peer reviewed; accepted ones are skipped and not
   const real = mk(0x411040);
   ctx.tasks.generate();
   const taskOf = (sym) => ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id;
-  for (const sym of [thunk, real]) assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOf(sym) }, author)).status, 200);
+  for (const sym of [thunk, real]) assert.equal((await leaseTask(author, taskOf(sym))).status, 200);
 
   const bad = await call('POST', '/api/tasks/no-decompile', { items: [{ taskId: taskOf(thunk), category: 'whatever', reason: 'it is a thunk, add rcx then jmp' }] }, author);
   assert.equal(bad.status, 400);
@@ -712,7 +721,7 @@ test('verification: unwritten functions stay claimed, failing ones go back alone
   const guarded = mk(0x412100);
   ctx.tasks.generate();
   const taskOf = (sym) => ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id;
-  for (const sym of [good, broken, unwritten]) assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOf(sym) }, author)).status, 200);
+  for (const sym of [good, broken, unwritten]) assert.equal((await leaseTask(author, taskOf(sym))).status, 200);
   const fn = (id, status, hash) => ({ id, status, score: status === STATUS.EXACT ? 1 : 0.5, file: 'src/pv.cpp', codeHash: hash, relocations: [], size: { ours: 8, original: 8 } });
   let guardedHash = 'g1';
   const real = ctx.verifier.check;
@@ -741,7 +750,7 @@ test('verification: unwritten functions stay claimed, failing ones go back alone
 
     // Changing a function another account holds is still refused.
     ctx.tasks.generate();
-    assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOf(guarded) }, other)).status, 200);
+    assert.equal((await leaseTask(other, taskOf(guarded))).status, 200);
     ctx.store.run('INSERT OR REPLACE INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, code_hash) VALUES (?, ?, ?, 0.5, ?, 0, ?)', guarded, 'src/pv.cpp', 'mismatch', 'x', 'g0');
     const sub2 = await call('POST', '/api/batches', { taskIds: [taskOf(unwritten)], baseCommit: ctx.repo.head(), files: { 'src/pv.cpp': `// FUNCTION: ${unwritten}\nint uw() { return 1; }\n// FUNCTION: ${guarded}\nint gd() { return 4; }\n` } }, author);
     await waitFor(async () => !['queued', 'verifying'].includes(ctx.store.get('SELECT state FROM batches WHERE id = ?', sub2.body.batchId).state));
@@ -1008,7 +1017,7 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   bHash = 'hash-b-2';
   const objector = await activeUser('bpeer6');
   const taskOfB = claim.body.tasks.find((t) => t.symbol === b).task;
-  assert.equal((await call('POST', '/api/tasks/claim', { taskId: taskOfB }, author)).status, 200);
+  assert.equal((await leaseTask(author, taskOfB)).status, 200);
   const s2 = await call('POST', '/api/batches', { taskIds: [taskOfB], baseCommit: ctx.repo.head(), files: { 'src/batch.cpp': source } }, author);
   const r2 = Object.fromEntries((await settle(s2.body.batchId)).functions.map((f) => [f.symbol, f]));
   assert.equal(r2[b].state, 'peer_review', 'changed code gets reviewed again');
@@ -1111,6 +1120,13 @@ test('regions: two agents claim one file, the first accepted candidate merges, t
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, taskOf(f));
   ctx.store.run('DELETE FROM region_claims');
   ctx.verifier.check = realCheck;
+});
+
+test('new work is claimed by region; a single function only to fix one that came back', async () => {
+  const token = await activeUser('rtuser');
+  const open = ctx.store.get(`SELECT id FROM tasks WHERE state = 'open' LIMIT 1`);
+  if (open) assert.equal((await call('POST', '/api/tasks/claim', { taskId: open.id }, token)).status, 409);
+  assert.equal((await call('POST', '/api/tasks/claim-batch', { start: '0x401000', end: '0x402000' }, token)).status, 410);
 });
 
 test('the server does not compile checks unless remoteChecks is on', async () => {

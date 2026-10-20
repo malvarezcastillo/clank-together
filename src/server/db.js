@@ -307,6 +307,7 @@ export class Store {
     this.addColumn('attempts', 'batch_id', 'INTEGER REFERENCES batches(id)');
     // A candidate for a function another agent holds (region claims): it does not move the task.
     this.addColumn('attempts', 'competing', 'INTEGER NOT NULL DEFAULT 0');
+    this.db.exec('CREATE INDEX IF NOT EXISTS events_type_at ON events(type, at)'); // merge rates, feed
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
   }
 

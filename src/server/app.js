@@ -250,7 +250,7 @@ export function createApp(ctx) {
   }));
 
   router.on('GET', '/api/progress', () => progressData());
-  const progressData = () => cached('progress', 10_000, () => {
+  const progressData = () => cached('progress', 20_000, () => {
     // Functions accepted as needing no decompilation (thunks, runtime library, ...) do not count.
     const total = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE s.kind = 'function' AND s.library = 0 AND s.skip_reason IS NULL`);
     const byStatus = store.all(`SELECT fs.status, COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 GROUP BY fs.status`);
@@ -260,7 +260,16 @@ export function createApp(ctx) {
     const peerQueue = store.get("SELECT COUNT(*) AS n FROM attempts WHERE state = 'peer_review'").n;
     // Functions merged into main per hour: the last hour, and the average over the last day.
     const mergedSince = (ms) => store.get(`SELECT COALESCE(SUM(json_extract(data, '$.functions')), 0) AS n FROM events WHERE type = 'merged' AND at > ?`, Date.now() - ms).n;
-    const merges = { lastHour: mergedSince(3600_000), perHourDay: mergedSince(24 * 3600_000) / 24 };
+    // Bytes of the original those merges cover (the functions of each merged batch).
+    const bytesSince = (ms) =>
+      store.get(
+        // The merged batches first, so the attempts are found by batch (an index), not by scanning.
+        `WITH b AS MATERIALIZED (SELECT DISTINCT json_extract(data, '$.batch') AS id FROM events WHERE type = 'merged' AND at > ?)
+         SELECT COALESCE(SUM(sa.size), 0) AS n FROM b JOIN attempts at ON at.batch_id = b.id AND at.state = 'merged'
+           JOIN tasks t ON t.id = at.task_id JOIN symbol_addresses sa ON sa.symbol_id = t.symbol_id JOIN versions v ON v.id = sa.version_id AND v.is_current = 1`,
+        Date.now() - ms,
+      ).n;
+    const merges = { lastHour: mergedSince(3600_000), perHourDay: mergedSince(24 * 3600_000) / 24, bytesLastHour: bytesSince(3600_000), bytesPerHourDay: bytesSince(24 * 3600_000) / 24 };
     return { functions: total.n, bytes: total.bytes, byStatus, confirmed, peerQueue, byTaskState, contributors, merges };
   });
 
@@ -380,25 +389,24 @@ export function createApp(ctx) {
     const user = auth(req);
     const body = await readJson(req, 4096);
     if (body.taskId) {
-      // Taking back one's own returned function is not new work.
-      const own = store.get('SELECT 1 FROM tasks WHERE id = ? AND preferred_user = ? AND preferred_until > ?', intParam(body.taskId), user.id, Date.now());
+      // Single functions only to fix one that came back; new work is claimed by region.
+      const t = tasks.get(intParam(body.taskId));
+      if (!['needs_cleanup', 'hard'].includes(t.state)) throw new HttpError(409, 'claim new work by region: td_regions, then td_claim_region (a single function can only be claimed to fix one that came back)');
+      const own = store.get('SELECT 1 FROM tasks WHERE id = ? AND preferred_user = ? AND preferred_until > ?', t.id, user.id, Date.now());
       if (!own) reviewFirst(user);
-      return guided(tasks.context(tasks.claim(user, intParam(body.taskId))));
+      return guided(tasks.context(tasks.claim(user, t.id)));
     }
     reviewFirst(user);
-    // "The next task" is the next group: one function at a time across classes wastes the
-    // agent's context and the compile per submission.
-    const ids = tasks.claimNext(user, 50);
-    const others = ids.slice(1).map((id) => {
-      const t = tasks.get(id);
-      return { task: id, symbol: t.symbol_id };
-    });
-    return guided({
-      ...tasks.context(ids[0]),
-      alsoClaimed: others,
-      note: groupNote(ids.length, tasks.lastGroup),
-    });
+    // "The next work" is the best free region, as a whole.
+    return guided(claimBestRegion(user));
   });
+
+  const claimBestRegion = (user) => {
+    const pick = ctx.regions.list({ user, free: true, limit: 1 }).regions[0] ?? ctx.regions.list({ user, limit: 1 }).regions[0];
+    if (!pick) throw new HttpError(404, 'no open regions');
+    const r = ctx.regions.claim(user, { kind: 'unit', key: pick.key });
+    return { ...r, baseCommit: repo.head(), note: 'Claimed the best free region for you. Next time pick one yourself: td_regions, then td_claim_region.' };
+  };
 
   // "No decompile": held functions claimed to need no source; peer reviewed like code.
   router.on('POST', '/api/tasks/no-decompile', async ({ req }) => {
@@ -470,8 +478,12 @@ export function createApp(ctx) {
     const user = auth(req);
     const body = await readJson(req, 4096);
     reviewFirst(user);
-    const hexOrNull = (x) => (x == null ? null : typeof x === 'string' ? Number.parseInt(x, 16) : Number(x));
-    const ids = tasks.claimBatch(user, { unit: body.unit ? String(body.unit) : null, start: hexOrNull(body.start), end: hexOrNull(body.end), limit: body.limit ? Number(body.limit) : 50 });
+    // Retired: work is claimed by region. A file becomes its region; nothing else is handed out.
+    if (body.start != null || body.end != null) throw new HttpError(410, 'address ranges are retired: claim a region (td_regions, then td_claim_region)');
+    if (!body.unit) return guided(claimBestRegion(user));
+    const claimed = ctx.regions.claim(user, { kind: 'unit', key: String(body.unit) });
+    const ids = claimed.leased;
+    if (!ids.length) return guided({ ...claimed, baseCommit: repo.head(), tasks: [], note: 'nothing open to lease in that file (it may be shared: you can still submit candidates for its functions)' });
     const v = store.currentVersion();
     const ph = ids.map(() => '?').join(',');
     const rows = store.all(
@@ -483,8 +495,9 @@ export function createApp(ctx) {
       tasks: rows.map((r) => ({ ...r, addr: r.addr != null ? '0x' + hex(r.addr) : null, annotation: `// FUNCTION: ${r.symbol}` })),
       allowedPaths: tasks.allowedPathsForTasks(ids),
       baseCommit: repo.head(),
-      group: body.unit || body.start != null ? undefined : tasks.lastGroup && { kind: tasks.lastGroup.kind, key: tasks.lastGroup.key, note: groupNote(ids.length, tasks.lastGroup) },
-      note: 'Write or fix every function, check, then submit them together (td submit --all). Context of one task: GET /api/tasks/<id>.',
+      region: claimed.region,
+      alsoClaimedBy: claimed.alsoClaimedBy,
+      note: 'Write or fix every function, check, then submit them together (td submit). Context of one task: GET /api/tasks/<id>.',
     });
   });
 

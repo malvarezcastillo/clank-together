@@ -229,8 +229,8 @@ export async function original(ws, query, kind) {
 
 /** Submits files for a leased task. Defaults to all changed files the task allows. */
 /**
- * Submits work. `taskIds` empty = every task you hold, as one batch (a whole unit you claimed
- * with claim-batch, or several single tasks). Defaults to all changed files those tasks allow.
+ * Submits work. `taskIds` empty = every task you hold, as one batch (the regions you claimed,
+ * plus functions you took back to fix). Defaults to all changed files those tasks allow.
  */
 export async function submit(ws, taskIds = [], { files, notes, agentMeta } = {}) {
   const me = await api(ws).get('/api/me');
@@ -340,10 +340,6 @@ export async function toolchainInstall(ws, { log = console.log } = {}) {
   };
 }
 
-/** Claims every open function of a unit (source file) or an address range, as one batch. */
-export function claimBatch(ws, { unit, start, end, limit } = {}) {
-  return api(ws).post('/api/tasks/claim-batch', { unit, start, end, limit });
-}
 
 export function relPath(ws, f) {
   return path.relative(ws.dir, path.resolve(f)).replace(/\\/g, '/');

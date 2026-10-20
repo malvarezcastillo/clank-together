@@ -39,15 +39,9 @@ const TOOLS = [
     run: async (ws) => ops.toolchainInstall(ws, { log: () => {} }),
   },
   {
-    name: 'td_list_tasks',
-    description: 'List claimable decompilation tasks (easiest first).',
-    inputSchema: { type: 'object', properties: { state: str('comma-separated states, default open,needs_cleanup,hard'), unit: str('only tasks in this translation unit'), limit: int('max results, default 20') } },
-    run: async (ws, a) => ops.api(ws).get(`/api/tasks?limit=${a.limit ?? 20}${a.state ? `&state=${encodeURIComponent(a.state)}` : ''}${a.unit ? `&unit=${encodeURIComponent(a.unit)}` : ''}`),
-  },
-  {
     name: 'td_claim_task',
-    description: 'Claim one specific task by id. Without an id it claims the next group (like td_claim_batch) and returns the first task context plus the others in alsoClaimed. Returns the full task context: symbol ID and address, file to write, previous attempts and their feedback, reviewer comments.',
-    inputSchema: { type: 'object', properties: { taskId: int('task to claim; omit for the next available') } },
+    description: 'Claim one function that came back (needs_cleanup) to fix it, by task id. New work is claimed by region (td_regions, td_claim_region). Returns the task context: symbol, file, previous attempts and their feedback, reviewer comments.',
+    inputSchema: { type: 'object', properties: { taskId: int('the task to fix') }, required: ['taskId'] },
     run: async (ws, a) => ops.api(ws).post('/api/tasks/claim', { taskId: a.taskId }),
   },
   {
@@ -126,12 +120,6 @@ const TOOLS = [
       properties: { taskIds: { type: 'array', items: { type: 'integer' }, description: 'tasks to submit; default: all you hold' }, taskId: int('a single task (same as taskIds: [id])'), files: { type: 'array', items: { type: 'string' } }, notes: str('short notes for reviewers and later agents') },
     },
     run: async (ws, a) => ops.submit(ws, a.taskIds ?? (a.taskId ? [a.taskId] : []), { files: a.files, notes: a.notes, agentMeta: { client: 'td-mcp' } }),
-  },
-  {
-    name: 'td_claim_batch',
-    description: 'Claim many functions at once. With no arguments (the usual way): the next coherent group the server picks, a whole source file, a class, or neighbouring functions in the binary. Or every open function of a given source file (unit) or address range. Work through them, td_check, then td_submit them together. Much cheaper than one function at a time.',
-    inputSchema: { type: 'object', properties: { unit: str('repo-relative source file, e.g. Engine/Source/FrameXML/LoadXML.cpp'), start: str('range start, hex'), end: str('range end, hex (exclusive)'), limit: int('max functions, default 50') } },
-    run: async (ws, a) => ops.claimBatch(ws, a),
   },
   {
     name: 'td_mark_no_decompile',

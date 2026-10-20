@@ -35,9 +35,7 @@ Work (a region: a source file or class, done as a whole)
                                               unit that includes a changed header, as the merge does)
   td submit [--notes T]                       submit the region's work as one batch
   td tasks [--state S] [--limit N]            list claimable tasks
-  td claim [taskId]                           claim a task, prints its context
-  td claim --unit <file> [--limit N]          claim every open function of a source file (a batch)
-  td claim --range <start>-<end> [--limit N]  claim every open function of an address range
+  td claim <taskId>                           claim a function that came back, to fix it
   td task <taskId>                            show a task's context
   td submit [taskId...] [--notes T]           submit everything you hold (or these tasks) as one batch
   td batch <batchId>                          state of a submitted batch, per function
@@ -161,11 +159,9 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       return;
     case 'claim': {
       // td claim [taskId] | td claim --unit <file> | td claim --range 0x140001000-0x140002000 [--limit N]
-      if (values.unit || values.range) {
-        const [start, end] = values.range ? values.range.split('-') : [];
-        return print(await ops.claimBatch(ws, { unit: values.unit ? ops.relPath(ws, values.unit) : undefined, start, end, limit: Number(values.limit) || 50 }));
-      }
-      return print(await client.post('/api/tasks/claim', { taskId: args[0] ? Number(args[0]) : undefined }));
+      if (values.unit) return print(await ops.claimRegion(ws, { kind: 'unit', key: ops.relPath(ws, values.unit) }));
+      if (!args[0]) throw new Error('claim new work by region: td regions, then td region claim <file>; td claim <taskId> fixes a function that came back');
+      return print(await client.post('/api/tasks/claim', { taskId: Number(args[0]) }));
     }
     case 'task':
       return print(await client.get(`/api/tasks/${args[0]}`));

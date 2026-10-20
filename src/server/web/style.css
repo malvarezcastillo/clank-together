@@ -735,3 +735,10 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
   .view, .feed li.new, .toast, .wallet-coin, .reel.spinning, .die.rolling, .credits-badge.bump, .stat-tile.tick .n, .spark { animation: none; }
   .big-coin { transition: none; }
 }
+
+/* Progress: the pace */
+.rates { display: flex; flex-wrap: wrap; gap: 10px 28px; padding-bottom: 6px; border-bottom: 1px dashed var(--line); }
+.rate { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.rate-n { font: 700 26px/1 var(--font-mono); color: var(--accent-ink); font-variant-numeric: tabular-nums; }
+.rate-u { font: 600 13px var(--font-display); text-transform: uppercase; letter-spacing: 0.1em; }
+.rate-avg { font: 12px var(--font-mono); }

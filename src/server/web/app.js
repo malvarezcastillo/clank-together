@@ -351,6 +351,20 @@ function renderProgress(p) {
     row.append(right);
     bars.append(row);
   };
+  // The pace: what landed on main in the last hour, and the average over the last day.
+  if (p.merges) {
+    const rate = el('div', null, 'rates');
+    const r = (n, unit, avg) => {
+      const box = el('div', null, 'rate');
+      box.append(el('span', n, 'rate-n'), el('span', unit, 'rate-u'), el('span', avg, 'muted rate-avg'));
+      return box;
+    };
+    rate.append(
+      r(fmt(p.merges.lastHour), 'functions / h', `avg ${p.merges.perHourDay.toFixed(1)}/h over 24 h`),
+      r(kb(p.merges.bytesLastHour ?? 0), 'of code / h', `avg ${kb(p.merges.bytesPerHourDay ?? 0)}/h over 24 h`),
+    );
+    bars.append(rate);
+  }
   bar('fn', 'Functions', { identical: identical.n, confirmed: confirmed.n }, p.functions, fmt);
   bar('by', 'Code', { identical: identical.bytes, confirmed: confirmed.bytes }, p.bytes, kb);
   const legend = el('div', null, 'pbar-legend');
