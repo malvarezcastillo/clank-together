@@ -11,6 +11,7 @@ import { STATUS } from '../shared/compare.js';
 import { listSources, isUnit } from '../shared/project.js';
 import { changedNames, unitsMentioning } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
+import { functionRegions } from './split.js';
 import { className } from './grouping.js';
 import { now } from './db.js';
 import { returnBatch, batchAttempts, settleBatch } from './batches.js';
@@ -424,6 +425,7 @@ export class Verifier {
   async verifyBatch(batch) {
     // Superseded while it waited (a competing candidate merged first): nothing to judge.
     const attempts = batchAttempts(this.store, batch.id).filter((a) => a.state === 'verifying' || a.state === 'queued');
+    const confirm = new Set(JSON.parse(batch.result_json ?? '{}').confirm ?? []);
     if (!attempts.length) {
       this.store.run(`UPDATE batches SET state = 'superseded', finished_at = ? WHERE id = ?`, now(), batch.id);
       return;
@@ -480,6 +482,13 @@ export class Verifier {
         withdrawn++;
         continue;
       }
+      // Code already on main, submitted again unchanged and not byte-identical: no new work, and it
+      // would only fill the peer review. Existing code is reviewed only when the agent asks (confirm).
+      if (ev.state === 'peer_review' && !confirm.has(a.symbol_id) && this.unchangedFromBase(a.symbol_id, submitted, batch.base_commit)) {
+        this.withdraw(a, 'not changed: this code is already on main as it is; submit the functions you rewrote. To have existing code confirmed by peer review, list it in confirm (td_submit confirm: [...])');
+        withdrawn++;
+        continue;
+      }
       ev.feedback.headCommit = this.repo.head();
       if (attempts.length > 1) ev.feedback.batch = { id: batch.id, functions: attempts.length };
       if (batch.env_digest && this.config.envDigest && batch.env_digest !== this.config.envDigest) {
@@ -502,11 +511,25 @@ export class Verifier {
     if (failed || withdrawn) settleBatch(this.store, batch.id, `${failed} of ${attempts.length} functions need work${withdrawn ? `, ${withdrawn} were not written` : ''}; see each function's feedback`);
   }
 
+  /** Whether the submitted definition of a function is exactly what the batch's base had. */
+  unchangedFromBase(symbolId, files, baseCommit) {
+    for (const [f, text] of Object.entries(files)) {
+      const now = functionRegions(String(text))?.get(symbolId);
+      if (!now) continue;
+      const base = this.repo.show(baseCommit, f);
+      const old = base === null ? null : functionRegions(base)?.get(symbolId);
+      if (!old) return false;
+      const body = (t, r) => t.split('\n').slice(r.start, r.end).join('\n');
+      return body(base, old) === body(String(text), now);
+    }
+    return false;
+  }
+
   // A function submitted without any code for it: back into its author's claim, as if not submitted.
-  withdraw(attempt) {
+  withdraw(attempt, summary = 'not written: no annotation for it in the submission; it stays in your claim') {
     const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
     this.store.tx(() => {
-      this.store.run(`UPDATE attempts SET state = 'withdrawn', finished_at = ?, result_json = ? WHERE id = ?`, now(), JSON.stringify({ feedback: { summary: 'not written: no annotation for it in the submission; it stays in your claim' } }), attempt.id);
+      this.store.run(`UPDATE attempts SET state = 'withdrawn', finished_at = ?, result_json = ? WHERE id = ?`, now(), JSON.stringify({ feedback: { summary } }), attempt.id);
       if (attempt.competing) return; // the task is its holder's
       this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, updated_at = ? WHERE id = ?`, attempt.user_id, expires, now(), attempt.task_id);
     });

@@ -308,6 +308,7 @@ export function createApp(ctx) {
       role: user.role,
       via: user.via,
       leases,
+      leasedSymbols: leases.length ? store.all(`SELECT id AS taskId, symbol_id AS symbol FROM tasks WHERE lease_user = ? AND state = 'leased'`, user.id) : [],
       leasedAllowedPaths: leases.length ? tasks.allowedPathsForTasks(leases) : [],
       regions: ctx.regions.mine(user).map((r) => ({ kind: r.kind, key: r.key, expires: r.expires_at })),
       regionTasks: shared,
@@ -458,6 +459,7 @@ export function createApp(ctx) {
       notes: body.notes ? String(body.notes).slice(0, DEFAULT_LIMITS.maxNotesBytes) : null,
       agentMeta: body.agentMeta ? JSON.stringify(body.agentMeta).slice(0, 1000) : null,
       envDigest: body.envDigest ? String(body.envDigest).slice(0, 200) : null,
+      confirm: Array.isArray(body.confirm) ? body.confirm.filter((x) => /^fn_\d+$/.test(String(x))) : [],
     });
     if (runsWorker) ctx.verifier.pump();
     return r;

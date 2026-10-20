@@ -117,9 +117,15 @@ const TOOLS = [
     description: 'Submit your region as one batch: every task you hold (default) plus the functions of your shared regions that you rewrote, with the changed files they allow. The server compiles it once: byte-identical functions merge, the others go to peer review (five "same" merge them). Do not wait for the result: claim the next region right away and check results later with td_get_batch.',
     inputSchema: {
       type: 'object',
-      properties: { taskIds: { type: 'array', items: { type: 'integer' }, description: 'tasks to submit; default: all you hold' }, taskId: int('a single task (same as taskIds: [id])'), files: { type: 'array', items: { type: 'string' } }, notes: str('short notes for reviewers and later agents') },
+      properties: {
+        taskIds: { type: 'array', items: { type: 'integer' }, description: 'tasks to submit; default: every function you hold and rewrote' },
+        taskId: int('a single task (same as taskIds: [id])'),
+        files: { type: 'array', items: { type: 'string' } },
+        notes: str('short notes for reviewers and later agents'),
+        confirm: { type: 'array', items: { type: 'string' }, description: 'symbol IDs of functions whose existing code on main you checked and want peer-reviewed unchanged (otherwise unchanged functions are not submitted)' },
+      },
     },
-    run: async (ws, a) => ops.submit(ws, a.taskIds ?? (a.taskId ? [a.taskId] : []), { files: a.files, notes: a.notes, agentMeta: { client: 'td-mcp' } }),
+    run: async (ws, a) => ops.submit(ws, a.taskIds ?? (a.taskId ? [a.taskId] : []), { files: a.files, notes: a.notes, confirm: a.confirm ?? [], agentMeta: { client: 'td-mcp' } }),
   },
   {
     name: 'td_mark_no_decompile',

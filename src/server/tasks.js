@@ -301,12 +301,24 @@ export class Tasks {
     return units.size;
   }
 
-  submitBatch(user, { taskIds, baseCommit, files, notes = null, agentMeta = null, envDigest = null }) {
+  submitBatch(user, { taskIds, baseCommit, files, notes = null, agentMeta = null, envDigest = null, confirm = [] }) {
     const ids = [...new Set((taskIds ?? []).map(Number))];
     if (!ids.length) throw new HttpError(400, 'taskIds must list the tasks this submission covers');
     if (ids.length > this.maxLeased) throw new HttpError(400, `at most ${this.maxLeased} tasks per submission`);
     return this.store.tx(() => {
       const own = new Set(ids.filter((id) => this.requireSubmittable(user, id).own));
+      // An agent stuck in a loop (every submission refused before it compiled: not synced, conflicts,
+      // comments) pauses until it has fixed that, instead of filling the queue every few seconds.
+      const recent = this.store.all(
+        `SELECT b.id, (SELECT COUNT(*) FROM attempts a WHERE a.batch_id = b.id AND a.state IN ('peer_review', 'in_review', 'approved', 'merged', 'queued', 'verifying', 'withdrawn')) AS ok,
+                (SELECT json_extract(a.result_json, '$.feedback.summary') FROM attempts a WHERE a.batch_id = b.id LIMIT 1) AS why
+           FROM batches b WHERE b.user_id = ? AND b.created_at > ? AND b.state != 'skip' ORDER BY b.id DESC LIMIT 6`,
+        user.id, now() - 15 * 60_000,
+      );
+      const refused = recent.filter((b) => !b.ok && /conflicts with newer work|not part of main|comments or strings|static gate|defined nowhere|removes the annotation/.test(String(b.why)));
+      if (recent.length >= 6 && refused.length === recent.length) {
+        throw new HttpError(429, `your last ${recent.length} submissions were all refused before compiling (latest: ${refused[0].why}). Run td_sync, merge, fix that and check locally (td_check) before submitting again`, { retryAfterSeconds: 600 });
+      }
       // Keep the verification queue moving: a few batches waiting per account at a time.
       const max = this.config.maxQueuedBatches ?? 8;
       const waiting = this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND state IN ('queued', 'verifying')`, user.id).n;
@@ -314,8 +326,8 @@ export class Tasks {
         throw new HttpError(429, `you have ${waiting} batches waiting for verification (the limit is ${max}); keep your claims, do peer reviews meanwhile (td_list_peer_reviews), and submit again when one is done (td_get_batch shows it)`, { retryAfterSeconds: 120 });
       }
       const b = this.store.run(
-        `INSERT INTO batches (user_id, base_commit, files_json, notes, agent_meta, env_digest, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,
-        user.id, baseCommit, JSON.stringify(files), notes, agentMeta, envDigest, now(),
+        `INSERT INTO batches (user_id, base_commit, files_json, notes, agent_meta, env_digest, state, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+        user.id, baseCommit, JSON.stringify(files), notes, agentMeta, envDigest, confirm.length ? JSON.stringify({ confirm: confirm.map(String).slice(0, 500) }) : null, now(),
       );
       const batchId = Number(b.lastInsertRowid);
       this.store.run('UPDATE batches SET cost = ? WHERE id = ?', this.compileCost(Object.keys(files)), batchId);
