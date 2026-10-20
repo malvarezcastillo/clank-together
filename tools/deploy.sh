@@ -1,12 +1,15 @@
 #!/bin/sh
 # Deploys the committed HEAD to the coordinator without taking the site down (deploy/update.sh).
-#   tools/deploy.sh [--td]
+#   tools/deploy.sh [--test] [--td]
+# --test deploys to the test instance (test.saty.dev: /opt/togetherdecomp-test, its own data).
 # TD_KEEP_WORKER=1 tools/deploy.sh leaves the worker as it is (see deploy/update.sh).
 # --td also publishes the td binaries from dist/ (node tools/build-td/build.mjs) for download and
 # self-update. TD_HOST names the ssh host (default: td-server).
 set -eu
 
 HOST="${TD_HOST:-td-server}"
+INSTANCE=togetherdecomp
+if [ "${1:-}" = "--test" ]; then INSTANCE=togetherdecomp-test; shift; fi
 cd "$(dirname "$0")/.."
 [ -z "$(git status --porcelain -- src deploy template ghidra_scripts toolchain)" ] || echo "note: uncommitted changes are not deployed; this deploys HEAD ($(git rev-parse --short HEAD))"
 
@@ -24,7 +27,7 @@ ssh "$HOST" "set -e
   tar -xzf /tmp/clank-release.tar.gz -C \"\$d\"
   rm -f /tmp/clank-release.tar.gz
   if [ '${1:-}' = '--td' ]; then
-    D=/var/lib/togetherdecomp/downloads
+    D=/var/lib/$INSTANCE/downloads
     for f in td-windows-x64.exe td-linux-x64 SHA256SUMS; do
       install -o togetherdecomp -g togetherdecomp -m 0644 /tmp/\$f \$D/\$f.new && mv \$D/\$f.new \$D/\$f && rm -f /tmp/\$f
     done
@@ -33,5 +36,5 @@ ssh "$HOST" "set -e
     for f in td-windows-x64.exe td-linux-x64; do gzip -9 -k -f \$D/\$f && chown togetherdecomp:togetherdecomp \$D/\$f.gz; done
     echo 'td binaries published'
   fi
-  TD_KEEP_WORKER='${TD_KEEP_WORKER:-}' sh \"\$d/deploy/update.sh\" \"\$d\"
+  TD_INSTANCE=$INSTANCE TD_KEEP_WORKER='${TD_KEEP_WORKER:-}' sh \"\$d/deploy/update.sh\" \"\$d\"
   rm -rf \"\$d\""

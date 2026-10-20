@@ -2,6 +2,8 @@
 # Updates the coordinator's code without taking the site down. Run as root on the server:
 #   sh deploy/update.sh <unpacked-source-dir>
 # TD_KEEP_WORKER=1 leaves the worker alone (during maintenance with the worker stopped).
+# TD_INSTANCE=togetherdecomp-test updates a second, separate instance (its own code under
+# /opt/<instance>, data under /var/lib/<instance>, units <instance>.service and <instance>-worker).
 #
 # The new release is copied and syntax-checked next to the running one; nothing changes for the
 # running site until then. /opt/togetherdecomp is a symlink that switches to the new release in
@@ -12,8 +14,11 @@
 set -eu
 
 SRC=$(cd "${1:?usage: update.sh <source-dir>}" && pwd)
-BASE=/opt/togetherdecomp-releases
-LINK=/opt/togetherdecomp
+I="${TD_INSTANCE:-togetherdecomp}"
+case "$I" in togetherdecomp|togetherdecomp-test) ;; *) echo "unknown instance $I" >&2; exit 1 ;; esac
+BASE=/opt/$I-releases
+LINK=/opt/$I
+DATA=/var/lib/$I
 NODE=/opt/node/bin/node
 REL="$BASE/$(date +%Y%m%d-%H%M%S)"
 
@@ -44,9 +49,14 @@ code=0
 for d in src/shared src/server; do
   if [ -n "$OLD" ] && diff -rq -x web "$OLD/$d" "$REL/$d" >/dev/null 2>&1; then :; else code=1; fi
 done
+# Units of another instance: the same files with its paths and names.
+unit() { sed -e "s#/opt/togetherdecomp/#/opt/$I/#g" -e "s#/var/lib/togetherdecomp#$DATA#g" -e "s#^Description=Clank Together#Description=Clank Together ($I)#" "$REL/deploy/$1"; }
 units=0
-for u in togetherdecomp.service togetherdecomp-worker.service; do
-  cmp -s "$REL/deploy/$u" "/etc/systemd/system/$u" || units=1
+for u in web worker; do
+  src=togetherdecomp.service; [ "$u" = worker ] && src=togetherdecomp-worker.service
+  dst=$I.service; [ "$u" = worker ] && dst=$I-worker.service
+  unit "$src" > "$REL/deploy/.$dst"
+  cmp -s "$REL/deploy/.$dst" "/etc/systemd/system/$dst" || units=1
 done
 
 echo "== switching to the new release"
@@ -54,7 +64,8 @@ ln -sfn "$REL" "$LINK.next"
 mv -T "$LINK.next" "$LINK"
 
 if [ "$units" = 1 ]; then
-  install -m 0644 "$REL/deploy/togetherdecomp.service" "$REL/deploy/togetherdecomp-worker.service" /etc/systemd/system/
+  install -m 0644 "$REL/deploy/.$I.service" /etc/systemd/system/$I.service
+  install -m 0644 "$REL/deploy/.$I-worker.service" /etc/systemd/system/$I-worker.service
   systemctl daemon-reload
   code=1
 fi
@@ -63,9 +74,9 @@ if [ "$code" = 0 ]; then
   differs src/server/web && echo "pages updated (live, no restart)" || echo "no server code changed"
 else
   echo "== restarting the website"
-  systemctl restart togetherdecomp.service
+  systemctl restart $I.service
   sleep 2
-  systemctl is-active --quiet togetherdecomp.service || { journalctl -u togetherdecomp -n 20 --no-pager; exit 1; }
+  systemctl is-active --quiet $I.service || { journalctl -u $I -n 20 --no-pager; exit 1; }
   # The worker finishes its running verification, merge or check before it stops (no work is
   # redone), then starts on the new release. That can take minutes, so don't wait for it here.
   if [ -n "${TD_KEEP_WORKER:-}" ]; then
@@ -73,13 +84,13 @@ else
     echo "== worker left as it is (TD_KEEP_WORKER)"
   else
     echo "== the worker restarts once its running work is done"
-    systemctl restart --no-block togetherdecomp-worker.service
+    systemctl restart --no-block $I-worker.service
   fi
 fi
 
 # Keep the last three releases for a quick rollback (ln -sfn <release> /opt/togetherdecomp), and
 # every release a running process was started from (it loads files from it later, e.g. workers).
-inuse=$(cat /var/lib/togetherdecomp/release-*.txt 2>/dev/null)
+inuse=$(cat $DATA/release-*.txt 2>/dev/null)
 ls -1dt "$BASE"/*/ | tail -n +4 | while read -r old; do
   old=$(readlink -f "$old")
   [ "$old" = "$(readlink -f "$LINK")" ] && continue

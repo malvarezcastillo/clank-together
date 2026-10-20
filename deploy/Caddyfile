@@ -42,3 +42,34 @@ saty.dev {
 	}
 }
 
+
+# The test instance (togetherdecomp-test, deploy with tools/deploy.sh --test): its own coordinator
+# and data; changes are tried here before they go to the main site.
+test.saty.dev {
+	encode gzip
+
+	log {
+		output file /var/log/caddy/test-access.log {
+			roll_size 50MiB
+			roll_keep 3
+		}
+		format json
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "interest-cohort=()"
+		-Server
+	}
+
+	request_body {
+		max_size 8MB
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8090
+	}
+}
