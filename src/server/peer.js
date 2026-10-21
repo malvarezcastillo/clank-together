@@ -9,6 +9,8 @@
 // code was already shown to compile when it was submitted, so reviewers only read. If anyone said
 // "different" and it was accepted all the same, it is kept in later_review for a human (merge.js).
 // (Attempts from before this rule may wait in in_review; they are accepted the same way.)
+// Verdicts are weighted: a reviewer whose verdicts keep agreeing with the others' counts twice or
+// three times (trust.js). Either decision still takes at least two reviewers.
 
 import { HttpError } from './http.js';
 import { now } from './db.js';
@@ -23,7 +25,7 @@ const REVIEW_GROUP = 40;
 export const PEER_INSTRUCTIONS = [
   'You hold every function listed under functions. Review them all, then send all verdicts in one call (td_submit_peer_review with a verdicts list).',
   'A function with a claim field is not ported code but a claim that it needs no decompilation (and why). Read the original: "same" if the claim is right, "different" if it is ordinary code that should be ported.',
-  'Decide whether the submitted C++ does the same thing as the original function. It compiles (the server proved that when it was submitted) but is not byte-identical; your judgment is what counts. Five "same" verdicts merge it, three "different" send it back.',
+  'Decide whether the submitted C++ does the same thing as the original function. It compiles (the server proved that when it was submitted) but is not byte-identical; your judgment is what counts. Five "same" verdicts merge it, three "different" send it back; verdicts of reviewers who keep agreeing with the others count twice or three times, so careful reviews pay off.',
   'Read only: the original assembly (td_disassemble), the original pseudocode (td_decompile) and the submitted code below. Do not compile, run td_check, diff bytes or use other automated comparison.',
   'Check: every branch and condition, loop bounds, arithmetic and signedness, the functions called and their arguments, fields and globals read and written, return values, and error paths.',
   'Answer "same" only if a caller could not tell the two apart. Otherwise answer "different" and name the concrete difference (where, and what the original does instead).',
@@ -31,9 +33,10 @@ export const PEER_INSTRUCTIONS = [
 ];
 
 export class PeerReviews {
-  constructor({ store, project }) {
+  constructor({ store, project, trust = null }) {
     this.store = store;
     this.project = project;
+    this.trust = trust;
   }
 
   get required() {
@@ -60,8 +63,8 @@ export class PeerReviews {
     const rows = this.store.all(
       `SELECT * FROM (
          SELECT a.id AS attempt_id, a.batch_id, a.task_id, a.state, t.symbol_id, s.name, s.unit, a.finished_at,
-                (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
-                (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS objections,
+                (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
+                (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS objections,
                 (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
            FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
           WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
@@ -195,27 +198,27 @@ export class PeerReviews {
       const full = counts.same + others >= this.autoAccept;
       if (!leased && full) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
 
+      const weight = this.trust?.reviewer(user.id, user.tokenId ?? null).weight ?? 1;
       this.store.run(
-        'INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, agent_meta, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        attemptId, user.id, verdict, why.slice(0, 4000), agentMeta ? JSON.stringify(agentMeta).slice(0, 500) : null, now(),
+        'INSERT INTO peer_reviews (attempt_id, reviewer_id, token_id, verdict, weight, reason, agent_meta, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        attemptId, user.id, user.tokenId ?? null, verdict, weight, why.slice(0, 4000), agentMeta ? JSON.stringify(agentMeta).slice(0, 500) : null, now(),
       );
       this.store.run('DELETE FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ?', attemptId, user.id);
-      this.store.event('peer_review', user.id, { attempt: attemptId, verdict });
+      this.store.event('peer_review', user.id, { attempt: attemptId, verdict, weight });
 
-      const same = counts.same + (verdict === 'same' ? 1 : 0);
-      const different = counts.different + (verdict === 'different' ? 1 : 0);
+      const { same, different, sameReviewers, differentReviewers } = this.counts(attemptId);
       // A competing candidate does not take a task over from the agent holding it.
       const notOthers = `AND NOT (state = 'leased' AND lease_user IS NOT NULL AND lease_user != ${Number(a.user_id)})`;
       // Three "different" send it back even when five said "same": accepted only without that.
-      if (same >= this.autoAccept && different < this.required) {
+      if (this.accepts({ same, different, sameReviewers })) {
         // Accepted: it merges (objections, if any, are kept for a human to look at later).
         this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
         this.store.run(`UPDATE attempts SET state = 'approved' WHERE id = ?`, attemptId);
         this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ? ${notOthers}`, now(), a.task_id);
         this.store.event('auto_accepted', null, { attempt: attemptId, same, different });
-        return { state: 'approved', same, different, required: this.autoAccept };
+        return { state: 'approved', same, different, weight, required: this.autoAccept };
       }
-      if (different >= this.required) {
+      if (this.rejects({ different, differentReviewers })) {
         // Enough independent reviewers found a difference: back to the author with their reasons.
         this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', attemptId);
         this.store.run(`UPDATE attempts SET state = 'needs_cleanup' WHERE id = ?`, attemptId);
@@ -226,10 +229,10 @@ export class PeerReviews {
         );
         // Only this function goes back; the rest of its batch carries on.
         settleBatch(this.store, a.batch_id, `${different} peer reviews found a difference in ${a.task_id}`);
-        return { state: 'needs_cleanup', same, different, required: this.required };
+        return { state: 'needs_cleanup', same, different, weight, required: this.required };
       }
       // Undecided: it stays in review until one side has enough verdicts.
-      return { state: a.state, same, different, required: this.autoAccept };
+      return { state: a.state, same, different, weight, required: this.autoAccept };
     });
   }
 
@@ -249,19 +252,35 @@ export class PeerReviews {
   /** Verdicts of an attempt, for the author's feedback and the human reviewer. */
   verdicts(attemptId) {
     return this.store.all(
-      `SELECT p.verdict, p.reason, p.created_at, u.name AS reviewer FROM peer_reviews p JOIN users u ON u.id = p.reviewer_id WHERE p.attempt_id = ? ORDER BY p.id`,
+      `SELECT p.verdict, p.weight, p.reason, p.created_at, u.name AS reviewer FROM peer_reviews p JOIN users u ON u.id = p.reviewer_id WHERE p.attempt_id = ? ORDER BY p.id`,
       attemptId,
     ).map((v) => ({ ...v, reason: untrusted(v.reason) }));
   }
 
-  /** True when the attempt passed peer review (enough "same", no "different"). */
+  /** Weighted verdicts of an attempt, and how many reviewers gave them. */
   counts(attemptId) {
-    const r = this.store.get(`SELECT SUM(verdict = 'same') AS same, SUM(verdict = 'different') AS different FROM peer_reviews WHERE attempt_id = ?`, attemptId);
-    return { same: r?.same ?? 0, different: r?.different ?? 0 };
+    const r = this.store.get(
+      `SELECT SUM(CASE WHEN verdict = 'same' THEN weight ELSE 0 END) AS same, SUM(CASE WHEN verdict = 'different' THEN weight ELSE 0 END) AS different,
+              SUM(verdict = 'same') AS sameReviewers, SUM(verdict = 'different') AS differentReviewers FROM peer_reviews WHERE attempt_id = ?`,
+      attemptId,
+    );
+    return { same: r?.same ?? 0, different: r?.different ?? 0, sameReviewers: r?.sameReviewers ?? 0, differentReviewers: r?.differentReviewers ?? 0 };
   }
 
+  // Three "different" send it back even when five said "same": accepted only without that.
+  // However much a verdict weighs, one reviewer alone never decides.
+  accepts(c) {
+    return c.same >= this.autoAccept && c.different < this.required && c.sameReviewers >= 2;
+  }
+
+  rejects(c) {
+    return c.different >= this.required && c.differentReviewers >= 2;
+  }
+
+  /** Passed peer review, or a trusted author's function that did not need it (trust.js). */
   confirmed(attemptId) {
+    if (this.store.get('SELECT 1 FROM attempts WHERE id = ? AND peer_skipped = 1', attemptId)) return true;
     const c = this.counts(attemptId);
-    return c.same >= this.autoAccept && c.different < this.required;
+    return this.accepts(c) && !this.rejects(c);
   }
 }

@@ -700,6 +700,36 @@ function renderQuality(q) {
   box.append(el('p', 'Each agent is judged on its own. Half of its functions sent back by peers (20+ reviewed) or 60% broken (50+ submitted) limits it; 70% sent back (30+) or 85% broken (80+) pauses it. Both lift by themselves as its last 24 hours get better.', 'hint'));
 }
 
+// Short form for tables: skips peer review / verdict weight.
+function trustCell(t) {
+  if (!t) return '-';
+  const parts = [];
+  if (t.author.trusted) parts.push(el('div', `skips review at ${Math.round(t.author.skipAt * 100)}%+`, 'status active'));
+  if (t.reviewer.weight > 1) parts.push(el('div', `verdicts count ×${t.reviewer.weight}`, 'status active'));
+  parts.push(el('div', `author ${Math.round(t.author.score * 100)}% · reviewer ${Math.round(t.reviewer.sameScore * 100)}/${Math.round(t.reviewer.differentScore * 100)}%`, 'hint'));
+  return parts;
+}
+
+// What the agent has earned: skipping peer review as an author, more weight as a reviewer.
+function trustBlock(t) {
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const box = el('div', null, 'trust');
+  const au = t.author;
+  const rv = t.reviewer;
+  const authorLine = au.trusted
+    ? `Trusted author: its functions scoring ${pct(au.skipAt)} or more are accepted without peer review (one in ${Math.round(1 / t.sample)} still goes to peers, to keep the record measured).`
+    : `Not yet a trusted author. Of its functions scoring ${pct(au.needs.bandAt)}+ that peers decided (14 days), ${fmt(au.accepted)} were accepted and ${fmt(au.rejected)} sent back: ${pct(au.score)} at the least (needs ${pct(au.needs.score)} over ${au.needs.decided}+ functions).`;
+  const tiers = rv.tiers.map((x) => `×${x.weight}: ${pct(x.same)} / ${pct(x.different)} over ${x.minDifferent}+ differences`).join(', ');
+  const reviewerLine = `Reviewer: agrees with the other reviewers ${pct(rv.sameScore)} of the time when they found it the same (${fmt(rv.same)}), ${pct(rv.differentScore)} when they found a difference (${fmt(rv.different)}), at the least (30 days). ${rv.weight > 1 ? `Its verdicts count ×${rv.weight}.` : `Its verdicts count once (${tiers}).`}`;
+  box.append(
+    el('div', null, 'quality-head'),
+    el('p', authorLine, au.trusted ? 'good' : 'hint'),
+    el('p', reviewerLine, rv.weight > 1 ? 'good' : 'hint'),
+  );
+  box.firstChild.append(el('span', 'Trust', 'agent-subtitle'), ...(au.trusted ? [el('span', 'skips review', 'status active')] : []), ...(rv.weight > 1 ? [el('span', `reviews ×${rv.weight}`, 'status active')] : []));
+  return box;
+}
+
 function agentCard(q) {
   const pct = (x) => `${Math.round(x * 100)}%`;
   const card = el('div', null, `agent-card ${q.level}`);
@@ -723,6 +753,7 @@ function agentCard(q) {
       ['Broken or refused', q.submitted ? `${pct(q.brokenRate)} of ${fmt(q.submitted)}${trend(q.brokenRate, prev.submitted ? prev.brokenRate : null)}` : '-'],
     ]),
   );
+  if (q.trust) card.append(trustBlock(q.trust));
   if (q.kinds.length) card.append(el('p', `What broke: ${q.kinds.map((k) => `${fmt(k.functions)} ${k.label}`).join(' · ')}`, 'muted'));
   if (q.sentBack.length) {
     const d = el('details', null, 'fold');
@@ -842,10 +873,10 @@ function renderAuthors(authors) {
   $('authors').replaceChildren(
     authors.length
       ? table(
-          ['Author', 'Agent', 'Level', 'Sent back by peers', 'Broken or refused', 'Why', 'Submissions (account)'],
+          ['Author', 'Agent', 'Level', 'Trust', 'Sent back by peers', 'Broken or refused', 'Why', 'Submissions (account)'],
           authors.map((a) => {
             const modes = el('div', null, 'row-actions');
-            for (const [mode, label] of [['auto', 'Auto'], ['trusted', 'Trust'], ['paused', 'Pause']]) {
+            for (const [mode, label] of [['auto', 'Auto'], ['trusted', 'Never limit'], ['paused', 'Pause']]) {
               const b = button(label, async () => {
                 if (mode === 'paused' && !confirm(`Pause submissions from ${a.name}? Their agent can still review and read, but not submit or claim regions.`)) return;
                 await adminAction(a.name, `submit-${mode}`);
@@ -857,6 +888,7 @@ function renderAuthors(authors) {
               a.name,
               a.token ?? el('span', 'before agents were told apart', 'hint'),
               [chip(a.level), ...(a.mode !== 'auto' ? [el('div', `set: ${a.mode}`, 'hint')] : [])],
+              trustCell(a.trust),
               a.peerDecided ? `${pct(a.peerRate)} of ${a.peerDecided}` : '-',
               a.submitted ? `${pct(a.brokenRate)} of ${a.submitted}` : '-',
               el('div', a.reasons.join('; ') || '', 'hint'),

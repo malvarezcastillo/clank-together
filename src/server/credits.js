@@ -70,7 +70,7 @@ export class Credits {
       for (const r of this.store.all(
         `SELECT p.id, p.reviewer_id AS user_id FROM peer_reviews p JOIN attempts t ON t.id = p.attempt_id
           WHERE ((p.verdict = 'same' AND t.state IN ('merged', 'approved', 'merging')) OR (p.verdict = 'different' AND t.state IN ('needs_cleanup', 'hard', 'returned') AND
-                 (SELECT COUNT(*) FROM peer_reviews q WHERE q.attempt_id = t.id AND q.verdict = 'different') >= 3))
+                 (SELECT COALESCE(SUM(q.weight), 0) FROM peer_reviews q WHERE q.attempt_id = t.id AND q.verdict = 'different') >= 3))
             AND NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.user_id = p.reviewer_id AND l.reason = 'review' AND l.ref = 'review:' || p.id)`,
       )) {
         n += this.book(r.user_id, AWARDS.review, 'review', `review:${r.id}`);

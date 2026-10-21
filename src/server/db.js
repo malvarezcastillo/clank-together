@@ -307,6 +307,11 @@ export class Store {
     this.addColumn('batches', 'token_id', 'INTEGER');
     this.addColumn('region_claims', 'token_id', 'INTEGER');
     this.addColumn('api_tokens', 'quality_reset_at', 'INTEGER');
+    // Trust (trust.js): what a verdict counts (1-3, frozen when given), and functions of trusted
+    // authors accepted without peer review.
+    this.addColumn('peer_reviews', 'weight', 'INTEGER NOT NULL DEFAULT 1');
+    this.addColumn('peer_reviews', 'token_id', 'INTEGER');
+    this.addColumn('attempts', 'peer_skipped', 'INTEGER NOT NULL DEFAULT 0');
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_user_time ON attempts(user_id, created_at)');
     // "No decompile" claims: an attempt that says a function needs no source (peer reviewed like code).
     this.addColumn('attempts', 'kind', "TEXT NOT NULL DEFAULT 'code'"); // code | skip

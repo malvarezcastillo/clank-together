@@ -1336,3 +1336,65 @@ test('each agent (token) is judged on its own; the owner resets one agent once a
   assert.equal((await request('POST', '/api/me/quality/reset', { tokenId: 999999 }, { cookie })).status, 404);
   ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE user_id = ?`, author.id);
 });
+
+test('trust: careful reviewers count more, trusted authors skip peer review, one reviewer never decides', async () => {
+  const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
+  const head = ctx.repo.head();
+  const mk = (n, prefix) => Promise.all(Array.from({ length: n }, (_, i) => activeUser(`${prefix}${i}`)));
+  const reviewerToken = await activeUser('trustrev');
+  const reviewer = ctx.accounts.userByApiToken(reviewerToken);
+  const authorToken = await activeUser('trustauthor');
+  const author = ctx.accounts.userByApiToken(authorToken);
+  await mk(3, 'trustpeer');
+  const peers = [0, 1, 2].map((i) => ctx.accounts.byName(`trustpeer${i}`));
+  const attempt = (userId, tokenId, score, state = 'merged') =>
+    Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, token_id, base_commit, files_json, state, result_json, created_at) VALUES (?, ?, ?, ?, '{}', ?, ?, ?)`,
+      task, userId, tokenId, head, state, JSON.stringify({ feedback: { target: { score } } }), now()).lastInsertRowid);
+  const verdict = (a, userId, v, tokenId = null) =>
+    ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, token_id, verdict, reason, created_at) VALUES (?, ?, ?, ?, 'the loop bound and the call match the original', ?)`, a, userId, tokenId, v, now());
+
+  // A reviewer who agrees with the others both ways: 200 the same, 40 differences found too.
+  for (let i = 0; i < 240; i++) {
+    const v = i < 200 ? 'same' : 'different';
+    const a = attempt(author.id, null, 0.8, 'rejected');
+    verdict(a, peers[0].id, v);
+    verdict(a, peers[1].id, v);
+    verdict(a, reviewer.id, v, reviewer.tokenId);
+  }
+  ctx.trust.forget();
+  assert.equal(ctx.trust.reviewer(reviewer.id, reviewer.tokenId).weight, 2);
+  assert.equal(ctx.trust.reviewer(peers[2].id).weight, 1, 'no record, weight 1');
+
+  // A weighty "different" alone does not send a function back; a second reviewer does.
+  const open = attempt(author.id, author.tokenId, 0.9, 'peer_review');
+  const r1 = ctx.peers.submit(reviewer, open, 'different', 'the original checks the flag before the loop', null);
+  assert.equal(r1.weight, 2);
+  assert.equal(r1.state, 'peer_review');
+  assert.equal(ctx.peers.submit(peers[2], open, 'different', 'the original returns early when the list is empty', null).state, 'needs_cleanup');
+
+  // An author whose close matches keep passing: trusted; close functions skip review.
+  ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE user_id = ?`, author.id);
+  ctx.store.run(`DELETE FROM peer_reviews WHERE attempt_id IN (SELECT id FROM attempts WHERE user_id = ?)`, author.id);
+  for (let i = 0; i < 30; i++) {
+    const a = attempt(author.id, author.tokenId, 0.97);
+    for (const p of [...peers, reviewer]) verdict(a, p.id, 'same');
+    verdict(a, ctx.accounts.byName('rsreviewer1').id, 'same');
+  }
+  ctx.trust.forget();
+  const t = ctx.trust.author(author.id, author.tokenId);
+  assert.equal(t.trusted, true, JSON.stringify(t));
+  ctx.project.matchPolicy.trust = { sample: 0 };
+  try {
+    assert.equal(ctx.trust.skips({ user_id: author.id, token_id: author.tokenId }, 0.96), true);
+    assert.equal(ctx.trust.skips({ user_id: author.id, token_id: author.tokenId }, 0.9), false, 'below skipAt: peers review it');
+    assert.equal(ctx.trust.skips({ user_id: author.id, token_id: null }, 0.99), false, 'another agent of the account earns its own');
+  } finally {
+    delete ctx.project.matchPolicy.trust;
+  }
+  const skipped = attempt(author.id, author.tokenId, 0.97, 'approved');
+  ctx.store.run('UPDATE attempts SET peer_skipped = 1 WHERE id = ?', skipped);
+  assert.equal(ctx.peers.confirmed(skipped), true);
+  const stats = (await call('GET', '/api/me/quality', null, authorToken)).body;
+  assert.equal(stats.trust.author.trusted, true);
+  ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE user_id = ?`, author.id);
+});

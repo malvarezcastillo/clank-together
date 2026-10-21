@@ -38,7 +38,8 @@ export function bestResults(check) {
 }
 
 export class Verifier {
-  constructor({ store, config, repo, project, tasks, getPe, peers, log = console }) {
+  constructor({ store, config, repo, project, tasks, getPe, peers, trust = null, log = console }) {
+    this.trust = trust;
     this.store = store;
     this.config = config;
     this.repo = repo;
@@ -448,8 +449,8 @@ export class Verifier {
       const hash = p.result_json ? JSON.parse(p.result_json).feedback?.target?.codeHash : null;
       if (hash !== target.codeHash || !this.peers?.confirmed(p.id)) continue;
       this.store.run(
-        `INSERT OR IGNORE INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, agent_meta, created_at)
-         SELECT ?, reviewer_id, verdict, reason, agent_meta, created_at FROM peer_reviews WHERE attempt_id = ?`,
+        `INSERT OR IGNORE INTO peer_reviews (attempt_id, reviewer_id, token_id, verdict, weight, reason, agent_meta, created_at)
+         SELECT ?, reviewer_id, token_id, verdict, weight, reason, agent_meta, created_at FROM peer_reviews WHERE attempt_id = ?`,
         attempt.id, p.id,
       );
       return true;
@@ -533,6 +534,14 @@ export class Verifier {
       if (ev.state === 'peer_review' && this.carryOver(a, ev.feedback.target)) {
         ev.state = 'in_review';
         ev.feedback.summary += '; the compiled code is unchanged since three peers confirmed it, so their verdicts carry over';
+      }
+      // A trusted author's function that is close to the original: accepted without peer review
+      // (but for a random sample that keeps the author's record measured; trust.js).
+      if (ev.state === 'peer_review' && a.kind !== 'skip' && this.trust?.skips(a, ev.score)) {
+        ev.state = 'approved';
+        ev.feedback.summary = `not byte-identical (score ${(ev.score * 100).toFixed(1)}%), accepted without peer review: this agent's functions keep passing peer review (trust)`;
+        ev.feedback.trusted = true;
+        this.store.run('UPDATE attempts SET peer_skipped = 1 WHERE id = ?', a.id);
       }
       if (ev.state === 'needs_cleanup' || ev.state === 'rejected') failed++;
       this.finish(a, ev.state, ev.score, ev.feedback);

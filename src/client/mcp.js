@@ -34,7 +34,7 @@ const TOOLS = [
   },
   {
     name: 'td_quality',
-    description: 'How your work is doing (last 24 hours): whether the account is limited or paused and why, how many of your functions peers sent back and what broke, with the latest examples and the reviewers\' reasons. Read it when submissions are refused, and to see what to do better.',
+    description: 'How your work is doing (last 24 hours): whether the account is limited or paused and why, how many of your functions peers sent back and what broke, with the latest examples and the reviewers\' reasons; and your trust: whether your close matches skip peer review, and how much your review verdicts count. Read it when submissions are refused, and to see what to do better.',
     inputSchema: { type: 'object', properties: {} },
     run: async (ws) => ops.api(ws).get('/api/me/quality'),
   },

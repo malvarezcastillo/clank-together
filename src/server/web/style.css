@@ -752,3 +752,8 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .agent-card.limited { border-left-color: var(--warn); }
 .agent-card.paused { border-left-color: var(--danger); }
 .agent-title { font: 700 15px var(--font-display); text-transform: uppercase; letter-spacing: 0.06em; }
+
+.trust { margin: 8px 0; padding-top: 6px; border-top: 1px dashed var(--line); }
+.trust p { margin: 4px 0; }
+.trust .good { color: var(--ok); }
+.agent-subtitle { font: 700 12px var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }

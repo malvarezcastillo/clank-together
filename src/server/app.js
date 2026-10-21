@@ -25,6 +25,7 @@ import { Regions } from './regions.js';
 import { Credits, SLOT_TABLE } from './credits.js';
 import { Live } from './live.js';
 import { Quality, LIMITS } from './quality.js';
+import { Trust } from './trust.js';
 import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
@@ -88,8 +89,9 @@ export function openServer(dataDir, { log = console } = {}) {
   const quality = new Quality({ store });
   tasks.quality = quality;
   regions.quality = quality;
-  const peers = new PeerReviews({ store, project });
-  const verifier = new Verifier({ store, config, repo, project, tasks, getPe, peers, log });
+  const trust = new Trust({ store, project });
+  const peers = new PeerReviews({ store, project, trust });
+  const verifier = new Verifier({ store, config, repo, project, tasks, getPe, peers, trust, log });
   verifier.regions = regions;
   const merger = new Merger({ store, config, repo, project, tasks, verifier, getPe, peers, log });
   const accounts = new Accounts(store);
@@ -98,7 +100,7 @@ export function openServer(dataDir, { log = console } = {}) {
   merger.onMerged = (commit) => ghidra.scheduleRefresh(commit);
   const checks = new CheckQueue({ store, repo, verifier, config, log });
   const credits = new Credits({ store });
-  return { config, store, repo, project, tasks, regions, quality, credits, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
+  return { config, store, repo, project, tasks, regions, quality, trust, credits, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
 }
 
 export function createApp(ctx) {
@@ -887,8 +889,8 @@ export function createApp(ctx) {
       `SELECT a.id, a.batch_id, a.task_id, a.state, a.score, a.created_at, a.finished_at, u.name AS author, t.symbol_id, s.name,
               (SELECT COUNT(*) FROM reviews r WHERE r.attempt_id = a.id AND r.action = 'approve') AS approvals,
               (SELECT COUNT(*) FROM reviews r WHERE r.attempt_id = a.id AND r.reviewer_id = ?) AS reviewed_by_me,
-              (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS peer_same,
-              (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS peer_different,
+              (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS peer_same,
+              (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS peer_different,
               (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS peer_working
          FROM attempts a JOIN users u ON u.id = a.user_id JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
         WHERE a.state IN ('in_review', 'peer_review') ORDER BY a.state = 'peer_review', a.finished_at`,
@@ -947,8 +949,16 @@ export function createApp(ctx) {
   // An agent (token) sees its own numbers; the owner on the website sees every agent of the account.
   router.on('GET', '/api/me/quality', ({ req }) => {
     const user = auth(req);
-    return user.via === 'token' ? ctx.quality.details(user.id, user.tokenId) : ctx.quality.account(user.id);
+    const withTrust = (d) => ({ ...d, trust: trustOf(user.id, d.tokenId ?? null) });
+    if (user.via === 'token') return withTrust(ctx.quality.details(user.id, user.tokenId));
+    const all = ctx.quality.account(user.id);
+    return { ...all, tokens: all.tokens.map(withTrust) };
   });
+  const trustOf = (userId, tokenId) => {
+    const author = ctx.trust.author(userId, tokenId);
+    const reviewer = ctx.trust.reviewer(userId, tokenId);
+    return { author, reviewer, sample: ctx.trust.policy.sample };
+  };
   // The owner's once-a-day fresh start for one agent (a person on the website, not the agent).
   router.on('POST', '/api/me/quality/reset', async ({ req }) => {
     const user = auth(req, { session: true });
@@ -958,7 +968,14 @@ export function createApp(ctx) {
 
   router.on('GET', '/api/admin/authors', ({ req }) => {
     auth(req, { role: 'admin', session: true });
-    return { authors: ctx.quality.authors(), limits: LIMITS };
+    const ids = new Map(store.all('SELECT id, user_id, label FROM api_tokens').map((t) => [`${t.user_id}:${t.label}`, t.id]));
+    const names = new Map(store.all('SELECT id, name FROM users').map((u) => [u.name, u.id]));
+    const authors = ctx.quality.authors().map((a) => {
+      const userId = names.get(a.name);
+      const tokenId = a.tokenId ?? (a.token ? ids.get(`${userId}:${a.token}`) ?? null : null);
+      return { ...a, trust: trustOf(userId, tokenId) };
+    });
+    return { authors, limits: LIMITS };
   });
   router.on('GET', '/api/admin/users', ({ req, query }) => {
     auth(req, { role: 'admin', session: true });
