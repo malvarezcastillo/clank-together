@@ -127,3 +127,20 @@ test('lcsRatio', () => {
   assert.equal(lcsRatio(Buffer.from('abcd'), Buffer.from('abxd')), 0.75);
   assert.equal(lcsRatio(Buffer.alloc(0), Buffer.alloc(0)), 1);
 });
+
+// Every unit's s_ScriptFunctions is its own table: a file-local static is known by object and name.
+test('a file-local static resolves by its unit, never by the bare name', () => {
+  const f = fixture();
+  const { annotations } = parseAnnotations(f.source, FILE);
+  const obj = new CoffObject(f.obj);
+  const real = obj.dataSymbols.bind(obj);
+  obj.dataSymbols = () => [...real(), { name: '?g_val@@3HA', section: 2, storageClass: 3 }];
+  const syms = symbols([{ id: 'gl_09999', kind: 'global', addr: 0x405000, size: 4, decorated: '?g_val@@3HA' }]);
+  const compare = (nameIndex) =>
+    compareObject({ obj, listing: parseListing(f.listing), file: FILE, annotations, symbols: syms, nameIndex, pe: new PEImage(f.pe) }).functions[0];
+  // Another unit's static of the same name (at another address) does not make this one wrong.
+  const other = compare(new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_09999']]));
+  assert.notEqual(other.status, STATUS.MISMATCH);
+  const own = compare(new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_09999'], ['src/player.obj|?g_val@@3HA', 'gl_00001']]));
+  assert.equal(own.status, STATUS.EXACT);
+});

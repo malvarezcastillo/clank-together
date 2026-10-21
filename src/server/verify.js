@@ -318,6 +318,41 @@ export class Verifier {
     return { check, rec: reconcile(check, symbols), changedHeaders: saved.changedHeaders, reused: check.units.length - part.check.units.length, compiled: part.check.units.length };
   }
 
+  /**
+   * A recorded status can be older than main: a header change merged later recompiles a unit only
+   * where it mentions what changed (affected.js), so a unit's functions can build differently on
+   * main than recorded. Before a check counts regressions, the units it would blame are compiled
+   * as main has them (once per main commit) and their recorded status is brought up to date, so a
+   * submission is compared with what main actually builds.
+   */
+  async refreshBaselines(check, files, jobName) {
+    const found = this.regressions(check, files);
+    if (!found.length) return 0;
+    const head = this.repo.head();
+    this.baselineAt ??= new Map();
+    const units = [...new Set(found.map((r) => r.file))].filter((u) => isUnit(u) && this.baselineAt.get(u) !== head);
+    if (!units.length) return 0;
+    const { check: main } = await this.check({}, `baseline-${jobName}`, { onlyUnits: units, lint: false });
+    if (this.repo.head() !== head) return 0; // main moved meanwhile: the next check measures again
+    const compiled = new Set(main.units.filter((u) => u.compiled).map((u) => u.file));
+    const ids = new Set(found.map((r) => r.id));
+    let changed = 0;
+    for (const [id, { f, unit }] of bestResults(main)) {
+      if (!ids.has(id) || !compiled.has(unit)) continue;
+      const old = this.store.get('SELECT status, score, code_hash FROM func_status WHERE symbol_id = ?', id);
+      if (!old || (old.status === f.status && Math.abs(old.score - f.score) <= 1e-4 && old.code_hash === (f.codeHash ?? old.code_hash))) continue;
+      this.store.run(
+        'UPDATE func_status SET file = ?, status = ?, score = ?, code_hash = COALESCE(?, code_hash), commit_hash = ?, updated_at = ? WHERE symbol_id = ?',
+        unit, f.status, f.score, f.codeHash ?? null, head, now(), id,
+      );
+      this.store.event('baseline_refreshed', null, { id, was: old.status, wasScore: old.score, now: f.status, score: f.score, commit: head });
+      this.log.info(`baseline of ${id} was stale (${old.status} ${(old.score * 100).toFixed(1)}%); main builds it as ${f.status} ${(f.score * 100).toFixed(1)}%`);
+      changed++;
+    }
+    for (const u of compiled) this.baselineAt.set(u, head);
+    return changed;
+  }
+
   /** Functions that match on main but would no longer match with this change. */
   regressions(check, files = {}) {
     const results = new Map([...bestResults(check)].map(([id, b]) => [id, b.f]));
@@ -467,6 +502,7 @@ export class Verifier {
     // Verify fast: the submitted units (enough to judge and route every submitted function). The
     // units that only include a changed header are compiled when the batch merges.
     const { check, rec, changedHeaders } = await this.check(merged.files, `batch-${batch.id}`, { dependents: false, targets: attempts.map((a) => a.symbol_id) });
+    await this.refreshBaselines(check, merged.files, `batch-${batch.id}`);
     const targets = new Set(attempts.map((a) => a.symbol_id));
     const outside = this.changedOutside(check, merged.files, targets, batch.user_id);
     let failed = 0;

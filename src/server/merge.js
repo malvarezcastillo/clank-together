@@ -302,6 +302,7 @@ export class Merger {
         return;
       }
     }
+    await this.verifier.refreshBaselines(check, merged.files, `merge-${batch.id}`);
     const targets = new Set(attempts.map((a) => a.symbol_id));
     // The batch a split part came from holds the other functions of these files (still in review,
     // their source put back as on main); shared changes in the file may change their compiled code.

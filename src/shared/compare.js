@@ -140,8 +140,18 @@ export function bindAnnotations({ listing, file, annotations, nameIndex = new Ma
 export function compareObject({ obj, listing, file, annotations, symbols, nameIndex = new Map(), pe }) {
   const objFns = new Map(obj.functions().map((f) => [f.name, f]));
   const sizes = new Map([...objFns].map(([n, f]) => [n, f.bytes.length]));
-  const { byAnn, bindings, errors } = bindAnnotations({ listing, file, annotations, nameIndex, symbols, sizes });
+  const found = bindAnnotations({ listing, file, annotations, nameIndex, symbols, sizes });
+  const { byAnn, errors } = found;
+  // A file-local static (s_ScriptFunctions, a function's static local) has the same name in every
+  // unit that defines one: it is known by its object and name (Foo_Scripts.obj|s_ScriptFunctions),
+  // never by the name alone, which would tie every unit's table to one address.
+  const unitObj = file.replace(/\.[^./\\]+$/, '') + '.obj';
+  const local = new Set(obj.dataSymbols().filter((s) => s.storageClass === 3 && !obj.literal(s)).map((s) => s.name));
+  const qualify = (name) => (local.has(name) ? `${unitObj}|${name}` : name);
+  const bindings = new Map([...found.bindings].map(([sym, id]) => [qualify(sym), id]));
   const resolve = (name) => bindings.get(name) ?? nameIndex.get(name) ?? null;
+  const withLocalNames = (fn) =>
+    fn.relocs.some((r) => local.has(r.symbol?.name)) ? { ...fn, relocs: fn.relocs.map((r) => (local.has(r.symbol?.name) ? { ...r, symbol: { ...r.symbol, name: qualify(r.symbol.name) } } : r)) } : fn;
   const procsBySymbol = new Map(listing.procs.map((p) => [p.symbol, p]));
 
   const functions = [];
@@ -162,7 +172,7 @@ export function compareObject({ obj, listing, file, annotations, symbols, nameIn
       continue;
     }
     const proc = procsBySymbol.get(symbol);
-    const r = compareFunction({ fn, addr: sym.addr, origSize: sym.size, pe, resolve, symbols, proc, literalOf: (s) => obj.literal(s) });
+    const r = compareFunction({ fn: withLocalNames(fn), addr: sym.addr, origSize: sym.size, pe, resolve, symbols, proc, literalOf: (s) => obj.literal(s) });
     inferred.push(...r.inferred);
     delete r.inferred;
     functions.push({ ...base, addr: sym.addr, ...r, asm: procText(proc) });
