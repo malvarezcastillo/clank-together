@@ -76,7 +76,9 @@ export class Trust {
   // Rows of this agent: its token, plus the account's untracked work if the token is that old.
   scope(alias, tokenId) {
     if (tokenId == null) return { sql: `${alias}.token_id IS NULL`, args: [] };
-    const started = this.store.get('SELECT MIN(created_at) AS at FROM batches WHERE token_id IS NOT NULL')?.at ?? now();
+    // When batches started recording their token: fixed once known (batches are numbered in time).
+    this.started ??= this.store.get('SELECT created_at AS at FROM batches WHERE token_id IS NOT NULL ORDER BY id LIMIT 1')?.at;
+    const started = this.started ?? now();
     const created = this.store.get('SELECT created_at FROM api_tokens WHERE id = ?', tokenId)?.created_at ?? now();
     return created < started ? { sql: `(${alias}.token_id = ? OR ${alias}.token_id IS NULL)`, args: [tokenId] } : { sql: `${alias}.token_id = ?`, args: [tokenId] };
   }
@@ -91,7 +93,7 @@ export class Trust {
         `SELECT SUM(same >= CASE WHEN different > 0 THEN ? ELSE ? END AND different < ?) AS accepted, SUM(different >= ?) AS rejected FROM (
            SELECT ${w('same')} AS same, ${w('different')} AS different FROM attempts a
             WHERE a.user_id = ? AND ${s.sql} AND a.created_at > ? AND a.kind = 'code' AND a.peer_skipped = 0
-              AND json_extract(a.result_json, '$.feedback.target.score') >= ?)`,
+              AND a.score >= ?)`,
         this.autoAccept, this.acceptClean, this.required, this.required, userId, ...s.args, now() - p.authorDays * DAY, p.bandAt,
       );
       const accepted = r?.accepted ?? 0;
@@ -144,5 +146,6 @@ export class Trust {
 
   forget() {
     this.cache.clear();
+    this.started = undefined;
   }
 }

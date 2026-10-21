@@ -1345,8 +1345,8 @@ test('trust: careful reviewers count more, trusted authors skip peer review, one
   await mk(3, 'trustpeer');
   const peers = [0, 1, 2].map((i) => ctx.accounts.byName(`trustpeer${i}`));
   const attempt = (userId, tokenId, score, state = 'merged') =>
-    Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, token_id, base_commit, files_json, state, result_json, created_at) VALUES (?, ?, ?, ?, '{}', ?, ?, ?)`,
-      task, userId, tokenId, head, state, JSON.stringify({ feedback: { target: { score } } }), now()).lastInsertRowid);
+    Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, token_id, base_commit, files_json, state, score, result_json, created_at) VALUES (?, ?, ?, ?, '{}', ?, ?, ?, ?)`,
+      task, userId, tokenId, head, state, score, JSON.stringify({ feedback: { target: { score } } }), now()).lastInsertRowid);
   const verdict = (a, userId, v, tokenId = null) =>
     ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, token_id, verdict, reason, created_at) VALUES (?, ?, ?, ?, 'the loop bound and the call match the original', ?)`, a, userId, tokenId, v, now());
 
