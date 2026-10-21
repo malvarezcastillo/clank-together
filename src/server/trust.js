@@ -57,6 +57,10 @@ export class Trust {
     return this.project.matchPolicy.peerAutoAccept ?? 5;
   }
 
+  get acceptClean() {
+    return Math.min(this.project.matchPolicy.peerAcceptClean ?? 4, this.autoAccept);
+  }
+
   get required() {
     return this.project.matchPolicy.peerReviews ?? 3;
   }
@@ -84,11 +88,11 @@ export class Trust {
       const s = this.scope('a', tokenId);
       const w = (verdict) => `(SELECT COALESCE(SUM(r.weight), 0) FROM peer_reviews r WHERE r.attempt_id = a.id AND r.verdict = '${verdict}')`;
       const r = this.store.get(
-        `SELECT SUM(same >= ? AND different < ?) AS accepted, SUM(different >= ?) AS rejected FROM (
+        `SELECT SUM(same >= CASE WHEN different > 0 THEN ? ELSE ? END AND different < ?) AS accepted, SUM(different >= ?) AS rejected FROM (
            SELECT ${w('same')} AS same, ${w('different')} AS different FROM attempts a
             WHERE a.user_id = ? AND ${s.sql} AND a.created_at > ? AND a.kind = 'code' AND a.peer_skipped = 0
               AND json_extract(a.result_json, '$.feedback.target.score') >= ?)`,
-        this.autoAccept, this.required, this.required, userId, ...s.args, now() - p.authorDays * DAY, p.bandAt,
+        this.autoAccept, this.acceptClean, this.required, this.required, userId, ...s.args, now() - p.authorDays * DAY, p.bandAt,
       );
       const accepted = r?.accepted ?? 0;
       const rejected = r?.rejected ?? 0;

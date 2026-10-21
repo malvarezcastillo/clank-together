@@ -4,7 +4,8 @@
 // via `td disasm` / `td decompile`) and the submitted code, and decides whether the logic is the
 // same. No automated verdicts: the context deliberately leaves out the server's byte diff and score.
 // An attempt stays in peer review until one side has enough verdicts from different accounts:
-// `peerAutoAccept` (default 5) "same" verdicts accept it, and it merges with no human step;
+// `peerAcceptClean` (default 4) "same" verdicts accept it when nobody said "different", and
+// `peerAutoAccept` (default 5) when someone did; it merges with no human step;
 // `peerReviews` (default 3) "different" ones send it back to its author with their reasons. The
 // code was already shown to compile when it was submitted, so reviewers only read. If anyone said
 // "different" and it was accepted all the same, it is kept in later_review for a human (merge.js).
@@ -25,7 +26,7 @@ const REVIEW_GROUP = 40;
 export const PEER_INSTRUCTIONS = [
   'You hold every function listed under functions. Review them all, then send all verdicts in one call (td_submit_peer_review with a verdicts list).',
   'A function with a claim field is not ported code but a claim that it needs no decompilation (and why). Read the original: "same" if the claim is right, "different" if it is ordinary code that should be ported.',
-  'Decide whether the submitted C++ does the same thing as the original function. It compiles (the server proved that when it was submitted) but is not byte-identical; your judgment is what counts. Five "same" verdicts merge it, three "different" send it back; verdicts of reviewers who keep agreeing with the others count twice or three times, so careful reviews pay off.',
+  'Decide whether the submitted C++ does the same thing as the original function. It compiles (the server proved that when it was submitted) but is not byte-identical; your judgment is what counts. Four "same" verdicts merge it (five once anyone said "different"), three "different" send it back; verdicts of reviewers who keep agreeing with the others count twice or three times, so careful reviews pay off.',
   'Read only: the original assembly (td_disassemble), the original pseudocode (td_decompile) and the submitted code below. Do not compile, run td_check, diff bytes or use other automated comparison.',
   'Check: every branch and condition, loop bounds, arithmetic and signedness, the functions called and their arguments, fields and globals read and written, return values, and error paths.',
   'Answer "same" only if a caller could not tell the two apart. Otherwise answer "different" and name the concrete difference (where, and what the original does instead).',
@@ -45,6 +46,16 @@ export class PeerReviews {
 
   get autoAccept() {
     return this.project.matchPolicy.peerAutoAccept ?? 5;
+  }
+
+  // "same" verdicts that accept an attempt nobody objected to.
+  get acceptClean() {
+    return Math.min(this.project.matchPolicy.peerAcceptClean ?? 4, this.autoAccept);
+  }
+
+  /** "same" verdicts this attempt needs: fewer while nobody said "different". */
+  needed(different) {
+    return different > 0 ? this.autoAccept : this.acceptClean;
   }
 
   get leaseMs() {
@@ -71,13 +82,14 @@ export class PeerReviews {
             AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
             AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
        )
-       WHERE objections < ? AND confirmations + in_progress < ?`,
+       WHERE objections < ? AND confirmations + in_progress < CASE WHEN objections > 0 THEN ? ELSE ? END`,
       now(),
       user.id,
       user.id,
       user.id,
       this.required,
       this.autoAccept,
+      this.acceptClean,
     );
     // Random by batch, so a batch stays together.
     const key = new Map();
@@ -160,7 +172,7 @@ export class PeerReviews {
     const ids = attemptIds ?? (a.batch_id ? this.store.all(`SELECT id FROM attempts WHERE batch_id = ? AND state = 'peer_review' ORDER BY id`, a.batch_id).map((r) => r.id) : [a.id]);
     return {
       attemptId: a.id,
-      required: this.autoAccept, // "same" verdicts that accept it
+      required: this.needed(this.counts(a.id).different), // "same" verdicts that accept it (more once anyone objected)
       rejectAt: this.required, // "different" verdicts that send it back
       instructions: PEER_INSTRUCTIONS,
       // Every function this review covers (one batch); give one verdict per attemptId.
@@ -195,7 +207,7 @@ export class PeerReviews {
       const leased = this.store.get('SELECT 1 FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ? AND expires_at > ?', attemptId, user.id, now());
       const counts = this.counts(attemptId);
       const others = this.store.get('SELECT COUNT(*) AS n FROM peer_leases WHERE attempt_id = ? AND reviewer_id != ? AND expires_at > ?', attemptId, user.id, now()).n;
-      const full = counts.same + others >= this.autoAccept;
+      const full = counts.same + others >= this.needed(counts.different);
       if (!leased && full) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
 
       const weight = this.trust?.reviewer(user.id, user.tokenId ?? null).weight ?? 1;
@@ -216,7 +228,7 @@ export class PeerReviews {
         this.store.run(`UPDATE attempts SET state = 'approved' WHERE id = ?`, attemptId);
         this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ? ${notOthers}`, now(), a.task_id);
         this.store.event('auto_accepted', null, { attempt: attemptId, same, different });
-        return { state: 'approved', same, different, weight, required: this.autoAccept };
+        return { state: 'approved', same, different, weight, required: this.needed(different) };
       }
       if (this.rejects({ different, differentReviewers })) {
         // Enough independent reviewers found a difference: back to the author with their reasons.
@@ -232,7 +244,7 @@ export class PeerReviews {
         return { state: 'needs_cleanup', same, different, weight, required: this.required };
       }
       // Undecided: it stays in review until one side has enough verdicts.
-      return { state: a.state, same, different, weight, required: this.autoAccept };
+      return { state: a.state, same, different, weight, required: this.needed(different) };
     });
   }
 
@@ -267,10 +279,10 @@ export class PeerReviews {
     return { same: r?.same ?? 0, different: r?.different ?? 0, sameReviewers: r?.sameReviewers ?? 0, differentReviewers: r?.differentReviewers ?? 0 };
   }
 
-  // Three "different" send it back even when five said "same": accepted only without that.
-  // However much a verdict weighs, one reviewer alone never decides.
+  // Four "same" accept it while nobody objected, five once someone did; three "different" send it
+  // back even when five said "same". However much a verdict weighs, one reviewer never decides.
   accepts(c) {
-    return c.same >= this.autoAccept && c.different < this.required && c.sameReviewers >= 2;
+    return c.same >= this.needed(c.different) && c.different < this.required && c.sameReviewers >= 2;
   }
 
   rejects(c) {

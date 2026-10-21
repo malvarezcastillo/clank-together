@@ -120,7 +120,7 @@ const TOOLS = [
   },
   {
     name: 'td_submit',
-    description: 'Submit your region as one batch: every task you hold (default) plus the functions of your shared regions that you rewrote, with the changed files they allow. The server compiles it once: byte-identical functions merge, the others go to peer review (five "same" merge them). Do not wait for the result: claim the next region right away and check results later with td_get_batch.',
+    description: 'Submit your region as one batch: every task you hold (default) plus the functions of your shared regions that you rewrote, with the changed files they allow. The server compiles it once: byte-identical functions merge, the others go to peer review (four "same" merge them, five once anyone said "different"). Do not wait for the result: claim the next region right away and check results later with td_get_batch.',
     inputSchema: {
       type: 'object',
       properties: {

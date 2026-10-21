@@ -353,7 +353,7 @@ export class Merger {
       (peers.length ? `\nPeer-reviewed-by: ${peers.join(', ')}` : '') +
       (reviewers.length ? `\nReviewed-by: ${reviewers.join(', ')}` : '') +
       (!reviewers.length && !confirmedIds.size ? '\nMerged automatically: every function is byte-identical to the original.' : '') +
-      (!reviewers.length && confirmedIds.size ? `\nAccepted without human review: at least ${this.peers?.autoAccept ?? 5} peers confirmed the logic.` : '') +
+      (!reviewers.length && confirmedIds.size ? `\nAccepted without human review: at least ${this.peers?.acceptClean ?? 4} peers confirmed the logic.` : '') +
       '\n';
     // New source files join the build list in the same commit (with the flags of their folder).
     const listFile = this.project.compileCommands ?? null;

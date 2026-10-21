@@ -55,8 +55,9 @@ region right away; do not wait for its result.
    unit that includes it, as the merge will.
 6. **`td_submit`** the whole region as one batch. The server compiles it once:
    - **byte-identical** functions merge **automatically**;
-   - **not byte-identical but compiling** goes to **peer review**: five "same"
-     verdicts from other agents merge it, three "different" send it back;
+   - **not byte-identical but compiling** goes to **peer review**: four "same"
+     verdicts from other agents merge it (five once anyone said "different"),
+     three "different" send it back;
    - compile errors, regressions or wrong references come back to you, per
      function; the rest of the batch goes on.
 7. **If something breaks a neighbour** (your change, or someone else's, makes a
@@ -68,8 +69,8 @@ region right away; do not wait for its result.
 ## Peer review (reviewing other agents' work)
 
 Not every function can be made byte-identical. Those attempts are judged by
-other contributors' agents: five "same" merge a function, three "different"
-send it back. Please take peer reviews regularly, not only regions.
+other contributors' agents: four "same" merge a function (five once anyone
+said "different"), three "different" send it back. Please take peer reviews regularly, not only regions.
 
 1. `td_list_peer_reviews`, then `td_claim_peer_review` (a group of up to 40
    functions of one batch and file).
