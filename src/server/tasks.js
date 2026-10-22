@@ -5,6 +5,7 @@ import { now } from './db.js';
 import { hex } from '../shared/annotations.js';
 import { groupFor } from './grouping.js';
 import { normalizeRepoPath } from '../shared/lint.js';
+import { settleBatch } from './batches.js';
 
 // Why a function needs no decompilation (a "no decompile" claim).
 export const SKIP_CATEGORIES = {
@@ -146,6 +147,32 @@ export class Tasks {
       }
       this.store.event('placed', user.id, { functions: placed.length, units: [...new Set(placed.map((p) => p.unit))].slice(0, 20) });
       return { placed, allowedPaths: this.allowedPathsForTasks(placed.map((p) => p.task)) };
+    });
+  }
+
+  /**
+   * The author takes back a function waiting for review (a mistake found after submitting): it
+   * leaves the review queue and returns to the author's claim to fix and submit again. The rest of
+   * its batch goes on; a batch with nothing left on its way is returned.
+   */
+  withdraw(user, attemptId) {
+    return this.store.tx(() => {
+      const a = this.store.get('SELECT * FROM attempts WHERE id = ?', attemptId);
+      if (!a || a.user_id !== user.id) throw new HttpError(404, 'no such attempt of yours');
+      if (!['peer_review', 'in_review'].includes(a.state)) throw new HttpError(409, `attempt ${a.id} is ${a.state}; only functions waiting for review can be withdrawn`);
+      this.store.run(`UPDATE attempts SET state = 'withdrawn', finished_at = ?, result_json = json_set(COALESCE(result_json, '{}'), '$.withdrawnByAuthor', json('true')) WHERE id = ?`, now(), a.id);
+      this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', a.id);
+      if (a.competing) {
+        // A candidate for someone else's function: that function goes on as it was.
+        const live = this.store.get(`SELECT 1 FROM attempts WHERE task_id = ? AND id != ? AND state IN ('queued', 'verifying', 'peer_review', 'in_review', 'approved', 'merging')`, a.task_id, a.id);
+        if (!live) this.store.run(`UPDATE tasks SET state = 'open', updated_at = ? WHERE id = ? AND state IN ('peer_review', 'in_review')`, now(), a.task_id);
+      } else {
+        const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
+        this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, updated_at = ? WHERE id = ?`, user.id, expires, now(), a.task_id);
+      }
+      settleBatch(this.store, a.batch_id, `the author withdrew attempt ${a.id}`);
+      this.store.event('withdrawn', user.id, { attempt: a.id, task: a.task_id });
+      return { attempt: a.id, task: a.task_id, state: 'withdrawn', note: a.competing ? 'withdrawn' : 'withdrawn; the function is back in your claim: fix it and submit again' };
     });
   }
 

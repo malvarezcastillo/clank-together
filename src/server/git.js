@@ -44,6 +44,15 @@ export class Repo {
     }
   }
 
+  /** Size in bytes of a file at a commit, or null if it does not exist there. */
+  size(commit, file) {
+    try {
+      return Number(this.git(['cat-file', '-s', `${commit}:${file}`]).trim());
+    } catch {
+      return null;
+    }
+  }
+
   isClean() {
     return this.git(['status', '--porcelain']).trim() === '';
   }

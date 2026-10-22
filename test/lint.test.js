@@ -94,6 +94,15 @@ test('large numeric initializers are rejected', () => {
   assert.ok(lintSubmission({ 'src/player.cpp': blob }, allowed).some((e) => e.message.includes('initializer')));
 });
 
+test('a file main already holds may be larger than the limit, and grow a little', () => {
+  const big = (kb) => 'int x;\n'.repeat(Math.ceil((kb * 1024) / 7));
+  const tooLarge = (files, sizes) => lintSubmission(files, { ...allowed, baseSize: (f) => sizes[f] ?? null }).filter((e) => /too large/.test(e.message));
+  assert.equal(tooLarge({ 'src/unit.cpp': big(300) }, {}).length, 1, 'a new 300 KB file');
+  assert.equal(tooLarge({ 'src/unit.cpp': big(820) }, { 'src/unit.cpp': 800 * 1024 }).length, 0, 'Unit_C.cpp with an edit');
+  assert.equal(tooLarge({ 'src/unit.cpp': big(1000) }, { 'src/unit.cpp': 800 * 1024 }).length, 1, 'grows by 200 KB');
+  assert.equal(tooLarge({ 'src/unit.cpp': big(800), 'src/player.cpp': big(500) }, { 'src/unit.cpp': 800 * 1024, 'src/player.cpp': 500 * 1024 }).length, 0, 'two big files count only what they add');
+});
+
 test('preprocessed output catches asm hidden behind macros, ignoring compiler headers', () => {
   const pre = ['#line 1 "C:\\\\vc\\\\include\\\\intrin.h"', 'void sys() { __asm int 3 }', '#line 1 "z:\\\\job\\\\src\\\\player.cpp"', 'void f() { __asm { nop } }'].join('\n');
   const errors = lintPreprocessed(pre, (f) => f.includes('/src/'));

@@ -713,6 +713,11 @@ export function createApp(ctx) {
     return null;
   }
 
+  router.on('POST', '/api/attempts/:id/withdraw', ({ req, params }) => {
+    const user = auth(req);
+    return tasks.withdraw(user, intParam(params.id));
+  });
+
   router.on('GET', '/api/attempts/:id', ({ req, params }) => {
     const user = auth(req);
     const a = store.get('SELECT a.*, u.name AS author FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.id = ?', intParam(params.id));
@@ -812,7 +817,7 @@ export function createApp(ctx) {
     if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
     body.files = lf(body.files);
     const allowed = [...project.sourceDirs.map((d) => `${d}/**`)];
-    const lintErrors = lintSubmission(body.files, { allowedPaths: allowed, limits: project.lintLimits, allowedPragmas: project.allowedPragmas });
+    const lintErrors = lintSubmission(body.files, { allowedPaths: allowed, limits: project.lintLimits, allowedPragmas: project.allowedPragmas, baseSize: (f) => repo.size('HEAD', f) });
     if (lintErrors.length) return { gate: 'rejected', lintErrors };
     if (!repo.isAncestor(body.baseCommit)) throw new HttpError(409, 'your base commit is not part of main; run td sync');
     const textErrors = ctx.verifier.freeTextGate(body.files, body.baseCommit);

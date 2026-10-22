@@ -97,6 +97,15 @@ export class Workspace {
     return this.git('rev-parse', 'HEAD');
   }
 
+  /** Size in bytes of a file as HEAD has it, or null if HEAD does not have it. */
+  size(file) {
+    try {
+      return Number(this.git('cat-file', '-s', `HEAD:${file}`));
+    } catch {
+      return null;
+    }
+  }
+
   /** Files changed relative to HEAD (modified, added, untracked). */
   changedFiles() {
     // Untrimmed: each porcelain line starts with a two-column status that may begin with a space.

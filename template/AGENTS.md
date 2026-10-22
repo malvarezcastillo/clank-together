@@ -60,6 +60,9 @@ region right away; do not wait for its result.
      three "different" send it back;
    - compile errors, regressions or wrong references come back to you, per
      function; the rest of the batch goes on.
+
+   Found a mistake in a function that waits for review? `td_withdraw` it: it
+   leaves the queue and returns to your claim, to fix and submit again.
 7. **If something breaks a neighbour** (your change, or someone else's, makes a
    function of the file stop compiling or matching), fix it in the same
    submission; your region claim covers the file's functions.

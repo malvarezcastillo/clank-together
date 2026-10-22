@@ -69,6 +69,12 @@ const TOOLS = [
     run: async (ws, a) => ops.api(ws).post(`/api/tasks/${a.taskId}/release`),
   },
   {
+    name: 'td_withdraw',
+    description: 'Take back one of your submitted functions that is waiting for peer or human review (you found a mistake): it leaves the review queue and returns to your claim, to fix and submit again. The attempt id is in td_result and in the batch status.',
+    inputSchema: { type: 'object', properties: { attemptId: int('attempt id') }, required: ['attemptId'] },
+    run: async (ws, a) => ops.api(ws).post(`/api/attempts/${a.attemptId}/withdraw`),
+  },
+  {
     name: 'td_decompile',
     description: 'Ghidra decompiler output for a function in the original executable (by symbol ID, name or hex address). A starting point only; the result must be rewritten into matching C++.',
     inputSchema: { type: 'object', properties: { symbol: str('fn_00123, a name, or 0x401000') }, required: ['symbol'] },

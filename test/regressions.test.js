@@ -58,3 +58,31 @@ test('a stale baseline is measured again on main before it counts as a regressio
   assert.equal(compiles, 1);
   assert.equal(events.length, 1);
 });
+
+// A header layout fix that moves a peer-confirmed function in another unit closer to the original
+// is progress; moving it away is a regression its reviewers never saw.
+test('a peer-confirmed function may move closer to the original, not away from it', () => {
+  const v = Object.create(Verifier.prototype);
+  v.repo = { git: () => '' };
+  v.store = { all: () => [{ symbol_id: 'fn_19918', file: 'WoW/Missile_C.cpp', status: 'mismatch', score: 0.9, confirmed: 1 }] };
+  const at = (score) => ({ units: [{ file: 'WoW/Missile_C.cpp', compiled: true, functions: [{ id: 'fn_19918', status: 'mismatch', score }] }] });
+  assert.deepEqual(v.regressions(at(0.905)), []);
+  assert.deepEqual(v.regressions(at(0.9)), []);
+  assert.deepEqual(v.regressions(at(0.895)).map((r) => r.was), ['peer-confirmed']);
+});
+
+// A function whose annotation an older merge removed from main (its record still says exact)
+// is not "removed" by every later submission of the unit it was recorded at.
+test('a function main no longer annotates is no regression', () => {
+  const v = Object.create(Verifier.prototype);
+  const found = [
+    { id: 'fn_07162', file: 'Engine/SE3.cpp', was: 'exact', now: 'removed' },
+    { id: 'fn_00009', file: 'Engine/SE3.cpp', was: 'exact', now: 'removed' },
+  ];
+  v.repo = { git: () => 'HEAD:Engine/SE3.cpp:FUNCTION: fn_00009\n' };
+  assert.deepEqual(v.withoutHeaderCopies(found, new Map(), {}).map((r) => r.id), ['fn_00009'], 'still on main: removing it counts');
+  v.repo = { git: () => { throw Object.assign(new Error('git grep'), { status: 1 }); } };
+  assert.deepEqual(v.withoutHeaderCopies(found, new Map(), {}), []);
+  v.repo = { git: () => { throw Object.assign(new Error('git broke'), { status: 128 }); } };
+  assert.equal(v.withoutHeaderCopies(found, new Map(), {}).length, 2, 'main unknown: strict');
+});

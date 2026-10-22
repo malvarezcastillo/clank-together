@@ -252,12 +252,20 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta, confir
       allowed = [...new Set([...allowed, ...(me.regionAllowedPaths ?? [])])];
     }
   }
+  if (!ids.length && me.leases.length) {
+    // Held, but none of them differs from HEAD in the working tree (committed locally, edited in
+    // another clone, or written in a file outside the held ones' paths).
+    throw new Error(
+      `none of the ${me.leases.length} functions you hold has changed code in this working tree compared with HEAD (${(me.leasedAllowedPaths ?? []).slice(0, 5).join(', ')}). ` +
+        'Leave your work uncommitted in this clone, or name the tasks: td_submit taskIds: [...]',
+    );
+  }
   if (!ids.length) throw new Error('you hold no tasks; claim a region first (td_regions, then td_claim_region)');
   const candidates = files?.length ? files : ws.changedFiles().filter((f) => matchesAny(f, allowed));
   if (!candidates.length) throw new Error(`no changed files match the allowed paths of your tasks (${allowed.join(', ')})`);
   const contents = {};
   for (const f of candidates) contents[f.replace(/\\/g, '/')] = fs.readFileSync(path.join(ws.dir, f), 'utf8');
-  const errors = lintSubmission(contents, { allowedPaths: allowed, limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas });
+  const errors = lintSubmission(contents, { allowedPaths: allowed, limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas, baseSize: (f) => ws.size(f) });
   if (errors.length) {
     const e = new Error('submission fails the static gate:\n' + errors.map((x) => `  ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${x.message}`).join('\n'));
     e.details = errors;

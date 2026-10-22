@@ -366,8 +366,10 @@ export class Verifier {
       // on which other units this check compiled, not on the change.
       const rank = (s) => (s === STATUS.UNRESOLVED ? RANK[STATUS.EXACT] : RANK[s]);
       if (!now_ || rank(now_.status) < rank(row.status)) out.push({ id: row.symbol_id, file: row.file, was: row.status, now: now_?.status ?? 'removed' });
-      // A peer-confirmed function whose compiled code changes was not seen by its reviewers.
-      else if (row.confirmed && now_.status === STATUS.MISMATCH && Math.abs(now_.score - row.score) > 1e-4) {
+      // A peer-confirmed function whose compiled code moves away from the original was not seen by
+      // its reviewers. Closer to it is fine (a header layout fix in another unit): it keeps its
+      // confirmation, and the merge records the better score.
+      else if (row.confirmed && now_.status === STATUS.MISMATCH && now_.score < row.score - 1e-4) {
         out.push({ id: row.symbol_id, file: row.file, was: 'peer-confirmed', now: `changed (score ${(row.score * 100).toFixed(1)}% -> ${(now_.score * 100).toFixed(1)}%)` });
       }
     }
@@ -390,13 +392,17 @@ export class Verifier {
           const m = /^HEAD:(.+?):FUNCTION: (\S+)$/.exec(line.trim());
           if (m && !defined.has(m[2])) defined.set(m[2], m[1]);
         }
-      } catch {
-        // no annotation on main for any of them (git grep exits 1): judged as before
+      } catch (e) {
+        // Exit 1: no annotation on main for any of them. Anything else: main unknown, judged strictly.
+        if (e.status !== 1) return found;
       }
     }
     return found.filter((r) => {
       const file = defined.get(r.id);
-      if (!file || isUnit(file)) return true;
+      // Not annotated anywhere on main (an older merge removed it; its record is stale): the
+      // submission cannot be what removes it.
+      if (!file) return r.now !== 'removed';
+      if (isUnit(file)) return true;
       if (typeof files[file] !== 'string') return false;
       return r.now !== 'removed' || !new RegExp(`FUNCTION: ${r.id}\\b`).test(files[file]);
     });
@@ -477,6 +483,7 @@ export class Verifier {
       allowedPaths: this.tasks.allowedPathsForTasks(attempts.map((a) => a.task_id)),
       limits: this.project.lintLimits,
       allowedPragmas: this.project.allowedPragmas,
+      baseSize: (f) => this.repo.size('HEAD', f),
     });
     if (lintErrors.length) return finishAll('rejected', { summary: 'rejected by the static gate', lintErrors });
     if (!this.repo.isAncestor(batch.base_commit)) return finishAll('rejected', { summary: `base commit ${batch.base_commit} is not part of main; sync and resubmit` });
@@ -593,7 +600,14 @@ export class Verifier {
       return { state: 'rejected', score: 0, feedback };
     }
 
-    const annErrors = check.annotationErrors.filter((e) => fileSet.has(e.file) && e.severity !== 'warning');
+    // A library function main already annotates in that file (folded with project code) is not
+    // the submission's doing: only adding such an annotation is refused.
+    const onMain = new Map();
+    const mainHas = (e) => {
+      if (!onMain.has(e.file)) onMain.set(e.file, this.repo.show('HEAD', e.file) ?? '');
+      return new RegExp(`:\\s*${e.id}\\b`).test(onMain.get(e.file));
+    };
+    const annErrors = check.annotationErrors.filter((e) => fileSet.has(e.file) && e.severity !== 'warning' && !(e.rule === 'library' && mainHas(e)));
     const annWarnings = check.annotationErrors.filter((e) => fileSet.has(e.file) && e.severity === 'warning');
     for (const w of annWarnings) feedback.warnings.push(`${w.file}:${w.line} ${w.message}`);
     const failed = check.units.filter((u) => !u.compiled);

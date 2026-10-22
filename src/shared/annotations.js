@@ -135,7 +135,7 @@ export function lintAnnotations(annotations, symbols) {
     if (symbols) {
       const sym = symbols.get(a.id);
       if (!sym) errors.push({ file: a.file, line: a.line, message: `${a.id} does not exist in the symbol database (request a new ID with \`td symbol new\`)` });
-      else if (sym.library) errors.push({ file: a.file, line: a.line, message: `${a.id} is marked as library code and must not be decompiled` });
+      else if (sym.library) errors.push({ file: a.file, line: a.line, id: a.id, rule: 'library', message: `${a.id} is marked as library code and must not be decompiled` });
     }
   }
   return errors;

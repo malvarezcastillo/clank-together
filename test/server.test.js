@@ -1415,3 +1415,26 @@ test('four "same" accept a function nobody objected to; five once someone did', 
   assert.equal(ctx.peers.submit(revs[4], disputed, 'same', why, null).state, 'peer_review', 'four "same" against one "different": not yet');
   ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (?, ?)`, clean, disputed);
 });
+
+test('an author withdraws a function waiting for review: it leaves the queue and is theirs again', async () => {
+  const token = await activeUser('withdrawer');
+  const author = ctx.accounts.userByApiToken(token);
+  const other = ctx.accounts.userByApiToken(await activeUser('withdrawpeer'));
+  const saved = ctx.store.get(`SELECT id, state, lease_user, lease_expires FROM tasks WHERE state != 'done' ORDER BY id DESC LIMIT 1`);
+  const task = saved.id;
+  const head = ctx.repo.head();
+  const batch = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at) VALUES (?, ?, '{}', 'open', ?)`, author.id, head, now()).lastInsertRowid);
+  const attempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?, ?)`, task, author.id, head, batch, now()).lastInsertRowid);
+  ctx.store.run(`UPDATE tasks SET state = 'peer_review' WHERE id = ?`, task);
+  ctx.store.run('INSERT INTO peer_leases (attempt_id, reviewer_id, expires_at) VALUES (?, ?, ?)', attempt, other.id, now() + 60_000);
+
+  assert.equal((await call('POST', `/api/attempts/${attempt}/withdraw`, {}, await activeUser('notauthor'))).status, 404, 'only the author');
+  const r = await call('POST', `/api/attempts/${attempt}/withdraw`, {}, token);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', attempt).state, 'withdrawn');
+  assert.deepEqual({ ...ctx.store.get('SELECT state, lease_user FROM tasks WHERE id = ?', task) }, { state: 'leased', lease_user: author.id });
+  assert.equal(ctx.store.get('SELECT COUNT(*) AS n FROM peer_leases WHERE attempt_id = ?', attempt).n, 0);
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', batch).state, 'returned', 'nothing else on its way');
+  assert.equal((await call('POST', `/api/attempts/${attempt}/withdraw`, {}, token)).status, 409, 'once');
+  ctx.store.run('UPDATE tasks SET state = ?, lease_user = ?, lease_expires = ? WHERE id = ?', saved.state, saved.lease_user, saved.lease_expires, task);
+});
