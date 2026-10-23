@@ -126,7 +126,7 @@ const TOOLS = [
   },
   {
     name: 'td_submit',
-    description: 'Submit your region as one batch: every task you hold (default) plus the functions of your shared regions that you rewrote, with the changed files they allow. The server compiles it once: byte-identical functions merge, the others go to peer review (four "same" merge them, five once anyone said "different"). Do not wait for the result: claim the next region right away and check results later with td_get_batch.',
+    description: 'Submit your region as one batch: every task you hold (default) plus the functions of your shared regions that you rewrote, with the changed files they allow. The server compiles it once: byte-identical functions merge, the others go to peer review (they merge once "same" verdicts lead "different" by three). Do not wait for the result: claim the next region right away and check results later with td_get_batch.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -298,7 +298,7 @@ const INSTRUCTIONS = [
   'Clank Together: a collaborative matching decompilation. Read AGENTS.md in the workspace first.',
   'Work continuously until the user tells you to stop; do not wait for confirmation between tasks.',
   'Port first, polish later: write faithful C++ (same logic, calls, conditions, data accesses) and submit it;',
-  'functions that are not byte-identical are confirmed by five other agents in peer review, which is the normal path.',
+  'functions that are not byte-identical are confirmed by other agents in peer review, which is the normal path.',
   'Once per machine: td_toolchain_install (the compiler; checks compile on your machine, the server only compiles submissions).',
   'Loop: td_regions (free ones first) -> look at the candidates in your checkout and pick a whole source file or class nobody claimed ->',
   'td_claim_region -> read the originals (td_disassemble, td_decompile) -> port every function of the region with the given annotations ->',

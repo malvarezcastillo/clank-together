@@ -308,7 +308,7 @@ test('changing the password logs out browser sessions', async () => {
   await login('erin', 'a brand new password');
 });
 
-test('peer review: four "same" accept, three "different" send back, by reading only', async () => {
+test('peer review: a lead of three "same" accepts, three "different" leading by two send back, by reading only', async () => {
   const author = await activeUser('pauthor');
   const r1 = await activeUser('peer1');
   const r2 = await activeUser('peer2');
@@ -332,22 +332,22 @@ test('peer review: four "same" accept, three "different" send back, by reading o
   assert.ok(!(await call('GET', '/api/peer-reviews', null, author)).body.some((x) => x.attempt_id === attempt), 'authors do not see their own attempts');
   const claim = await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r1);
   assert.equal(claim.status, 200);
-  assert.equal(claim.body.required, 4);
+  assert.equal(claim.body.required, 3);
   assert.equal(claim.body.rejectAt, 3);
   assert.ok(claim.body.instructions.some((i) => /Do not compile/.test(i)));
   assert.equal(JSON.stringify(claim.body).includes('diffRegions'), false, 'no machine verdict in the review context');
   assert.equal(claim.body.original.read[0], `td_disassemble ${task.symbol_id}`);
 
-  for (const r of [r2, r3, r4]) await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r);
-  assert.equal((await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r5)).status, 409, 'no more reviewers than needed');
+  for (const r of [r2, r3]) await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r);
+  assert.equal((await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, r4)).status, 409, 'no more reviewers than needed');
+  void r5;
 
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'short' }, r1)).status, 400);
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'all branches and calls agree' }, author)).status, 403);
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'all branches and calls agree' }, r1)).body.state, 'peer_review');
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'same loop bounds and the same return' }, r1)).status, 409, 'one verdict per account');
   assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'checked every condition and field access' }, r2)).body.state, 'peer_review');
-  assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'identical behavior, only register use differs' }, r3)).body.state, 'peer_review', 'three are not enough to accept');
-  assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'same calls in the same order, same result' }, r4)).body.state, 'approved', 'four accept it while nobody objected, with no human step');
+  assert.equal((await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'identical behavior, only register use differs' }, r3)).body.state, 'approved', 'three to none accept it, with no human step');
   assert.equal(ctx.tasks.get(task.id).state, 'approved');
   assert.ok(ctx.peers.confirmed(attempt));
 
@@ -360,11 +360,11 @@ test('peer review: four "same" accept, three "different" send back, by reading o
     return (await call('POST', `/api/peer-reviews/${second}/verdict`, { verdict: v, reason: v === 'same' ? 'the same branches, calls and returns' : 'the original checks the flag before the loop, this does not' }, reviewer)).body;
   };
   assert.equal((await verdict(r4, 'different')).state, 'peer_review', 'one objection does not send it back');
-  assert.equal((await verdict(r1, 'different')).state, 'peer_review');
+  assert.equal((await verdict(r1, 'different')).state, 'peer_review', 'two are not enough to send it back');
   const mixed = await verdict(r2, 'same');
   assert.deepEqual([mixed.state, mixed.same, mixed.different], ['peer_review', 1, 2], 'a split vote lets another reviewer in');
   const no = await verdict(r3, 'different');
-  assert.equal(no.state, 'needs_cleanup', 'three objections send it back');
+  assert.equal(no.state, 'needs_cleanup', 'three objections leading by two send it back');
   assert.equal(ctx.peers.verdicts(second)[0].reason.untrusted, true);
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task.id);
 });
@@ -429,7 +429,7 @@ test('a header batch is verified on its own units and merged with every includer
   }
 });
 
-test('agreeing peers accept a function without human review (four, or five over an objection)', async () => {
+test('agreeing peers accept a function without human review (three ahead)', async () => {
   await activeUser('aaauthor');
   const author = ctx.accounts.byName('aaauthor');
   const peers = [];
@@ -448,17 +448,17 @@ test('agreeing peers accept a function without human review (four, or five over 
   };
 
   const clean = make(0x401900);
-  for (let i = 0; i < 3; i++) await review(clean.attempt, peers[i], 'same');
-  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', clean.attempt).state, 'peer_review', 'three are not enough');
-  assert.equal((await review(clean.attempt, peers[3], 'same')).state, 'approved', 'four accept it');
+  for (let i = 0; i < 2; i++) await review(clean.attempt, peers[i], 'same');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', clean.attempt).state, 'peer_review', 'two are not enough');
+  assert.equal((await review(clean.attempt, peers[2], 'same')).state, 'approved', 'three to none accept it');
   assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = ?', clean.task).state, 'approved');
 
   const contested = make(0x401940);
   await review(contested.attempt, peers[0], 'different');
   for (let i = 1; i <= 3; i++) await review(contested.attempt, peers[i], 'same');
   assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', contested.attempt).state, 'peer_review');
-  assert.equal((await review(contested.attempt, peers[4], 'same')).state, 'peer_review');
-  assert.equal((await review(contested.attempt, peers[5], 'same')).state, 'approved', 'five "same" accept it over one objection (flagged for later at merge)');
+  assert.equal((await review(contested.attempt, peers[4], 'same')).state, 'approved', 'four to one accept it (flagged for later at merge)');
+  await review(contested.attempt, peers[5], 'same');
 
   for (const x of [clean, contested]) {
     ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE id = ?`, x.attempt);
@@ -1226,7 +1226,7 @@ test('the live socket pushes new events, refuses other sites and ignores what cl
   }
 });
 
-test('three "different" send a function back even when five said "same"', async () => {
+test('a close vote waits for more verdicts; the side that leads decides', async () => {
   await activeUser('odauthor');
   const author = ctx.accounts.byName('odauthor');
   const peers = [];
@@ -1245,7 +1245,10 @@ test('three "different" send a function back even when five said "same"', async 
   void reviewers;
   await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, peers[7]);
   const r = await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'the same calls and the same returns' }, peers[7]);
-  assert.equal(r.body.state, 'needs_cleanup', 'five "same" do not outvote three "different"');
+  assert.equal(r.body.state, 'in_review', 'five "same" against three "different": a lead of two, not yet');
+  ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, 'same', 'checked every branch and call', ?)`, attempt, ctx.accounts.userByApiToken(await activeUser('odpeer9')).id, now());
+  assert.deepEqual(ctx.peers.settleAll(), { approved: 1, needs_cleanup: 0 }, 'six to three: settled by the worker');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', attempt).state, 'approved');
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task);
 });
 
@@ -1396,7 +1399,7 @@ test('trust: careful reviewers count more, trusted authors skip peer review, one
   ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE user_id = ?`, author.id);
 });
 
-test('four "same" accept a function nobody objected to; five once someone did', async () => {
+test('three "same" accept a function nobody objected to; one objection takes a fourth', async () => {
   const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
   const author = ctx.accounts.byName('trustauthor');
   const revs = [];
@@ -1407,12 +1410,13 @@ test('four "same" accept a function nobody objected to; five once someone did', 
   const open = () => Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, task, author.id, ctx.repo.head(), now()).lastInsertRowid);
   const why = 'the branches, the call and the return value match the original';
   const clean = open();
-  for (let i = 0; i < 3; i++) assert.equal(ctx.peers.submit(revs[i], clean, 'same', why, null).state, 'peer_review');
-  assert.equal(ctx.peers.submit(revs[3], clean, 'same', why, null).state, 'approved');
+  for (let i = 0; i < 2; i++) assert.equal(ctx.peers.submit(revs[i], clean, 'same', why, null).state, 'peer_review');
+  assert.equal(ctx.peers.submit(revs[2], clean, 'same', why, null).state, 'approved');
   const disputed = open();
   ctx.peers.submit(revs[0], disputed, 'different', 'the original checks the flag before the loop', null);
-  for (let i = 1; i < 4; i++) assert.equal(ctx.peers.submit(revs[i], disputed, 'same', why, null).state, 'peer_review');
-  assert.equal(ctx.peers.submit(revs[4], disputed, 'same', why, null).state, 'peer_review', 'four "same" against one "different": not yet');
+  for (let i = 1; i < 3; i++) assert.equal(ctx.peers.submit(revs[i], disputed, 'same', why, null).state, 'peer_review');
+  assert.equal(ctx.peers.submit(revs[3], disputed, 'same', why, null).state, 'peer_review', 'three "same" against one "different": not yet');
+  assert.equal(ctx.peers.submit(revs[4], disputed, 'same', why, null).state, 'approved', 'four to one');
   ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (?, ?)`, clean, disputed);
 });
 

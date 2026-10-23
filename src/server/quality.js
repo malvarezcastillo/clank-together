@@ -70,7 +70,8 @@ export class Quality {
               SUM(CASE WHEN ${summaryLike(BROKEN)} THEN 1 ELSE 0 END) AS broken,
               SUM(a.state = 'merged') AS merged,
               SUM(a.state = 'merged' AND json_extract(a.result_json, '$.feedback.target.status') IN ('exact', 'match_unresolved')) AS identical,
-              SUM((SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') >= 3) AS peerRejected,
+              SUM((SELECT COALESCE(SUM(CASE WHEN p.verdict = 'different' THEN p.weight ELSE -p.weight END), 0) FROM peer_reviews p WHERE p.attempt_id = a.id) >= 2
+                  AND (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') >= 3) AS peerRejected,
               SUM((SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id) >= 3) AS peerDecided
          FROM attempts a
         WHERE a.user_id = ? AND ${byToken(tokenId)} AND a.created_at >= ? AND a.created_at < ? AND a.kind = 'code' AND a.state NOT IN ('withdrawn', 'superseded', 'queued', 'verifying')`,

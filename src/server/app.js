@@ -746,7 +746,7 @@ export function createApp(ctx) {
       kind: a.kind,
       claim: a.kind === 'skip' ? { category: a.skip_category, reason: a.notes } : undefined,
       peerReviews: peers.verdicts(a.id),
-      peerRequired: peers.autoAccept, // "same" verdicts that accept it (peers.required "different" send it back)
+      peerRequired: peers.needed(peers.counts(a.id).different), // "same" verdicts (by weight) that accept it as it stands
       targetSource: targetSource(result?.feedback?.target?.id, batchResult.mergedFiles ?? store.attemptFiles(a)),
     };
   });
@@ -1190,6 +1190,13 @@ export async function startServer(dataDir, { role = 'all' } = {}) {
     place();
     const placer = setInterval(place, 30 * 60_000);
     stops.push(() => clearInterval(placer));
+    // Functions the peer review rule decides as it stands now (it or the policy changed since).
+    try {
+      const s = ctx.peers.settleAll();
+      if (s.approved || s.needs_cleanup) console.log(`peer review: ${s.approved} waiting functions accepted, ${s.needs_cleanup} sent back under the current rule`);
+    } catch (e) {
+      console.error(`settling peer reviews: ${e.message}`);
+    }
     ctx.verifier.start();
     ctx.merger.start();
     ctx.checks.start();

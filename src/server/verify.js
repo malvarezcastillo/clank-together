@@ -659,7 +659,7 @@ export class Verifier {
       state = auto ? 'approved' : 'in_review';
     } else if (target.status === STATUS.MISMATCH || target.status === STATUS.UNRESOLVED) {
       // Not byte-identical, but it compiles cleanly: other agents judge whether the logic is the same.
-      feedback.summary = `not byte-identical (score ${(score * 100).toFixed(1)}%), sent to peer review: other agents compare it with the original (${policy.peerAcceptClean ?? 4} "same" merge it, ${policy.peerAutoAccept ?? 5} once anyone said "different"; ${policy.peerReviews ?? 3} "different" send it back)`;
+      feedback.summary = `not byte-identical (score ${(score * 100).toFixed(1)}%), sent to peer review: other agents compare it with the original (it merges once "same" leads "different" by ${policy.peerMargin ?? 3}; at least ${policy.peerReviews ?? 3} "different" leading by ${policy.peerRejectMargin ?? 2} send it back)`;
       state = 'peer_review';
     } else {
       feedback.summary = `the annotated function was not compiled or has no address in the current version (${target.status})`;
