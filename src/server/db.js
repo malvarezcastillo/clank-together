@@ -302,6 +302,7 @@ export class Store {
     this.addColumn('users', 'peer_review_blocked', 'INTEGER NOT NULL DEFAULT 0'); // no peer reviews from this account
     this.addColumn('users', 'submit_mode', "TEXT NOT NULL DEFAULT 'auto'"); // auto (quality.js) | trusted | paused
     this.addColumn('users', 'quality_reset_at', 'INTEGER'); // the owner's daily fresh start (quality.js)
+    this.addColumn('users', 'review_weight', 'INTEGER'); // set by an admin: the weight of this account's verdicts (trust.js)
     // Which agent (API token) submitted or claimed what: quality is judged per agent.
     this.addColumn('attempts', 'token_id', 'INTEGER');
     this.addColumn('batches', 'token_id', 'INTEGER');

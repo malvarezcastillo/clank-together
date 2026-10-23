@@ -29,6 +29,7 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   user approve|reject|revoke|reinstate <name>
   user role <name> --role R
   user rename <name> <new-name>          rename an account (sessions and tokens keep working)
+  user review-weight <name> <1|2|3|auto> weight of its peer verdicts (auto: earned, trust.js)
   user password <name> [--password-stdin] reset a password (logs out browser sessions)
   user token <name> [label]              create an API token for an account
   version add <id> <exe> [--current]     register a target executable version
@@ -174,6 +175,12 @@ async function main() {
         return console.log(accounts.setRole(name, values.role, null));
       case 'rename':
         return console.log(accounts.rename(name, rest[1], null));
+      case 'review-weight': {
+        // td-server user review-weight <name> <1|2|3|auto>
+        const ctx = openServer(dataDir);
+        const w = rest[1] === 'auto' ? null : Number(rest[1]);
+        return console.log(ctx.peers.setReviewWeight(accounts.requireUser(name).id, w));
+      }
       case 'token': {
         const u = accounts.requireUser(name);
         const t = accounts.createApiToken(u.id, rest[1] ?? 'cli');

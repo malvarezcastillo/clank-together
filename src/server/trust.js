@@ -133,9 +133,11 @@ export class Trust {
       }
       const sameScore = lowerBound(n.sameAgreed, n.same);
       const differentScore = lowerBound(n.differentAgreed, n.different);
-      const blocked = !!this.store.get('SELECT 1 FROM users WHERE id = ? AND peer_review_blocked = 1', userId);
-      const tier = blocked ? null : p.weights.find((t) => n.different >= t.minDifferent && sameScore >= t.same && differentScore >= t.different);
-      return { ...n, sameScore, differentScore, weight: tier?.weight ?? 1, tiers: p.weights };
+      const u = this.store.get('SELECT peer_review_blocked AS blocked, review_weight AS fixed FROM users WHERE id = ?', userId);
+      const tier = u?.blocked ? null : p.weights.find((t) => n.different >= t.minDifferent && sameScore >= t.same && differentScore >= t.different);
+      // An admin may set the weight for an account they trust (or distrust); it overrides the record.
+      const weight = u?.fixed != null && !u.blocked ? u.fixed : tier?.weight ?? 1;
+      return { ...n, sameScore, differentScore, weight, setByAdmin: u?.fixed != null, tiers: p.weights };
     });
   }
 

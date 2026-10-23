@@ -260,6 +260,26 @@ export class PeerReviews {
     return { state: a.state, same, different, required: this.needed(different) };
   }
 
+  /**
+   * An admin sets how much an account's verdicts weigh (1 to 3), or null to let its record decide
+   * (trust.js). A set weight also applies to its verdicts on functions still waiting, which are
+   * then decided if they now are; decided functions stay as they were.
+   */
+  setReviewWeight(userId, weight) {
+    if (weight !== null && ![1, 2, 3].includes(weight)) throw new HttpError(400, 'weight must be 1, 2, 3 or auto');
+    this.store.run('UPDATE users SET review_weight = ? WHERE id = ?', weight, userId);
+    this.trust?.forget();
+    let reweighted = 0;
+    if (weight !== null) {
+      reweighted = Number(this.store.run(
+        `UPDATE peer_reviews SET weight = ? WHERE reviewer_id = ? AND attempt_id IN (SELECT id FROM attempts WHERE state IN ('peer_review', 'in_review'))`,
+        weight, userId,
+      ).changes);
+    }
+    this.store.event('review_weight', null, { user: userId, weight, reweighted });
+    return { weight: weight ?? 'auto', reweighted, ...this.settleAll() };
+  }
+
   /** Decides every waiting attempt the rule decides now (after the rule or a policy changed). */
   settleAll() {
     const waiting = this.store.all(`SELECT a.* FROM attempts a WHERE a.state IN ('peer_review', 'in_review') AND EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id)`);

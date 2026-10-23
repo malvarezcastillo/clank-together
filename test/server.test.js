@@ -1442,3 +1442,26 @@ test('an author withdraws a function waiting for review: it leaves the queue and
   assert.equal((await call('POST', `/api/attempts/${attempt}/withdraw`, {}, token)).status, 409, 'once');
   ctx.store.run('UPDATE tasks SET state = ?, lease_user = ?, lease_expires = ? WHERE id = ?', saved.state, saved.lease_user, saved.lease_expires, task);
 });
+
+test('an admin sets a reviewer weight: it counts at once, also on verdicts already given', async () => {
+  const author = ctx.accounts.userByApiToken(await activeUser('rwauthor'));
+  const trusted = ctx.accounts.userByApiToken(await activeUser('rwtrusted'));
+  const other = ctx.accounts.userByApiToken(await activeUser('rwother'));
+  const saved = ctx.store.get(`SELECT id, state FROM tasks WHERE state != 'done' ORDER BY id LIMIT 1`);
+  const open = () => Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, saved.id, author.id, ctx.repo.head(), now()).lastInsertRowid);
+  const why = 'the branches, the call and the return value match the original';
+  const waiting = open();
+  ctx.peers.submit(trusted, waiting, 'same', why, null);
+  ctx.peers.submit(other, waiting, 'same', why, null);
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', waiting).state, 'peer_review', 'two to none');
+  const r = ctx.peers.setReviewWeight(trusted.id, 3);
+  assert.deepEqual([r.reweighted, r.approved], [1, 1]);
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', waiting).state, 'approved', 'four to none: accepted');
+  const alone = open();
+  assert.equal(ctx.peers.submit(trusted, alone, 'same', why, null).weight, 3);
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', alone).state, 'peer_review', 'one reviewer never decides');
+  ctx.peers.setReviewWeight(trusted.id, null);
+  assert.equal(ctx.trust.reviewer(trusted.id).weight, 1, 'auto: back to the earned weight');
+  ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (?, ?)`, waiting, alone);
+  ctx.store.run('UPDATE tasks SET state = ? WHERE id = ?', saved.state, saved.id);
+});
