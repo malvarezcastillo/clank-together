@@ -106,7 +106,7 @@ ExecStop=/usr/sbin/nft delete table inet td_filter
 [Install]
 WantedBy=multi-user.target
 EOF
-sed "s/saty.dev/$HOST/" "$SRC/deploy/Caddyfile" > /etc/caddy/Caddyfile
+sed "s/clank\.rodecomp\.online/$HOST/" "$SRC/deploy/Caddyfile" > /etc/caddy/Caddyfile
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
 
 systemctl daemon-reload

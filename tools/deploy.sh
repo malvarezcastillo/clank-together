@@ -1,7 +1,7 @@
 #!/bin/sh
 # Deploys the committed HEAD to the coordinator without taking the site down (deploy/update.sh).
 #   tools/deploy.sh [--test] [--td]
-# --test deploys to the test instance (test.saty.dev: /opt/togetherdecomp-test, its own data).
+# --test deploys to the test instance (test.clank.rodecomp.online: /opt/togetherdecomp-test, its own data).
 # TD_KEEP_WORKER=1 tools/deploy.sh leaves the worker as it is (see deploy/update.sh).
 # --td also publishes the td binaries from dist/ (node tools/build-td/build.mjs) for download and
 # self-update. TD_HOST names the ssh host (default: td-server).

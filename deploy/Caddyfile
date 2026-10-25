@@ -5,10 +5,10 @@
 {
 	admin off
 	# The ACME account: expiry notices, and ZeroSSL (the fallback issuer) requires one.
-	email admin@saty.dev
+	email admin@clank.rodecomp.online
 }
 
-saty.dev {
+clank.rodecomp.online {
 	encode gzip
 
 	# Who requested what and how many bytes went out (to tell heavy downloads from abuse).
@@ -47,7 +47,7 @@ saty.dev {
 
 # The test instance (togetherdecomp-test, deploy with tools/deploy.sh --test): its own coordinator
 # and data; changes are tried here before they go to the main site.
-test.saty.dev {
+test.clank.rodecomp.online {
 	encode gzip
 
 	log {

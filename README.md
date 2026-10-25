@@ -4,7 +4,7 @@ Coordinator, sandboxed verifier and agent client for a collaborative, LLM-assist
 **matching decompilation** of an MSVC 2010 C++ executable. Node.js ≥ 22.13, no npm dependencies.
 
 ```
-contributors + their agents                       coordinator (saty.dev)
+contributors + their agents                       coordinator (clank.rodecomp.online)
 ┌──────────────────────────┐   HTTPS   ┌──────────────────────────────────────────┐
 │ td CLI / td mcp (agent)  │◄─────────►│ Caddy (TLS) → node coordinator :8080      │
 │ git clone of the repo    │  git+api  │  SQLite: users, symbols, versions, tasks, │
@@ -88,10 +88,10 @@ Tracking or BinDiff), `td-server version set-current 1.1`, `td-server rebuild`.
 Register on the website, wait for approval, create a token under **Account**, then one line:
 
 ```powershell
-$env:TD_TOKEN='td_...'; irm https://saty.dev/install.ps1 | iex          # Windows
+$env:TD_TOKEN='td_...'; irm https://clank.rodecomp.online/install.ps1 | iex # Windows
 ```
 ```sh
-curl -fsSL https://saty.dev/install.sh | TD_TOKEN=td_... sh               # Linux
+curl -fsSL https://clank.rodecomp.online/install.sh | TD_TOKEN=td_... sh  # Linux
 ```
 
 It installs `td` (a single executable, no Node.js; git is the only other requirement), sets up the
