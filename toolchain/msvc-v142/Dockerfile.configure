@@ -1,0 +1,7 @@
+FROM rodecomp/compiler:v142
+RUN apt-get update && apt-get install -y --no-install-recommends cmake ninja-build python3 && rm -rf /var/lib/apt/lists/*
+COPY cmake-toolchain.cmake /opt/td/cmake-toolchain.cmake
+COPY cl-wine.sh /opt/td/cl-wine.sh
+RUN chmod +x /opt/td/cl-wine.sh
+COPY lib-wine.sh /opt/td/lib-wine.sh
+RUN chmod +x /opt/td/lib-wine.sh

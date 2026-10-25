@@ -120,6 +120,11 @@ async function runDocker({ jobDir, list, project, runner, timeoutMs }) {
   fs.chmodSync(jobDir, 0o777);
   fs.chmodSync(path.join(jobDir, 'out'), 0o777);
 
+  // Containerized workers share jobs through a named volume, not daemon-host paths.
+  const jobSubpath = runner.jobVolume ? path.relative(runner.jobVolumeRoot, jobDir) : null;
+  if (jobSubpath !== null && (!jobSubpath || jobSubpath.startsWith('..') || path.isAbsolute(jobSubpath))) {
+    throw new Error('compiler job must be inside jobVolumeRoot');
+  }
   const name = `td-${crypto.randomBytes(6).toString('hex')}`;
   const args = [
     'run', '--rm', '--name', name,
@@ -134,7 +139,9 @@ async function runDocker({ jobDir, list, project, runner, timeoutMs }) {
     '--security-opt', 'no-new-privileges',
     '--user', runner.user ?? '1000:1000',
     ...(runner.runtime ? ['--runtime', runner.runtime] : []),
-    '-v', `${path.resolve(jobDir)}:/job:rw`,
+    ...(runner.jobVolume
+      ? ['--mount', `type=volume,source=${runner.jobVolume},target=/job,volume-subpath=${jobSubpath}`]
+      : ['-v', `${path.resolve(jobDir)}:/job:rw`]),
     runner.image,
     'sh', '/job/build.sh',
   ];

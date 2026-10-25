@@ -1,0 +1,6 @@
+.git
+data
+logs
+dist
+deploy/rodecomp/import
+toolchain

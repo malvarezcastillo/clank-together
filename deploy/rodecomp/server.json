@@ -1,0 +1,25 @@
+{
+  "listen": { "host": "0.0.0.0", "port": 8080 },
+  "publicUrl": "https://clank.rodecomp.online",
+  "verifyConcurrency": 1,
+  "remoteChecks": false,
+  "buildTimeoutMs": 300000,
+  "runners": {
+    "ragnarok": {
+      "type": "docker",
+      "image": "rodecomp/compiler:v142",
+      "toolchainRoot": "Z:\\opt\\toolchain",
+      "jobVolume": "rodecomp_data",
+      "jobVolumeRoot": "/var/lib/docker/volumes/rodecomp_data/_data",
+      "memory": "2g",
+      "cpus": 2,
+      "jobs": 2
+    }
+  },
+  "allowUnsandboxedRunners": false,
+  "distributeTarget": true,
+  "pushRemote": "forgejo",
+  "gitCloneUrl": "https://clank.rodecomp.online/git/clank/rodecomp.git",
+  "gitWebUrl": "https://clank.rodecomp.online/git/clank/rodecomp",
+  "trustProxy": false
+}

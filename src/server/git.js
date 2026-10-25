@@ -122,7 +122,11 @@ export class Repo {
     this.git(['add', '--', ...Object.keys(files)]);
     // Nothing to commit (the code is already on main, e.g. a function resubmitted unchanged).
     if (!this.git(['status', '--porcelain', '--', ...Object.keys(files)]).trim()) return this.head();
-    this.git(['-c', 'user.name=Clank Together', '-c', 'user.email=bot@clank-together.invalid', 'commit', '-q', '--author', author, '-F', '-'], { input: message });
+    const name = process.env.TD_GIT_AUTHOR_NAME;
+    const email = process.env.TD_GIT_AUTHOR_EMAIL;
+    if (Boolean(name) !== Boolean(email)) throw new Error('set both TD_GIT_AUTHOR_NAME and TD_GIT_AUTHOR_EMAIL');
+    const identity = name ? `${name} <${email}>` : author;
+    this.git(['-c', `user.name=${name ?? 'Clank Together'}`, '-c', `user.email=${email ?? 'bot@clank-together.invalid'}`, 'commit', '-q', '--author', identity, '-F', '-'], { input: message });
     return this.head();
   }
 

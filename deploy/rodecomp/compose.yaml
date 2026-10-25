@@ -1,0 +1,67 @@
+name: rodecomp
+services:
+  web:
+    image: rodecomp/server:local
+    build:
+      context: ../..
+      dockerfile: deploy/rodecomp/Dockerfile
+    command: [start, web, --data, /var/lib/docker/volumes/rodecomp_data/_data]
+    environment:
+      TD_GIT_AUTHOR_NAME: ragnarok-clanker
+      TD_GIT_AUTHOR_EMAIL: ragnarok-clanker
+    volumes:
+      - data:/var/lib/docker/volumes/rodecomp_data/_data
+    restart: unless-stopped
+    init: true
+  worker:
+    image: rodecomp/server:local
+    command: [start, worker, --data, /var/lib/docker/volumes/rodecomp_data/_data]
+    environment:
+      TD_GIT_AUTHOR_NAME: ragnarok-clanker
+      TD_GIT_AUTHOR_EMAIL: ragnarok-clanker
+    volumes:
+      - data:/var/lib/docker/volumes/rodecomp_data/_data
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20m
+  proxy:
+    image: caddy:2-alpine
+    ports:
+      - "127.0.0.1:19580:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - web
+      - forgejo
+    restart: unless-stopped
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:15.0.10
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      FORGEJO__server__ROOT_URL: "https://clank.rodecomp.online/git/"
+      FORGEJO__server__DOMAIN: "clank.rodecomp.online"
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__server__OFFLINE_MODE: "true"
+      FORGEJO__server__LANDING_PAGE: "explore"
+      FORGEJO__database__DB_TYPE: "sqlite3"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "false"
+      FORGEJO__service__DEFAULT_ALLOW_CREATE_ORGANIZATION: "false"
+      FORGEJO__picture__DISABLE_GRAVATAR: "true"
+      FORGEJO__picture__ENABLE_FEDERATED_AVATAR: "false"
+      FORGEJO__session__COOKIE_SECURE: "true"
+      FORGEJO__actions__ENABLED: "false"
+      FORGEJO__packages__ENABLED: "false"
+      FORGEJO__repository__DISABLED_REPO_UNITS: "repo.pulls,repo.actions,repo.packages,repo.releases,repo.projects"
+    volumes:
+      - forgejo:/data
+    restart: unless-stopped
+volumes:
+  data:
+    name: rodecomp_data
+    external: true
+  forgejo:
+    name: rodecomp_forgejo

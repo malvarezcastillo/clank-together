@@ -1,0 +1,8 @@
+FROM node:22.21.0-bookworm-slim
+WORKDIR /app
+COPY package.json ./
+COPY src ./src
+COPY ghidra_scripts ./ghidra_scripts
+COPY tools/build-td ./tools/build-td
+RUN node tools/build-td/build.mjs
+CMD ["cp", "-a", "/app/dist/.", "/output/"]

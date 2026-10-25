@@ -1,0 +1,13 @@
+{
+    admin off
+    auto_https off
+}
+:8080 {
+    redir /git /git/ 308
+    handle_path /git/* {
+        reverse_proxy forgejo:3000
+    }
+    handle {
+        reverse_proxy web:8080
+    }
+}

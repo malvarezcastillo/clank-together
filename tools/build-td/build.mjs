@@ -51,6 +51,15 @@ if (process.platform === 'win32') {
   const exe = path.join(DIST, 'td-windows-x64.exe');
   fs.copyFileSync(process.execPath, exe);
   targets.push(exe);
+} else {
+  const base = `https://nodejs.org/dist/${NODE_VERSION}`;
+  const sums = await (await fetch(`${base}/SHASUMS256.txt`)).text();
+  const want = /^([0-9a-f]{64})\s+win-x64\/node\.exe$/m.exec(sums)?.[1];
+  if (!want) throw new Error('no checksum for the Windows runtime');
+  const exe = path.join(DIST, 'td-windows-x64.exe');
+  fs.writeFileSync(exe, Buffer.from(await (await fetch(`${base}/win-x64/node.exe`)).arrayBuffer()));
+  if (sha256(exe) !== want) throw new Error('Windows runtime checksum mismatch');
+  targets.push(exe);
 }
 {
   const name = `node-${NODE_VERSION}-linux-x64`;

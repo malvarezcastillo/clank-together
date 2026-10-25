@@ -413,6 +413,7 @@ const shortPath = (p) => (p ? p.split('/').slice(-2).join('/') : '?');
 
 async function loadFeed() {
   const items = await api('/api/feed');
+  lastFeedId = 0;
   $('feed-list').replaceChildren();
   addFeed(items.slice().reverse(), false);
 }
