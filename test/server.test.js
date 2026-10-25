@@ -629,6 +629,27 @@ test('a long review queue makes new claims wait for a few peer reviews', async (
   }
 });
 
+test('region claims count toward the reviews a long queue asks for', async () => {
+  await activeUser('rcauthor');
+  const author = ctx.accounts.byName('rcauthor');
+  const token = await activeUser('rcworker');
+  const worker = ctx.accounts.userByApiToken(token);
+  const saved = ctx.store.get(`SELECT id, state FROM tasks WHERE state != 'done' ORDER BY id LIMIT 1`);
+  const attempts = [0, 1, 2, 3].map(() => Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, saved.id, author.id, ctx.repo.head(), now()).lastInsertRowid));
+  const before = ctx.config.peerReviewFirstAt;
+  ctx.config.peerReviewFirstAt = 0;
+  try {
+    for (const a of attempts.slice(0, 3)) ctx.peers.submit(worker, a, 'same', 'the same branches and calls as the original', null);
+    ctx.store.event('region_claim', worker.id, { kind: 'unit', key: 'src/rc.cpp', leased: 5, shared: 0 });
+    const r = await call('POST', '/api/regions/claim', {}, token);
+    assert.equal(r.status, 429, 'three reviews paid for the region already claimed, not for the next one');
+  } finally {
+    ctx.config.peerReviewFirstAt = before;
+    ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (${attempts.join(',')})`);
+    ctx.store.run('UPDATE tasks SET state = ? WHERE id = ?', saved.state, saved.id);
+  }
+});
+
 test('the review list skips fully leased functions before applying its limit', async () => {
   await activeUser('rlauthor');
   await activeUser('rlviewer');
