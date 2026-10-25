@@ -539,8 +539,10 @@ export class Verifier {
         ev.feedback.warnings.push('your local toolchain differs from the pinned one; local results may not match the server');
       }
       if (ev.state === 'peer_review' && this.carryOver(a, ev.feedback.target)) {
-        ev.state = 'in_review';
-        ev.feedback.summary += '; the compiled code is unchanged since three peers confirmed it, so their verdicts carry over';
+        // Their verdicts already accept it, so it goes on as approved (in_review would wait for a
+        // human review, and the peer queue skips functions its rule has decided).
+        ev.state = 'approved';
+        ev.feedback.summary += '; the compiled code is unchanged since peers confirmed it, so their verdicts carry over and it is accepted';
       }
       // A trusted author's function that is close to the original: accepted without peer review
       // (but for a random sample that keeps the author's record measured; trust.js).

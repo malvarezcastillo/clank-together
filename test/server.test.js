@@ -882,6 +882,27 @@ test('approving a batch leaves its functions in peer review alone unless asked',
   for (const id of ids) ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, id);
 });
 
+test('a batch that merges only as a whole goes back once a function drops out of it', () => {
+  const author = ctx.accounts.byName('pmauthor');
+  const v = ctx.store.currentVersion();
+  const ids = [0x401880, 0x4018c0].map((addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8, unit: 'src/ns.cpp' }).symbol.id);
+  ctx.tasks.generate();
+  const batch = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at, result_json) VALUES (?, ?, '{}', 'open', ?, ?)`, author.id, ctx.repo.head(), now(), JSON.stringify({ noSplit: 'conflicts with newer work on main' })).lastInsertRowid);
+  const [approved, dropped] = ids.map((id) => {
+    const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
+    ctx.store.run(`UPDATE tasks SET state = 'approved' WHERE id = ?`, task);
+    return Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, created_at) VALUES (?, ?, ?, '{}', 'approved', ?, ?)`, task, author.id, ctx.repo.head(), batch, now()).lastInsertRowid);
+  });
+  ctx.merger.returnUnmergeable();
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', batch).state, 'open', 'everything approved: it can still merge whole');
+  ctx.store.run(`UPDATE attempts SET state = 'needs_cleanup' WHERE id = ?`, dropped);
+  ctx.merger.returnUnmergeable();
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', batch).state, 'returned');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', approved).state, 'returned');
+  assert.equal(ctx.store.get('SELECT t.state FROM tasks t JOIN attempts a ON a.task_id = t.id WHERE a.id = ?', approved).state, 'needs_cleanup');
+  for (const id of ids) ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, id);
+});
+
 test('split: the approved part of a batch merges while the rest waits for review', async () => {
   const author = await activeUser('sauthor');
   const peers = [];
