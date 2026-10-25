@@ -393,7 +393,7 @@ export function createApp(ctx) {
     // several times in a row.
     const per = config.reviewsPerClaim ?? 3;
     const since = Date.now() - 3600_000;
-    const claims = store.get(`SELECT COUNT(*) AS n FROM events WHERE user_id = ? AND type IN ('claim', 'claim_batch') AND at > ?`, user.id, since).n;
+    const claims = store.get(`SELECT COUNT(*) AS n FROM events WHERE user_id = ? AND type IN ('claim', 'claim_batch', 'region_claim') AND at > ?`, user.id, since).n;
     const done = store.get('SELECT COUNT(*) AS n FROM peer_reviews WHERE reviewer_id = ? AND created_at > ?', user.id, since).n;
     const need = Math.min(per, (claims + 1) * per - done);
     if (need <= 0) return;

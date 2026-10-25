@@ -5,7 +5,7 @@ import { PEImage } from '../src/shared/pe.js';
 import { CoffObject } from '../src/shared/coff.js';
 import { parseListing } from '../src/shared/listing.js';
 import { parseAnnotations } from '../src/shared/annotations.js';
-import { compareObject, STATUS, lcsRatio } from '../src/shared/compare.js';
+import { compareObject, STATUS, lcsRatio, sameOriginal } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 
 const FILE = 'src/player.cpp';
@@ -143,4 +143,24 @@ test('a file-local static resolves by its unit, never by the bare name', () => {
   assert.notEqual(other.status, STATUS.MISMATCH);
   const own = compare(new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_09999'], ['src/player.obj|?g_val@@3HA', 'gl_00001']]));
   assert.equal(own.status, STATUS.EXACT);
+});
+
+test('sameOriginal: two copies of a function match when their calls reach the same target', () => {
+  // Two 12-byte copies at 0x1000 and 0x1100: mov ecx, 1; call 0x2000; ret; nop; nop.
+  const image = Buffer.alloc(0x200, 0xcc);
+  const copy = (at, target) => {
+    const off = at - 0x1000;
+    image.set([0xb9, 1, 0, 0, 0, 0xe8], off);
+    image.writeInt32LE(target - (at + 10), off + 6);
+    image.set([0xc3, 0x90], off + 10);
+  };
+  copy(0x1000, 0x2000);
+  copy(0x1100, 0x2000);
+  copy(0x1180, 0x2040);
+  const pe = { read: (va, len) => image.subarray(va - 0x1000, va - 0x1000 + len) };
+  assert.equal(sameOriginal(pe, 0x1000, 0x1100, 12), true, 'same call target from two places');
+  assert.equal(sameOriginal(pe, 0x1000, 0x1180, 12), false, 'calls another function');
+  image[0x101] = 2; // mov ecx, 2
+  assert.equal(sameOriginal(pe, 0x1000, 0x1100, 12), false, 'an immediate differs');
+  assert.equal(sameOriginal(pe, 0x1000, 0x1100, 0), false, 'no size, no claim');
 });

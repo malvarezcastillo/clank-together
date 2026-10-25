@@ -629,6 +629,27 @@ test('a long review queue makes new claims wait for a few peer reviews', async (
   }
 });
 
+test('region claims count toward the reviews a long queue asks for', async () => {
+  await activeUser('rcauthor');
+  const author = ctx.accounts.byName('rcauthor');
+  const token = await activeUser('rcworker');
+  const worker = ctx.accounts.userByApiToken(token);
+  const saved = ctx.store.get(`SELECT id, state FROM tasks WHERE state != 'done' ORDER BY id LIMIT 1`);
+  const attempts = [0, 1, 2, 3].map(() => Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, saved.id, author.id, ctx.repo.head(), now()).lastInsertRowid));
+  const before = ctx.config.peerReviewFirstAt;
+  ctx.config.peerReviewFirstAt = 0;
+  try {
+    for (const a of attempts.slice(0, 3)) ctx.peers.submit(worker, a, 'same', 'the same branches and calls as the original', null);
+    ctx.store.event('region_claim', worker.id, { kind: 'unit', key: 'src/rc.cpp', leased: 5, shared: 0 });
+    const r = await call('POST', '/api/regions/claim', {}, token);
+    assert.equal(r.status, 429, 'three reviews paid for the region already claimed, not for the next one');
+  } finally {
+    ctx.config.peerReviewFirstAt = before;
+    ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (${attempts.join(',')})`);
+    ctx.store.run('UPDATE tasks SET state = ? WHERE id = ?', saved.state, saved.id);
+  }
+});
+
 test('the review list skips fully leased functions before applying its limit', async () => {
   await activeUser('rlauthor');
   await activeUser('rlviewer');
@@ -879,6 +900,55 @@ test('approving a batch leaves its functions in peer review alone unless asked',
   // Out of the way of the merge tests that follow.
   ctx.store.run(`UPDATE batches SET state = 'superseded' WHERE id = ?`, batch);
   ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE batch_id = ?`, batch);
+  for (const id of ids) ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, id);
+});
+
+test('one body for two functions: an accepted twin with the same original skips peer review', () => {
+  const image = Buffer.alloc(0x100, 0x90);
+  const realPe = ctx.verifier.getPe;
+  ctx.verifier.getPe = () => ({ read: (va, len) => image.subarray(va - 0x7000, va - 0x7000 + len) });
+  const v = ctx.store.currentVersion();
+  const [newId, oldId] = [0x7000, 0x7080].map((addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 16, unit: 'src/twin.cpp' }).symbol.id);
+  const fn = (id, addr) => ({ id, file: 'src/twin.cpp', symbol: '?Swim@@QEAAXXZ', addr, size: { ours: 16, original: 16 }, codeHash: 'twin-hash', status: STATUS.MISMATCH, score: 0.3 });
+  const check = { units: [{ file: 'src/twin.cpp', functions: [fn(newId, 0x7000), fn(oldId, 0x7080)] }] };
+  const target = check.units[0].functions[0];
+  const twin = (status, confirmed, hash = 'twin-hash') =>
+    ctx.store.run(
+      `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash) VALUES (?, 'src/twin.cpp', ?, 0.3, 'x', ?, ?, ?)
+       ON CONFLICT(symbol_id) DO UPDATE SET status = excluded.status, confirmed = excluded.confirmed, code_hash = excluded.code_hash`,
+      oldId, status, now(), confirmed, hash,
+    );
+  twin(STATUS.MISMATCH, 1);
+  assert.equal(ctx.verifier.acceptedTwin(check, target), oldId, 'confirmed on main, same original bytes');
+  twin(STATUS.MISMATCH, 0);
+  assert.equal(ctx.verifier.acceptedTwin(check, target), null, 'the twin is not accepted');
+  twin(STATUS.EXACT, 0, 'other-hash');
+  assert.equal(ctx.verifier.acceptedTwin(check, target), null, 'main accepted other code for the twin');
+  twin(STATUS.EXACT, 0);
+  image[0x85] = 0x01;
+  assert.equal(ctx.verifier.acceptedTwin(check, target), null, 'the originals differ');
+  ctx.verifier.getPe = realPe;
+  ctx.store.run('DELETE FROM func_status WHERE symbol_id = ?', oldId);
+});
+
+test('a batch that merges only as a whole goes back once a function drops out of it', () => {
+  const author = ctx.accounts.byName('pmauthor');
+  const v = ctx.store.currentVersion();
+  const ids = [0x401880, 0x4018c0].map((addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8, unit: 'src/ns.cpp' }).symbol.id);
+  ctx.tasks.generate();
+  const batch = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at, result_json) VALUES (?, ?, '{}', 'open', ?, ?)`, author.id, ctx.repo.head(), now(), JSON.stringify({ noSplit: 'conflicts with newer work on main' })).lastInsertRowid);
+  const [approved, dropped] = ids.map((id) => {
+    const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
+    ctx.store.run(`UPDATE tasks SET state = 'approved' WHERE id = ?`, task);
+    return Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, created_at) VALUES (?, ?, ?, '{}', 'approved', ?, ?)`, task, author.id, ctx.repo.head(), batch, now()).lastInsertRowid);
+  });
+  ctx.merger.returnUnmergeable();
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', batch).state, 'open', 'everything approved: it can still merge whole');
+  ctx.store.run(`UPDATE attempts SET state = 'needs_cleanup' WHERE id = ?`, dropped);
+  ctx.merger.returnUnmergeable();
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', batch).state, 'returned');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', approved).state, 'returned');
+  assert.equal(ctx.store.get('SELECT t.state FROM tasks t JOIN attempts a ON a.task_id = t.id WHERE a.id = ?', approved).state, 'needs_cleanup');
   for (const id of ids) ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, id);
 });
 
@@ -1226,30 +1296,46 @@ test('the live socket pushes new events, refuses other sites and ignores what cl
   }
 });
 
-test('a close vote waits for more verdicts; the side that leads decides', async () => {
+test('a close vote waits for more verdicts; a clear majority accepts, seven undecided reviewers send it back', async () => {
   await activeUser('odauthor');
   const author = ctx.accounts.byName('odauthor');
   const peers = [];
   for (let i = 1; i <= 8; i++) peers.push(await activeUser(`odpeer${i}`));
   const v = ctx.store.currentVersion();
-  const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402a00, size: 8, unit: 'src/od.cpp' }).symbol.id;
-  ctx.tasks.generate();
-  const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
-  ctx.store.run(`UPDATE tasks SET state = 'in_review' WHERE id = ?`, task);
-  // An attempt from the earlier rule: in human review, objections were not counted there.
-  const attempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'in_review', ?)`, task, author.id, ctx.repo.head(), now()).lastInsertRowid);
-  const reviewers = ctx.peers;
-  for (const [i, verdict] of ['different', 'different', 'different', 'same', 'same', 'same', 'same'].entries()) {
-    ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, ?, 'checked every branch and call', ?)`, attempt, ctx.accounts.byName(`odpeer${i + 1}`).id, verdict, now());
-  }
-  void reviewers;
-  await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, peers[7]);
-  const r = await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: 'same', reason: 'the same calls and the same returns' }, peers[7]);
-  assert.equal(r.body.state, 'in_review', 'five "same" against three "different": a lead of two, not yet');
-  ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, 'same', 'checked every branch and call', ?)`, attempt, ctx.accounts.userByApiToken(await activeUser('odpeer9')).id, now());
-  assert.deepEqual(ctx.peers.settleAll(), { approved: 1, needs_cleanup: 0 }, 'six to three: settled by the worker');
-  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', attempt).state, 'approved');
-  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task);
+  const make = (addr) => {
+    const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8, unit: 'src/od.cpp' }).symbol.id;
+    ctx.tasks.generate();
+    const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', id).id;
+    ctx.store.run(`UPDATE tasks SET state = 'peer_review' WHERE id = ?`, task);
+    const attempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?)`, task, author.id, ctx.repo.head(), now()).lastInsertRowid);
+    return { task, attempt };
+  };
+  const vote = (attempt, i, verdict, weight = 1) =>
+    ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, weight, reason, created_at) VALUES (?, ?, ?, ?, 'checked every branch and call', ?)`, attempt, ctx.accounts.byName(`odpeer${i}`).id, verdict, weight, now());
+  const state = (attempt) => ctx.store.get('SELECT state FROM attempts WHERE id = ?', attempt).state;
+
+  // 6:3 by weight leads by three but is only two thirds of the votes: it waits.
+  const a = make(0x402a00);
+  for (const i of [1, 2, 3]) vote(a.attempt, i, 'different');
+  for (const i of [4, 5, 6]) vote(a.attempt, i, 'same', 2);
+  ctx.peers.settleAll();
+  assert.equal(state(a.attempt), 'peer_review', '6:3 is not a clear majority');
+  assert.equal(ctx.peers.needed(3), 7);
+  await call('POST', '/api/peer-reviews/claim', { attemptId: a.attempt }, peers[6]);
+  const r = await call('POST', `/api/peer-reviews/${a.attempt}/verdict`, { verdict: 'same', reason: 'the same calls and the same returns' }, peers[6]);
+  assert.equal(r.body.state, 'approved', '7:3 accepts');
+
+  // Seven reviewers who cannot agree: back to the author, with why.
+  const b = make(0x402a40);
+  for (const i of [1, 2, 3]) vote(b.attempt, i, 'different');
+  for (const i of [4, 5, 6]) vote(b.attempt, i, 'same');
+  await call('POST', '/api/peer-reviews/claim', { attemptId: b.attempt }, peers[6]);
+  const u = await call('POST', `/api/peer-reviews/${b.attempt}/verdict`, { verdict: 'same', reason: 'the same calls and the same returns' }, peers[6]);
+  assert.equal(u.body.state, 'needs_cleanup', '4:3 after seven reviewers');
+  assert.equal(u.body.undecided, true);
+  assert.match(JSON.parse(ctx.store.get('SELECT result_json FROM attempts WHERE id = ?', b.attempt).result_json).peerOutcome, /7 peer reviewers could not agree/);
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = ?', b.task).state, 'needs_cleanup');
+  for (const t of [a.task, b.task]) ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, t);
 });
 
 test('authors whose work peers keep sending back are limited, then paused; trusted ones are not', async () => {
@@ -1460,8 +1546,14 @@ test('an admin sets a reviewer weight: it counts at once, also on verdicts alrea
   const alone = open();
   assert.equal(ctx.peers.submit(trusted, alone, 'same', why, null).weight, 3);
   assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', alone).state, 'peer_review', 'one reviewer never decides');
+  assert.ok(ctx.peers.available(other, 1000).some((o) => o.attempt_id === alone), 'still offered: a second reviewer settles it');
+  ctx.peers.submit(other, alone, 'same', why, null);
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', alone).state, 'approved');
+  const objected = open();
+  ctx.peers.submit(trusted, objected, 'different', 'the loop bound is off by one against the original', null);
+  assert.ok(ctx.peers.available(other, 1000).some((o) => o.attempt_id === objected), 'one heavy "different" alone is offered too');
   ctx.peers.setReviewWeight(trusted.id, null);
   assert.equal(ctx.trust.reviewer(trusted.id).weight, 1, 'auto: back to the earned weight');
-  ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (?, ?)`, waiting, alone);
+  ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (?, ?, ?)`, waiting, alone, objected);
   ctx.store.run('UPDATE tasks SET state = ? WHERE id = ?', saved.state, saved.id);
 });

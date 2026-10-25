@@ -384,6 +384,29 @@ function diffRegions(diffs, ours, orig, proc) {
   });
 }
 
+/**
+ * Whether two functions of the original are the same code: the same size and bytes, where a
+ * 4-byte field may differ only as a relative reference (call, jump, RIP-relative operand) to the
+ * same target from both places. Jumps inside the function are relative to it and so already equal.
+ */
+export function sameOriginal(pe, addrA, addrB, size) {
+  if (!size) return false;
+  if (addrA === addrB) return true;
+  const a = pe.read(addrA, size);
+  const b = pe.read(addrB, size);
+  for (let i = 0; i < size; i++) {
+    if (a[i] === b[i]) continue;
+    // The field this byte belongs to starts at most three bytes earlier (which were equal).
+    let field = -1;
+    for (let p = Math.max(0, i - 3); p <= i && field < 0; p++) {
+      if (p + 4 <= size && a.readInt32LE(p) - b.readInt32LE(p) === addrB - addrA) field = p;
+    }
+    if (field < 0) return false;
+    i = field + 3;
+  }
+  return true;
+}
+
 /** Similarity ratio based on the longest common subsequence, like difflib. */
 export function lcsRatio(a, b) {
   if (a.length === 0 && b.length === 0) return 1;

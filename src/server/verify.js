@@ -7,7 +7,7 @@ import { lintSubmission } from '../shared/lint.js';
 import { freeTextErrors } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
-import { STATUS } from '../shared/compare.js';
+import { STATUS, sameOriginal } from '../shared/compare.js';
 import { listSources, isUnit } from '../shared/project.js';
 import { changedNames, unitsMentioning } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
@@ -445,6 +445,29 @@ export class Verifier {
   }
 
   /**
+   * Another function annotated on the same compiled body as `target`, accepted on main (byte-
+   * identical or confirmed by peers) with this very compiled code, whose original is the same code
+   * as the target's (sameOriginal). Its ID, or null.
+   */
+  acceptedTwin(check, target) {
+    if (!target?.symbol || !target.addr || !target.codeHash) return null;
+    const size = target.size?.original;
+    const pe = this.getPe();
+    // The target's file is its unit (evaluate); a decorated name stands for one body in a unit.
+    for (const u of check.units.filter((x) => x.file === target.file)) {
+      for (const f of u.functions) {
+        if (f.id === target.id || f.symbol !== target.symbol || !f.addr || f.codeHash !== target.codeHash) continue;
+        if (f.size?.original !== size) continue;
+        const main = this.store.get('SELECT status, confirmed, code_hash FROM func_status WHERE symbol_id = ?', f.id);
+        if (!main || main.code_hash !== f.codeHash) continue;
+        if (!(main.status === STATUS.EXACT || main.status === STATUS.UNRESOLVED || main.confirmed)) continue;
+        if (sameOriginal(pe, target.addr, f.addr, size)) return f.id;
+      }
+    }
+    return null;
+  }
+
+  /**
    * A function that three peers already confirmed keeps that confirmation when its compiled code is
    * unchanged in a resubmission (the batch came back because of another function).
    */
@@ -539,8 +562,10 @@ export class Verifier {
         ev.feedback.warnings.push('your local toolchain differs from the pinned one; local results may not match the server');
       }
       if (ev.state === 'peer_review' && this.carryOver(a, ev.feedback.target)) {
-        ev.state = 'in_review';
-        ev.feedback.summary += '; the compiled code is unchanged since three peers confirmed it, so their verdicts carry over';
+        // Their verdicts already accept it, so it goes on as approved (in_review would wait for a
+        // human review, and the peer queue skips functions its rule has decided).
+        ev.state = 'approved';
+        ev.feedback.summary += '; the compiled code is unchanged since peers confirmed it, so their verdicts carry over and it is accepted';
       }
       // A trusted author's function that is close to the original: accepted without peer review
       // (but for a random sample that keeps the author's record measured; trust.js).
@@ -548,6 +573,15 @@ export class Verifier {
         ev.state = 'approved';
         ev.feedback.summary = `not byte-identical (score ${(ev.score * 100).toFixed(1)}%), accepted without peer review: this agent's functions keep passing peer review (trust)`;
         ev.feedback.trusted = true;
+        this.store.run('UPDATE attempts SET peer_skipped = 1 WHERE id = ?', a.id);
+      }
+      // One body annotated for several functions: when the original of this one is the same code
+      // as another's that main already accepts from that body, the verdict on it holds for this one.
+      const twin = ev.state === 'peer_review' && a.kind !== 'skip' ? this.acceptedTwin(check, ev.feedback.target) : null;
+      if (twin) {
+        ev.state = 'approved';
+        ev.feedback.summary = `not byte-identical (score ${(ev.score * 100).toFixed(1)}%), accepted without peer review: the original is the same code as ${twin}, which main already accepts from this body`;
+        ev.feedback.sameAs = twin;
         this.store.run('UPDATE attempts SET peer_skipped = 1 WHERE id = ?', a.id);
       }
       if (ev.state === 'needs_cleanup' || ev.state === 'rejected') failed++;
@@ -659,7 +693,7 @@ export class Verifier {
       state = auto ? 'approved' : 'in_review';
     } else if (target.status === STATUS.MISMATCH || target.status === STATUS.UNRESOLVED) {
       // Not byte-identical, but it compiles cleanly: other agents judge whether the logic is the same.
-      feedback.summary = `not byte-identical (score ${(score * 100).toFixed(1)}%), sent to peer review: other agents compare it with the original (it merges once "same" leads "different" by ${policy.peerMargin ?? 3}; at least ${policy.peerReviews ?? 3} "different" leading by ${policy.peerRejectMargin ?? 2} send it back)`;
+      feedback.summary = `not byte-identical (score ${(score * 100).toFixed(1)}%), sent to peer review: other agents compare it with the original (it merges once "same" leads "different" by ${policy.peerMargin ?? 3} with ${Math.round((policy.peerAcceptShare ?? 0.7) * 100)}% of the votes; at least ${policy.peerReviews ?? 3} "different" leading by ${policy.peerRejectMargin ?? 2}, or ${policy.peerMaxReviewers ?? 7} reviewers without a decision, send it back)`;
       state = 'peer_review';
     } else {
       feedback.summary = `the annotated function was not compiled or has no address in the current version (${target.status})`;

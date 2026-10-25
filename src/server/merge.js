@@ -127,9 +127,29 @@ export class Merger {
     this.log.info(`${done.length} function(s) accepted as needing no decompilation`);
   }
 
+  /**
+   * A batch that only merges as a whole (noSplit) can't once one of its functions has dropped out
+   * after that was decided (sent back, withdrawn, superseded): it all goes back to its author
+   * instead of holding its approved functions forever.
+   */
+  returnUnmergeable() {
+    const stuck = this.store.all(
+      `SELECT b.id, json_extract(b.result_json, '$.noSplit') AS reason FROM batches b WHERE b.state = 'open' AND json_extract(COALESCE(b.result_json, '{}'), '$.noSplit') IS NOT NULL
+          AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN ('needs_cleanup', 'rejected', 'returned', 'withdrawn', 'superseded'))`,
+    ).filter((b) => !this.active.has(b.id));
+    if (!stuck.length) return;
+    this.store.tx(() => {
+      for (const b of stuck) returnBatch(this.store, b.id, `a function of this batch dropped out and the rest cannot be merged without it: ${b.reason}`);
+    });
+    this.log.info(`${stuck.length} batch(es) returned: a function dropped out and the rest cannot merge without it`);
+  }
+
   /** Starts merges while a lane is free; resolves when the merges it started are done. */
   async pump() {
-    if (!this.stopped) this.finishSkips();
+    if (!this.stopped) {
+      this.finishSkips();
+      this.returnUnmergeable();
+    }
     const started = [];
     while (!this.stopped && this.running < MERGE_SLOTS) {
       const pick = this.next(this.runningBig > 0);
@@ -257,7 +277,7 @@ export class Merger {
     }
     this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.noSplit', ?) WHERE id = ?`, reason, batch.id);
     // With a function sent back it can never merge as a whole, so it all goes back.
-    if (this.store.get(`SELECT 1 FROM attempts WHERE batch_id = ? AND state IN ('needs_cleanup', 'rejected', 'returned', 'withdrawn')`, batch.id)) {
+    if (this.store.get(`SELECT 1 FROM attempts WHERE batch_id = ? AND state IN ('needs_cleanup', 'rejected', 'returned', 'withdrawn', 'superseded')`, batch.id)) {
       returnBatch(this.store, batch.id, `a function of this batch was sent back and the rest cannot be merged without it: ${reason}`);
       return this.log.info(`batch ${batch.id} returned: ${reason}`);
     }
@@ -353,7 +373,7 @@ export class Merger {
       (peers.length ? `\nPeer-reviewed-by: ${peers.join(', ')}` : '') +
       (reviewers.length ? `\nReviewed-by: ${reviewers.join(', ')}` : '') +
       (!reviewers.length && !confirmedIds.size ? '\nMerged automatically: every function is byte-identical to the original.' : '') +
-      (!reviewers.length && confirmedIds.size ? `\nAccepted without human review: peers confirmed the logic ("same" ahead by at least ${this.peers?.margin ?? 3}).` : '') +
+      (!reviewers.length && confirmedIds.size ? `\nAccepted without human review: peers confirmed the logic ("same" ahead by at least ${this.peers?.margin ?? 3}, with ${Math.round((this.peers?.acceptShare ?? 0.7) * 100)}% of the votes).` : '') +
       '\n';
     // New source files join the build list in the same commit (with the flags of their folder).
     const listFile = this.project.compileCommands ?? null;
