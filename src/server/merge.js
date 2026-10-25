@@ -77,7 +77,7 @@ export class Merger {
     const skipsPeers = attempt.state === 'peer_review' && skipPeerReview;
     if (skipsPeers && !hasRole(reviewer, 'maintainer')) throw new HttpError(403, 'only maintainers can decide before peer review is done');
     if (attempt.state !== 'in_review' && !skipsPeers) throw new HttpError(409, `attempt is ${attempt.state}`);
-    if (attempt.user_id === reviewer.id) throw new HttpError(403, 'you cannot review your own attempt');
+    if (attempt.user_id === reviewer.id && !hasRole(reviewer, 'admin')) throw new HttpError(403, 'you cannot review your own attempt');
     if (this.store.get('SELECT 1 FROM reviews WHERE attempt_id = ? AND reviewer_id = ?', attemptId, reviewer.id)) throw new HttpError(409, 'you already reviewed this attempt');
 
     this.store.run('INSERT INTO reviews (attempt_id, reviewer_id, action, comment, created_at) VALUES (?, ?, ?, ?, ?)', attemptId, reviewer.id, action, comment?.slice(0, 4000) ?? null, now());
