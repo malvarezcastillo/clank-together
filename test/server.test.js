@@ -1525,8 +1525,14 @@ test('an admin sets a reviewer weight: it counts at once, also on verdicts alrea
   const alone = open();
   assert.equal(ctx.peers.submit(trusted, alone, 'same', why, null).weight, 3);
   assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', alone).state, 'peer_review', 'one reviewer never decides');
+  assert.ok(ctx.peers.available(other, 1000).some((o) => o.attempt_id === alone), 'still offered: a second reviewer settles it');
+  ctx.peers.submit(other, alone, 'same', why, null);
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', alone).state, 'approved');
+  const objected = open();
+  ctx.peers.submit(trusted, objected, 'different', 'the loop bound is off by one against the original', null);
+  assert.ok(ctx.peers.available(other, 1000).some((o) => o.attempt_id === objected), 'one heavy "different" alone is offered too');
   ctx.peers.setReviewWeight(trusted.id, null);
   assert.equal(ctx.trust.reviewer(trusted.id).weight, 1, 'auto: back to the earned weight');
-  ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (?, ?)`, waiting, alone);
+  ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (?, ?, ?)`, waiting, alone, objected);
   ctx.store.run('UPDATE tasks SET state = ? WHERE id = ?', saved.state, saved.id);
 });

@@ -94,27 +94,24 @@ export class PeerReviews {
     // Room for this reviewer is part of the query, so the limit counts functions they can take
     // (filtering after the limit returned an empty list while the first rows were fully leased).
     const rows = this.store.all(
-      `SELECT * FROM (
-         SELECT a.id AS attempt_id, a.batch_id, a.task_id, a.state, t.symbol_id, s.name, s.unit, a.finished_at,
-                (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
-                (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS objections,
-                (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id) AS reviewers,
-                (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
-           FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
-          WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
-            AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
-            AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)
-       )
-       WHERE NOT (objections >= ? AND objections - confirmations >= ?) AND confirmations + in_progress < objections + ? AND reviewers + in_progress < ?`,
+      `SELECT a.id AS attempt_id, a.batch_id, a.task_id, a.state, t.symbol_id, s.name, s.unit, a.finished_at,
+              (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS confirmations,
+              (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS objections,
+              (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS same_reviewers,
+              (SELECT COUNT(*) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS different_reviewers,
+              (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS in_progress
+         FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
+        WHERE a.state IN ('peer_review', 'in_review') AND a.user_id != ?
+          AND NOT EXISTS (SELECT 1 FROM users b WHERE b.id = ? AND b.peer_review_blocked = 1)
+          AND NOT EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.reviewer_id = ?)`,
       now(),
       user.id,
       user.id,
       user.id,
-      this.required,
-      this.rejectMargin,
-      this.margin,
-      this.maxReviewers,
-    ).filter((r) => r.confirmations + r.in_progress < this.needed(r.objections));
+    ).filter((r) => {
+      r.reviewers = r.same_reviewers + r.different_reviewers;
+      return !this.full({ same: r.confirmations, different: r.objections, sameReviewers: r.same_reviewers, differentReviewers: r.different_reviewers }, r.in_progress);
+    });
     // Random by batch, so a batch stays together.
     const key = new Map();
     for (const r of rows) {
@@ -231,8 +228,7 @@ export class PeerReviews {
       const leased = this.store.get('SELECT 1 FROM peer_leases WHERE attempt_id = ? AND reviewer_id = ? AND expires_at > ?', attemptId, user.id, now());
       const counts = this.counts(attemptId);
       const others = this.store.get('SELECT COUNT(*) AS n FROM peer_leases WHERE attempt_id = ? AND reviewer_id != ? AND expires_at > ?', attemptId, user.id, now()).n;
-      const full = counts.same + others >= this.needed(counts.different) || counts.sameReviewers + counts.differentReviewers + others >= this.maxReviewers;
-      if (!leased && full) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
+      if (!leased && this.full(counts, others)) throw new HttpError(409, 'enough reviewers are already on this attempt; claim another');
 
       const weight = this.trust?.reviewer(user.id, user.tokenId ?? null).weight ?? 1;
       this.store.run(
@@ -355,6 +351,14 @@ export class PeerReviews {
 
   rejects(c) {
     return c.different >= this.required && c.different - c.same >= this.rejectMargin && c.differentReviewers >= 2;
+  }
+
+  // No room for another reviewer: decided, or decided once the `inProgress` leased reviews come
+  // back "same", or at `maxReviewers`. The same rules as decide(), reviewer counts included, so a
+  // function one heavy verdict leads is still offered until a second reviewer settles it.
+  full(c, inProgress = 0) {
+    const hoped = { ...c, same: c.same + inProgress, sameReviewers: c.sameReviewers + inProgress };
+    return this.rejects(c) || this.accepts(hoped) || c.sameReviewers + c.differentReviewers + inProgress >= this.maxReviewers;
   }
 
   /** Passed peer review, or a trusted author's function that did not need it (trust.js). */
