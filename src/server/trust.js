@@ -53,10 +53,14 @@ export class Trust {
     return { ...TRUST_DEFAULTS, ...p, weights: p.weights ?? TRUST_DEFAULTS.weights };
   }
 
-  // The peer review rule (peer.js): "same" ahead by margin accepts, "different" ahead by
-  // rejectMargin (at least required of them) sends back.
+  // The peer review rule (peer.js): "same" ahead by margin with acceptShare of the weight accepts,
+  // "different" ahead by rejectMargin (at least required of them) sends back.
   get margin() {
     return this.project.matchPolicy.peerMargin ?? 3;
+  }
+
+  get acceptShare() {
+    return this.project.matchPolicy.peerAcceptShare ?? 0.7;
   }
 
   get rejectMargin() {
@@ -92,11 +96,11 @@ export class Trust {
       const s = this.scope('a', tokenId);
       const w = (verdict) => `(SELECT COALESCE(SUM(r.weight), 0) FROM peer_reviews r WHERE r.attempt_id = a.id AND r.verdict = '${verdict}')`;
       const r = this.store.get(
-        `SELECT SUM(same - different >= ?) AS accepted, SUM(different >= ? AND different - same >= ?) AS rejected FROM (
+        `SELECT SUM(same - different >= ? AND same >= ? * (same + different)) AS accepted, SUM(different >= ? AND different - same >= ?) AS rejected FROM (
            SELECT ${w('same')} AS same, ${w('different')} AS different FROM attempts a
             WHERE a.user_id = ? AND ${s.sql} AND a.created_at > ? AND a.kind = 'code' AND a.peer_skipped = 0
               AND a.score >= ?)`,
-        this.margin, this.required, this.rejectMargin, userId, ...s.args, now() - p.authorDays * DAY, p.bandAt,
+        this.margin, this.acceptShare, this.required, this.rejectMargin, userId, ...s.args, now() - p.authorDays * DAY, p.bandAt,
       );
       const accepted = r?.accepted ?? 0;
       const rejected = r?.rejected ?? 0;
