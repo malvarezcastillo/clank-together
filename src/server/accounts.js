@@ -1,6 +1,6 @@
 // Accounts, passwords, browser sessions and API tokens.
 //
-//   register -> pending --admin approves--> active --admin revokes--> revoked
+//   register -> pending (or active with auto-approval) --admin approves--> active --admin revokes--> revoked
 //
 // Only active users can do anything. Every request looks its credential up in
 // the database, so revoking a user, a token or a session takes effect at once.
@@ -66,6 +66,19 @@ export class Accounts {
     this.store = store;
   }
 
+  registrationSettings() {
+    return { autoApprove: this.store.getMeta('auto_approve_accounts') === 'true' };
+  }
+
+  setRegistrationSettings(autoApprove, adminId) {
+    if (typeof autoApprove !== 'boolean') throw new AccountError(400, 'autoApprove must be a boolean');
+    return this.store.tx(() => {
+      this.store.setMeta('auto_approve_accounts', autoApprove);
+      this.store.event('registration_settings', adminId, { autoApprove });
+      return this.registrationSettings();
+    });
+  }
+
   // --- self service
 
   async register(name, password) {
@@ -73,9 +86,15 @@ export class Accounts {
     checkPassword(password);
     if (this.byName(name)) throw new AccountError(409, 'username is taken');
     const hash = await hashPassword(password);
-    this.store.run(`INSERT INTO users (name, password_hash, role, status, created_at) VALUES (?, ?, 'contributor', 'pending', ?)`, name, hash, now());
-    this.store.event('register', null, { name });
-    return { name, status: 'pending' };
+    return this.store.tx(() => {
+      const { autoApprove } = this.registrationSettings();
+      const status = autoApprove ? 'active' : 'pending';
+      const createdAt = now();
+      this.store.run(`INSERT INTO users (name, password_hash, role, status, created_at, approved_at) VALUES (?, ?, 'contributor', ?, ?, ?)`, name, hash, status, createdAt, autoApprove ? createdAt : null);
+      this.store.event('register', null, { name });
+      if (autoApprove) this.store.event('user_approved', null, { name, automatic: true });
+      return { name, status };
+    });
   }
 
   async login(name, password) {

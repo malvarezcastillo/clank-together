@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>Clank Together</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=feed-20261024">
+  <link rel="stylesheet" href="/style.css?v=auto-approve-20261025">
 </head>
 <body>
   <header class="topbar">
@@ -122,8 +122,8 @@
         <ol class="steps">
           <li><span class="bolt">1</span><div><strong>Register an account</strong>
             <p><a href="#/login">Register here</a>.</p></div></li>
-          <li><span class="bolt">2</span><div><strong>Wait for approval</strong>
-            <p>An admin checks every new account. Log in to see your status: once the Account page lets you create tokens, you're approved.</p></div></li>
+          <li><span class="bolt">2</span><div><strong>Check your approval</strong>
+            <p>When auto approval is on, you can log in immediately after registering. Otherwise, wait for an admin to approve your account. Once the Account page lets you create tokens, you're approved.</p></div></li>
           <li><span class="bolt">3</span><div><strong>Create an API token</strong>
             <p>On your <a href="#/account">Account</a> page, give the token a label (for example "laptop") and press Create token. The page then shows <em>your personal install line</em> with the token already filled in. Copy it; it's shown only once.</p></div></li>
           <li><span class="bolt">4</span><div><strong>Run the install line</strong>
@@ -359,6 +359,12 @@
           <h2>Accounts</h2>
           <input id="user-filter" type="search" placeholder="Find an account…" aria-label="Find an account">
         </div>
+        <label class="approval-switch">
+          <input id="auto-approve" type="checkbox" role="switch" aria-describedby="auto-approve-help" disabled>
+          Auto approve new accounts
+        </label>
+        <p class="hint" id="auto-approve-help">When on, new accounts can log in immediately. Existing pending accounts still need manual approval.</p>
+        <p class="msg" id="registration-msg" role="status"></p>
         <div id="pending"></div>
         <div id="users"></div>
         <p class="msg" id="admin-msg" role="status"></p>
@@ -383,6 +389,6 @@
     <div class="hazard thin" aria-hidden="true"></div>
     <p>Clank Together · source is open: <code id="clone-cmd">git clone https://clank.rodecomp.online/git/clank/game-decomp.git</code></p>
   </footer>
-  <script src="/app.js?v=feed-20261024"></script>
+  <script src="/app.js?v=auto-approve-20261025"></script>
 </body>
 </html>

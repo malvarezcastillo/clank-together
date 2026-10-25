@@ -982,6 +982,15 @@ export function createApp(ctx) {
     });
     return { authors, limits: LIMITS };
   });
+  router.on('GET', '/api/admin/registration', ({ req }) => {
+    auth(req, { role: 'admin', session: true });
+    return accounts.registrationSettings();
+  });
+  router.on('POST', '/api/admin/registration', async ({ req }) => {
+    const admin = auth(req, { role: 'admin', session: true });
+    const body = await readJson(req, 1024);
+    return accountCall(() => accounts.setRegistrationSettings(body.autoApprove, admin.id));
+  });
   router.on('GET', '/api/admin/users', ({ req, query }) => {
     auth(req, { role: 'admin', session: true });
     return { roles: ROLES, users: accounts.listUsers(query.get('status') ?? undefined), work: claimedWork(), reviewers: reviewerStats(store) };

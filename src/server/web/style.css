@@ -308,6 +308,21 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
   outline-offset: 1px;
 }
 textarea { width: 100%; font-family: var(--font-body); }
+.approval-switch { flex-direction: row; align-items: center; gap: 10px; color: var(--fg); font-size: 15px; cursor: pointer; }
+.approval-switch input {
+  appearance: none;
+  flex: none;
+  width: 42px;
+  height: 24px;
+  margin: 0;
+  padding: 2px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.approval-switch input::before { content: ''; display: block; width: 18px; height: 18px; border-radius: 50%; background: var(--muted); }
+.approval-switch input:checked { background: var(--accent); border-color: var(--accent); }
+.approval-switch input:checked::before { transform: translateX(18px); background: var(--accent-text-on); }
+.approval-switch input:disabled { opacity: 0.45; cursor: not-allowed; }
 
 button {
   font: 600 14px var(--font-display);

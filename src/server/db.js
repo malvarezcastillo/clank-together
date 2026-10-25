@@ -4,9 +4,9 @@ import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import { formatSymbolId } from '../shared/annotations.js';
 
-// Accounts. People register with a password and stay 'pending' until an admin
-// approves them. Approved users create API tokens for their agents; the browser
-// uses short-lived sessions. Both are stored as SHA-256 hashes only.
+// Accounts. Registrations stay 'pending' until approved unless auto-approval is on.
+// Approved users create API tokens for their agents; the browser uses short-lived
+// sessions. Both are stored as SHA-256 hashes only.
 const USERS_TABLES = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,

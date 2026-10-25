@@ -253,6 +253,50 @@ test('registration needs admin approval before anything works', async () => {
   assert.equal((await request('GET', '/api/admin/users', null, { cookie: erin })).status, 403, 'contributors are not admins');
 });
 
+test('auto approval is admin-controlled and affects only new registrations', async () => {
+  await ctx.accounts.register('waiting_before_auto', PASSWORD);
+  const sessionFor = async (name) => `td_session=${(await ctx.accounts.login(name, PASSWORD)).token}`;
+  const admin = await sessionFor('root');
+  const contributor = await sessionFor('erin');
+  const adminToken = ctx.accounts.createApiToken(ctx.accounts.byName('root').id, 'settings-test').token;
+  const endpoint = '/api/admin/registration';
+  const enable = { autoApprove: true };
+  assert.equal((await request('GET', endpoint)).status, 401);
+  assert.equal((await request('POST', endpoint, enable)).status, 401);
+  for (const options of [{ cookie: contributor }, { token: adminToken }]) {
+    assert.equal((await request('GET', endpoint, null, options)).status, 403);
+    assert.equal((await request('POST', endpoint, enable, options)).status, 403);
+  }
+  assert.equal((await request('POST', endpoint, enable, { cookie: admin, csrf: false })).status, 403);
+  for (const body of [{}, { autoApprove: 'false' }, { autoApprove: 1 }, { autoApprove: null }]) {
+    assert.equal((await request('POST', endpoint, body, { cookie: admin })).status, 400);
+  }
+  assert.equal((await request('GET', endpoint, null, { cookie: admin })).body.autoApprove, false);
+  try {
+    assert.equal((await request('POST', endpoint, enable, { cookie: admin })).status, 200);
+    const registered = await request('POST', '/api/register', { name: 'auto_approved', password: PASSWORD });
+    assert.equal(registered.status, 200);
+    assert.equal(registered.body.status, 'active');
+    const user = ctx.accounts.byName('auto_approved');
+    assert.equal(user.role, 'contributor');
+    assert.equal(user.approved_at, user.created_at);
+    assert.equal(user.approved_by, null);
+    const session = await sessionFor('auto_approved');
+    assert.equal((await request('GET', '/api/me', null, { cookie: session })).body.name, 'auto_approved');
+    assert.equal(ctx.accounts.byName('waiting_before_auto').status, 'pending');
+
+    assert.equal((await request('POST', endpoint, { autoApprove: false }, { cookie: admin })).status, 200);
+    const manual = await request('POST', '/api/register', { name: 'manual_again', password: PASSWORD });
+    assert.equal(manual.status, 200);
+    assert.equal(manual.body.status, 'pending');
+    assert.equal(ctx.accounts.byName('manual_again').approved_at, null);
+    await assert.rejects(ctx.accounts.login('manual_again', PASSWORD), (e) => e.status === 403);
+    assert.equal((await request('GET', '/api/me', null, { cookie: session })).body.name, 'auto_approved');
+  } finally {
+    ctx.accounts.setRegistrationSettings(false, ctx.accounts.byName('root').id);
+  }
+});
+
 test('API tokens: created in the browser, limited scope, revocable', async () => {
   const erin = await login('erin');
   const t = await request('POST', '/api/me/tokens', { label: 'laptop' }, { cookie: erin });

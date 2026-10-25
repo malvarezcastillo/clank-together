@@ -226,9 +226,11 @@ $('login-form').addEventListener('submit', async (e) => {
 $('register-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
-    await post('/api/register', formData(e.target));
+    const registration = await post('/api/register', formData(e.target));
     e.target.reset();
-    $('register-msg').textContent = 'Registered. You can log in once an admin approves your account.';
+    $('register-msg').textContent = registration.status === 'active'
+      ? 'Registered. Your account is approved; you can log in now.'
+      : 'Registered. You can log in once an admin approves your account.';
   } catch (err) {
     $('register-msg').textContent = err.message;
   }
@@ -859,11 +861,32 @@ async function adminAction(name, action, body) {
     return null;
   }
 }
+$('auto-approve').addEventListener('change', async (e) => {
+  const toggle = e.target;
+  const previous = !toggle.checked;
+  toggle.disabled = true;
+  $('registration-msg').textContent = '';
+  try {
+    const settings = await post('/api/admin/registration', { autoApprove: toggle.checked });
+    toggle.checked = settings.autoApprove;
+    $('registration-msg').textContent = settings.autoApprove
+      ? 'Auto approval is on. New accounts can log in immediately.'
+      : 'Auto approval is off. New accounts need manual approval.';
+  } catch (err) {
+    toggle.checked = previous;
+    $('registration-msg').textContent = err.message;
+  } finally {
+    toggle.disabled = false;
+  }
+});
+
 
 let adminData = null;
 async function loadAdmin() {
-  const [users, authors] = await Promise.all([api('/api/admin/users'), api('/api/admin/authors').catch(() => ({ authors: [] }))]);
+  const [users, authors, registration] = await Promise.all([api('/api/admin/users'), api('/api/admin/authors').catch(() => ({ authors: [] })), api('/api/admin/registration')]);
   adminData = users;
+  $('auto-approve').checked = registration.autoApprove;
+  $('auto-approve').disabled = false;
   renderAdmin();
   renderAuthors(authors.authors);
 }
