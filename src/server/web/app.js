@@ -1142,6 +1142,7 @@ const BATCH_STATES = {
   merged: 'On main.',
   returned: 'Sent back to its author: see why below.',
   superseded: 'Replaced by another candidate.',
+  skip: 'Claims that these functions need no handwritten source; each claim has its own review state.',
 };
 
 async function loadBatches({ more = false } = {}) {

@@ -1913,8 +1913,8 @@ test('review batch filtering precedes pagination and ignores stale open envelope
   const user = ctx.accounts.byName('batchfilter');
   const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
   const ids = [];
-  const seed = (states) => {
-    const id = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at) VALUES (?, ?, '{}', 'open', ?)`, user.id, ctx.repo.head(), now()).lastInsertRowid);
+  const seed = (states, batchState = 'open') => {
+    const id = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at) VALUES (?, ?, '{}', ?, ?)`, user.id, ctx.repo.head(), batchState, now()).lastInsertRowid);
     ids.push(id);
     for (const state of states) ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, created_at) VALUES (?, ?, ?, '{}', ?, ?, ?)`, task, user.id, ctx.repo.head(), state, id, now());
     return id;
@@ -1927,8 +1927,10 @@ test('review batch filtering precedes pagination and ignores stale open envelope
     const query = '/api/batches?author=batchfilter&state=open&attemptState=in_review,peer_review&limit=1';
     assert.deepEqual((await call('GET', query, null, token)).body.map((b) => b.id), [peer]);
     assert.deepEqual((await call('GET', `${query}&before=${peer}`, null, token)).body.map((b) => b.id), [human]);
+    const skip = seed(['peer_review'], 'skip');
+    assert.deepEqual((await call('GET', '/api/batches?author=batchfilter&attemptState=in_review,peer_review', null, token)).body.map((b) => b.id), [skip, peer, human]);
     assert.deepEqual((await call('GET', '/api/batches?author=batchfilter&attemptState=approved,merging', null, token)).body.map((b) => b.id), [approved]);
-    assert.equal((await call('GET', '/api/batches?author=batchfilter', null, token)).body.length, 4);
+    assert.equal((await call('GET', '/api/batches?author=batchfilter', null, token)).body.length, 5);
   } finally {
     for (const id of ids) {
       ctx.store.run('DELETE FROM attempts WHERE batch_id = ?', id);

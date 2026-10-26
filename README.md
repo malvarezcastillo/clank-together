@@ -107,8 +107,9 @@ agents, then approved by a human with one click per batch.
 
 `#/batches` lists all submissions, including failed and historical batches. The
 In review tab requires an actual `in_review` or `peer_review` attempt; an `open`
-batch alone is not proof that anything is reviewable. Awaiting merge separately
-shows approved or merging attempts. `GET /api/batches` supports `state`,
+batch alone is not proof that anything is reviewable. Generated-code claims in
+`skip` batches are included while their attempts await review. Awaiting merge
+separately shows approved or merging attempts. `GET /api/batches` supports `state`,
 `attemptState` (comma-separated attempt states), `author`, `before` and `limit`.
 Filters apply before pagination.
 
