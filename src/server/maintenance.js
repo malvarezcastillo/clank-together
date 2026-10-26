@@ -86,7 +86,7 @@ export class Maintenance {
     await this.verifier.refreshBaselines(check, merged.files, `maintenance-${batch.id}`);
     const regressions = this.verifier.regressions(check, merged.files);
     if (regressions.length) return back(`breaks ${regressions.length} function(s) that matched before`, { regressions });
-    const changed = this.changedFunctions(check);
+    const changed = await this.changedFunctions(check, merged.files, startHead);
     if (changed.length) {
       return back(`changes the compiled code of ${changed.length} function(s): that is function work; submit those functions with their tasks`, { changedFunctions: changed.slice(0, 200) });
     }
@@ -111,16 +111,24 @@ export class Maintenance {
     return { state: 'merged', commit, result: { units: check.units.length, changedHeaders } };
   }
 
-  /** Functions whose compiled code differs from what main recorded for them. */
-  changedFunctions(check) {
+  /**
+   * Functions whose code, once linked, differs from main's. Main's units that the change touches
+   * are compiled as main has them, and every function is compared on where its references land
+   * (effectiveHash): moving a global, renaming it, or reaching a member through its object's symbol
+   * changes names, not code.
+   */
+  async changedFunctions(check, files, head) {
+    const touched = check.units.map((u) => u.file).filter((f) => this.repo.show(head, f) !== null);
+    const before = touched.length ? (await this.verifier.check({}, `maintenance-base-${head.slice(0, 10)}`, { onlyUnits: touched, lint: false })).check : { units: [] };
+    const was = new Map([...bestResults(before)].map(([id, b]) => [id, b.f]));
     const out = [];
     for (const [id, { f, unit }] of bestResults(check)) {
-      const main = this.store.get('SELECT code_hash, status, score FROM func_status WHERE symbol_id = ?', id);
-      if (!main) {
-        if (f.codeHash) out.push({ id, file: unit, why: 'not compiled on main before' });
+      const old = was.get(id);
+      if (!old) {
+        out.push({ id, file: unit, why: 'not compiled on main' });
         continue;
       }
-      if (main.code_hash && f.codeHash && main.code_hash !== f.codeHash) out.push({ id, file: unit, why: 'compiled code changed' });
+      if (old.effectiveHash !== f.effectiveHash) out.push({ id, file: unit, why: 'compiled code changed' });
     }
     return out;
   }

@@ -1351,12 +1351,18 @@ test('maintenance batches: maintainers only; merge when no compiled code changes
   ctx.store.run(`INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash) VALUES (?, ?, 'mismatch', 0.7, 'x', ?, 1, 'mf-main')`, fid, unit, now());
 
   const realCheck = ctx.verifier.check;
-  ctx.verifier.check = async (files) => {
-    const text = files[unit] ?? '';
-    const body = /int mf\(\) \{ ([^}]*) \}/.exec(text)?.[1] ?? '';
-    const functions = [{ id: fid, status: STATUS.MISMATCH, score: 0.7, file: unit, codeHash: body === 'return 1;' ? 'mf-main' : `mf-${body}`, relocations: [], size: { ours: 8, original: 8 } }];
-    const units = Object.keys(files).filter((f) => f.endsWith('.cpp')).map((file) => ({ file, compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions: file === unit ? functions : [] }));
-    return { check: { annotationErrors: [], units }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: units.map((u) => u.file) };
+  // Stubbed compiler: a unit's text comes from the submission, else from main (a base compile). A
+  // renamed reference (g_old -> g_new at the same address) keeps the effective code.
+  ctx.verifier.check = async (files, job, { onlyUnits = null } = {}) => {
+    const names = onlyUnits ?? Object.keys(files).filter((f) => f.endsWith('.cpp'));
+    const units = names.map((file) => {
+      const text = files[file] ?? ctx.repo.show('HEAD', file) ?? '';
+      const body = /int mf\(\) \{ ([^}]*) \}/.exec(text)?.[1];
+      const effective = body?.replace('g_renamed', 'g_original');
+      const functions = file === unit && body !== undefined ? [{ id: fid, status: STATUS.MISMATCH, score: 0.7, file: unit, codeHash: `mf-${body}`, effectiveHash: `mf-${effective}`, relocations: [], size: { ours: 8, original: 8 } }] : [];
+      return { file, compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions };
+    });
+    return { check: { annotationErrors: [], units }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: names };
   };
   const submit = (token, files, notes = 'move a global') => call('POST', '/api/maintenance', { baseCommit: ctx.repo.head(), files, notes }, token);
   const settle = (id, token) => waitFor(async () => { const st = (await call('GET', `/api/batches/${id}`, null, token)).body; return !['queued', 'verifying'].includes(st.state) && st; });
@@ -1373,12 +1379,19 @@ test('maintenance batches: maintainers only; merge when no compiled code changes
     assert.equal(done.kind, 'maintenance');
     assert.equal(ctx.repo.show('HEAD', 'src/owner.cpp'), added['src/owner.cpp']);
 
+    // Reaching the same address under another name changes names, not code: it merges.
+    const withRef = onMain.replace('return 1;', 'return g_original;');
+    ctx.repo.commitFiles({ [unit]: withRef }, 'reference a global', 'x <x@y.invalid>');
+    const renamed = await submit(maintainer, { [unit]: withRef.replace('g_original', 'g_renamed') });
+    assert.equal((await settle(renamed.body.batchId, maintainer)).state, 'merged');
+    const current = ctx.repo.show('HEAD', unit);
+
     // Changing a function's compiled code is function work: it goes back, main stays.
-    const changed = await submit(maintainer, { [unit]: onMain.replace('return 1;', 'int x = 1; return x;') });
+    const changed = await submit(maintainer, { [unit]: current.replace('return g_renamed;', 'int x = 1; return x;') });
     const back = await settle(changed.body.batchId, maintainer);
     assert.equal(back.state, 'returned');
     assert.match(back.result.returned, /changes the compiled code of 1 function/);
-    assert.equal(ctx.repo.show('HEAD', unit), onMain);
+    assert.equal(ctx.repo.show('HEAD', unit), current);
 
     // Removing a function's annotation is refused before compiling.
     const dropped = await submit(maintainer, { [unit]: 'int mf() { return 1; }\n' });

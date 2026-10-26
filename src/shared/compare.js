@@ -244,6 +244,9 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
   const orig = pe.read(addr, compareLen);
   const masked = new Uint8Array(compareLen);
   const relocResults = [];
+  // What each reference reaches: a symbol's address plus the addend, so `g_object + 0x18` and a
+  // name bound to that same address count as the same code (effectiveHash).
+  const effective = [];
   const inferred = [];
   const baseRelocs = pe.baseRelocations();
 
@@ -295,6 +298,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
       if (!isSection) inferred.push({ symbol: symName, addr: actual });
     }
     relocResults.push({ offset: r.offset, symbol: symName, id, ok, unresolved: ok && !(target && target.addr != null), actual, reason });
+    effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `${symName}+${addend}`}`);
   }
 
   const sameLength = !origSize || origSize === ours.length;
@@ -333,6 +337,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     score: Math.round(score * 10000) / 10000,
     size: { ours: ours.length, original: origSize ?? null },
     codeHash: codeHash(ours, proc),
+    effectiveHash: effectiveHash(ours, masked, proc, effective),
     diffRegions: sameLength ? diffRegions(diffs, ours, orig, proc) : [],
     relocations: relocResults.filter((r) => !r.ok || r.unresolved),
     // Where the original points is only meaningful when the code lines up.
@@ -449,4 +454,15 @@ export function codeHash(bytes, proc) {
     }
   }
   return crypto.createHash('sha1').update(b).digest('hex').slice(0, 20);
+}
+
+/**
+ * Fingerprint of what a function does once linked: its bytes outside relocated fields (as
+ * codeHash) plus where each reference lands. Renaming a global, or reaching a member of an object
+ * through the object's symbol instead of a symbol of its own at that address, leaves it unchanged.
+ */
+export function effectiveHash(bytes, masked, proc, effective) {
+  const b = Buffer.from(bytes);
+  for (let i = 0; i < b.length; i++) if (masked[i]) b[i] = 0;
+  return crypto.createHash('sha1').update(codeHash(b, proc)).update(effective.join('|')).digest('hex').slice(0, 20);
 }
