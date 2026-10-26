@@ -34,10 +34,37 @@ export async function checkUnits({ repoDir, jobDir, project, units, overrides = 
   const compiled = await compileUnits({ jobDir, units, project, runners, timeoutMs, preprocess: (f) => !lintUnits || lintUnits.has(f) });
 
   const roots = { sourceDirs: project.sourceDirs, includeDirs: project.includeDirs };
+  const names = withGlobalBindings(compiled, scan.annotations, nameIndex);
   const results = analyze
-    ? await analyze({ compiled, annotations: scan.annotations, roots })
-    : analyzeCompiled({ compiled, annotations: scan.annotations, roots, symbols, nameIndex, pe });
+    ? await analyze({ compiled, annotations: scan.annotations, roots, nameIndex: names })
+    : analyzeCompiled({ compiled, annotations: scan.annotations, roots, symbols, nameIndex: names, pe });
   return { annotationErrors, units: results, annotations: scan.annotations };
+}
+
+/**
+ * A GLOBAL annotation binds its variable's decorated name in the unit that defines it, or that
+ * declares it (an annotated extern: the listing names it as EXTRN). References from the other
+ * units of the same check resolve to that ID too, as they do on main once the name is learned:
+ * the name index the units are compared with includes them.
+ */
+export function withGlobalBindings(compiled, annotations, nameIndex) {
+  const globals = annotations.filter((a) => a.kind === 'GLOBAL' && a.name);
+  if (!globals.length) return nameIndex;
+  const byFile = new Map();
+  for (const a of globals) byFile.set(a.file, [...(byFile.get(a.file) ?? []), a]);
+  const out = new Map(nameIndex);
+  for (const c of compiled) {
+    if (!c.ok || !c.cod) continue;
+    const anns = [...(byFile.get(c.file) ?? []), ...(c.includes ?? []).flatMap((h) => byFile.get(h) ?? [])];
+    if (!anns.length) continue;
+    const listing = parseListing(fs.readFileSync(c.cod, 'latin1'));
+    for (const a of anns) {
+      const matches = (d) => d === a.name || (d && d.endsWith('::' + a.name));
+      const hit = listing.data.find((d) => matches(d.demangled))?.symbol ?? [...listing.names].find(([sym, d]) => sym.startsWith('?') && matches(d))?.[0];
+      if (hit && !out.has(hit)) out.set(hit, a.id);
+    }
+  }
+  return out;
 }
 
 /** Lints and compares the compiler output of each unit against the original. */

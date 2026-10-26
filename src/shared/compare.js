@@ -298,10 +298,15 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
       if (!isSection) inferred.push({ symbol: symName, addr: actual });
     }
     relocResults.push({ offset: r.offset, symbol: symName, id, ok, unresolved: ok && !(target && target.addr != null), actual, reason });
-    effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `${symName}+${addend}`}`);
+    // MSVC names an anonymous namespace after the unit's contents (?A0x0c4fce31): editing the file
+    // renames its file-local symbols, which is no change to the code that calls them.
+    const stable = symName.replace(/\?A0x[0-9a-f]{8}@/g, '?A@');
+    effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `?${stable}+${addend}`}`);
   }
 
   const sameLength = !origSize || origSize === ours.length;
+  // Relocated fields only, before line numbers are masked against the original (effectiveHash).
+  const relocMasked = Uint8Array.from(masked);
   if (sameLength && proc) maskLineNumbers({ ours, orig, masked, proc });
 
   // Byte comparison outside relocated fields.
@@ -337,7 +342,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     score: Math.round(score * 10000) / 10000,
     size: { ours: ours.length, original: origSize ?? null },
     codeHash: codeHash(ours, proc),
-    effectiveHash: effectiveHash(ours, masked, proc, effective),
+    effectiveHash: effectiveHash(ours, relocMasked, effective),
     diffRegions: sameLength ? diffRegions(diffs, ours, orig, proc) : [],
     relocations: relocResults.filter((r) => !r.ok || r.unresolved),
     // Where the original points is only meaningful when the code lines up.
@@ -457,12 +462,14 @@ export function codeHash(bytes, proc) {
 }
 
 /**
- * Fingerprint of what a function does once linked: its bytes outside relocated fields (as
- * codeHash) plus where each reference lands. Renaming a global, or reaching a member of an object
- * through the object's symbol instead of a symbol of its own at that address, leaves it unchanged.
+ * Fingerprint of what a function does once linked: its bytes outside relocated fields plus where
+ * each reference lands. Renaming a global, or reaching a member of an object through the object's
+ * symbol instead of a symbol of its own at that address, leaves it unchanged. Source lines play no
+ * part (unlike codeHash): an operand that happens to equal its line number would make moving the
+ * function look like changing it.
  */
-export function effectiveHash(bytes, masked, proc, effective) {
+export function effectiveHash(bytes, masked, effective) {
   const b = Buffer.from(bytes);
   for (let i = 0; i < b.length; i++) if (masked[i]) b[i] = 0;
-  return crypto.createHash('sha1').update(codeHash(b, proc)).update(effective.join('|')).digest('hex').slice(0, 20);
+  return crypto.createHash('sha1').update(b).update(effective.join('|')).digest('hex').slice(0, 20);
 }

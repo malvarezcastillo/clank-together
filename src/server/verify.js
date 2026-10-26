@@ -202,7 +202,7 @@ export class Verifier {
         // The macro-proof lint needs the /P pass: for submitted units; for every unit when a header
         // changed (a macro there expands everywhere); never for a rebuild of trusted main.
         lintUnits,
-        analyze: (args) => analyzeInWorkers({ ...args, symbols, nameIndex, peFile: v.file }),
+        analyze: (args) => analyzeInWorkers({ symbols, nameIndex, ...args, peFile: v.file }),
       });
       const rec = reconcile(check, symbols);
       return { check, rec, symbols, changedHeaders, units: [...units] };
