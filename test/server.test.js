@@ -1885,3 +1885,25 @@ test('global rules reject undefined data in code and maintenance batches, includ
     ctx.regions.release(ctx.accounts.byName('globalguard'), { kind: 'unit', key: unit });
   }
 });
+
+test('the batch list shows every batch, also those sent back before review, filtered by state and author and paged', async () => {
+  const token = await activeUser('blister');
+  const lister = ctx.accounts.byName('blister');
+  const head = ctx.repo.head();
+  const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
+  const batch = (state, result) => Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, result_json, created_at) VALUES (?, ?, '{}', ?, ?, ?)`, lister.id, head, state, result ? JSON.stringify(result) : null, now()).lastInsertRowid);
+  const sentBack = batch('returned', { returned: '3 of 6 functions need work' });
+  ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, created_at) VALUES (?, ?, ?, '{}', 'needs_cleanup', ?, ?)`, task, lister.id, head, sentBack, now());
+  const merged = batch('merged');
+
+  assert.equal((await call('GET', '/api/batches')).status, 401);
+  const mine = (await call('GET', '/api/batches?author=BLISTER', null, token)).body;
+  assert.deepEqual(mine.map((b) => b.id), [merged, sentBack], 'newest first, author matched without case');
+  const back = mine.find((b) => b.id === sentBack);
+  assert.equal(back.returned, '3 of 6 functions need work');
+  assert.deepEqual(back.functions, { needs_cleanup: 1 });
+  assert.deepEqual((await call('GET', '/api/batches?state=returned&author=blister', null, token)).body.map((b) => b.id), [sentBack]);
+  assert.deepEqual((await call('GET', `/api/batches?author=blister&before=${merged}`, null, token)).body.map((b) => b.id), [sentBack]);
+  assert.deepEqual((await call('GET', '/api/batches?author=blister&limit=1', null, token)).body.map((b) => b.id), [merged]);
+  ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE batch_id = ?`, sentBack);
+});

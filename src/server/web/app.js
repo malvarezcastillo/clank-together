@@ -151,7 +151,7 @@ const TASK_STATES = {
 
 // --- router
 
-const VIEWS = { home: null, guide: null, login: null, account: 'contributor', review: 'reviewer', arcade: 'contributor', admin: 'admin' };
+const VIEWS = { home: null, guide: null, login: null, account: 'contributor', review: 'reviewer', batches: 'contributor', arcade: 'contributor', admin: 'admin' };
 let currentView = null;
 
 function route() {
@@ -164,11 +164,15 @@ function route() {
   const first = currentView !== view;
   currentView = view;
   if (first) window.scrollTo({ top: 0 });
-  const load = { home: loadHome, review: loadReview, arcade: loadArcade, admin: loadAdmin, account: loadAccount }[view];
+  const load = { home: loadHome, review: loadReview, batches: loadBatches, arcade: loadArcade, admin: loadAdmin, account: loadAccount }[view];
   if (load) load().catch((e) => toast(e.message));
-  // Deep link into the review panel: #/review/<attemptId>
+  // Deep links: #/review/<attemptId>, #/batches/<batchId>
   const parts = location.hash.replace(/^#\/?/, '').split('/');
   if (view === 'review' && parts[1]) openAttempt(Number(parts[1])).catch((e) => toast(e.message));
+  if (view === 'batches') {
+    if (parts[1]) openBatch(Number(parts[1])).catch((e) => toast(e.message));
+    else $('batch-detail').hidden = true;
+  }
 }
 window.addEventListener('hashchange', route);
 
@@ -1122,6 +1126,106 @@ function renderQueue() {
     }
     list.append(g);
   }
+}
+
+// --- batches
+
+let batchStates = '';
+let batchRows = [];
+
+const BATCH_STATES = {
+  queued: 'Waiting for the worker.',
+  verifying: 'The worker is checking and compiling it.',
+  open: 'Checked; its functions are in peer review or waiting to merge.',
+  merging: 'Being merged onto main.',
+  merged: 'On main.',
+  returned: 'Sent back to its author: see why below.',
+  superseded: 'Replaced by another candidate.',
+};
+
+async function loadBatches({ more = false } = {}) {
+  const q = new URLSearchParams({ limit: '50' });
+  if (batchStates) q.set('state', batchStates);
+  const author = $('batches-author').value.trim();
+  if (author) q.set('author', author);
+  if (more && batchRows.length) q.set('before', String(batchRows[batchRows.length - 1].id));
+  const rows = await api(`/api/batches?${q}`);
+  batchRows = more ? [...batchRows, ...rows] : rows;
+  renderBatches(rows.length === 50);
+}
+
+function batchSummary(b) {
+  const f = Object.entries(b.functions ?? {}).map(([s, n]) => `${n} ${s.replace('_', ' ')}`);
+  return f.length ? f.join(', ') : b.kind === 'maintenance' ? 'maintenance' : 'no functions';
+}
+
+function renderBatches(hasMore) {
+  $('batches-count').textContent = `${batchRows.length} shown`;
+  $('batches-more').hidden = !hasMore;
+  if (!batchRows.length) return $('batches-list').replaceChildren(el('p', 'No batches.', 'muted'));
+  $('batches-list').replaceChildren(
+    table(
+      ['Batch', 'Author', 'State', 'Functions', 'Why', 'Submitted'],
+      batchRows.map((b) => {
+        const link = el('a', `#${b.id}`);
+        link.href = `#/batches/${b.id}`;
+        const state = el('span', b.state, b.state === 'returned' ? 'warn' : '');
+        state.title = BATCH_STATES[b.state] ?? '';
+        return [link, b.author, state, batchSummary(b), b.returned ?? b.mergeFailure ?? '', ago(b.createdAt)];
+      }),
+    ),
+  );
+}
+
+for (const t of document.querySelectorAll('#batches-tabs .tab')) {
+  t.addEventListener('click', () => {
+    batchStates = t.dataset.states;
+    for (const x of document.querySelectorAll('#batches-tabs .tab')) x.classList.toggle('active', x === t);
+    loadBatches().catch((e) => toast(e.message));
+  });
+}
+$('batches-author').addEventListener('change', () => loadBatches().catch((e) => toast(e.message)));
+$('batches-more').addEventListener('click', () => loadBatches({ more: true }).catch((e) => toast(e.message)));
+
+async function openBatch(id) {
+  const b = await api(`/api/batches/${id}`);
+  const box = $('batch-detail');
+  box.hidden = false;
+  const head = el('div', null, 'plate-head');
+  head.append(el('h2', `Batch #${b.id} · ${b.author}`), el('span', `${b.kind} · ${b.state}`, b.state === 'returned' ? 'warn' : 'hint'));
+  const meta = el('p', `Submitted ${date(b.createdAt)}${b.finishedAt ? ` · finished ${date(b.finishedAt)}` : ''} · base ${b.baseCommit.slice(0, 10)}${b.mergedCommit ? ` · merged as ${b.mergedCommit.slice(0, 10)}` : ''}`, 'muted');
+  const parts = [head, meta];
+  if (b.returned || b.mergeFailure) parts.push(el('p', b.returned ?? b.mergeFailure, 'warn'));
+  if (b.notes) parts.push(el('p', `Notes: ${b.notes}`));
+  if (b.files?.length) parts.push(el('p', `Files: ${b.files.join(', ')}`, 'hint'));
+  const fnRows = b.functions.map((f) => {
+    const link = el('a', `${f.symbol} ${f.name ?? ''}`);
+    link.href = `#/review/${f.attemptId}`;
+    return [link, f.state.replace('_', ' '), f.score === null ? '' : `${(f.score * 100).toFixed(1)}%`, f.summary ?? ''];
+  });
+  parts.push(fnRows.length ? table(['Function', 'State', 'Bytes', 'Result'], fnRows) : el('p', 'No function tasks (a maintenance batch).', 'muted'));
+  if (b.kind === 'maintenance' && b.result) {
+    const pre = el('pre', JSON.stringify(b.result, null, 1));
+    pre.className = 'secret';
+    parts.push(pre);
+  }
+  if (atLeast('admin') && b.state === 'returned' && b.functions.some((f) => /matched before/.test(f.summary ?? ''))) {
+    const accept = button('Accept lower scores and merge', async () => {
+      const comment = prompt(`Merge batch #${b.id} although it lowers the score of functions that matched before? Every function of it is accepted without peer review. Reason:`);
+      if (comment === null) return;
+      try {
+        await post(`/api/admin/batches/${b.id}/accept-regressions`, { comment });
+        toast(`Batch #${b.id} accepted; it merges next`);
+        openBatch(b.id);
+        loadBatches();
+      } catch (e) {
+        toast(e.message);
+      }
+    }, 'danger');
+    parts.push(accept);
+  }
+  box.replaceChildren(...parts);
+  box.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
 }
 
 async function openAttempt(id) {

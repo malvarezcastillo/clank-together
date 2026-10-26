@@ -544,6 +544,56 @@ export function createApp(ctx) {
     return guided(r);
   });
 
+  // Every batch, newest first: the website's Batches page, so batches sent back at a gate are visible too.
+  router.on('GET', '/api/batches', ({ req, query }) => {
+    auth(req);
+    const where = [];
+    const args = [];
+    const states = (query.get('state') ?? '').split(',').filter(Boolean);
+    if (states.length) {
+      where.push(`b.state IN (${states.map(() => '?').join(',')})`);
+      args.push(...states);
+    }
+    if (query.get('author')) {
+      where.push('u.name = ? COLLATE NOCASE');
+      args.push(query.get('author'));
+    }
+    if (query.get('before')) {
+      where.push('b.id < ?');
+      args.push(intParam(query.get('before')));
+    }
+    const limit = Math.min(200, Math.max(1, intParam(query.get('limit') ?? '50')));
+    const rows = store.all(
+      `SELECT b.id, b.kind, b.state, b.created_at, b.finished_at, b.merged_commit, b.notes, b.result_json, u.name AS author
+         FROM batches b JOIN users u ON u.id = b.user_id ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY b.id DESC LIMIT ?`,
+      ...args,
+      limit,
+    );
+    const counts = new Map(rows.map((b) => [b.id, {}]));
+    if (rows.length) {
+      const ids = rows.map((b) => b.id);
+      for (const c of store.all(`SELECT batch_id, state, COUNT(*) AS n FROM attempts WHERE batch_id IN (${ids.map(() => '?').join(',')}) GROUP BY batch_id, state`, ...ids)) {
+        counts.get(c.batch_id)[c.state] = c.n;
+      }
+    }
+    return rows.map((b) => {
+      const result = b.result_json ? JSON.parse(b.result_json) : {};
+      return {
+        id: b.id,
+        kind: b.kind,
+        author: b.author,
+        state: b.state,
+        createdAt: b.created_at,
+        finishedAt: b.finished_at,
+        mergedCommit: b.merged_commit,
+        notes: b.notes,
+        returned: result.returned ?? null,
+        mergeFailure: result.mergeFailure ?? null,
+        functions: counts.get(b.id),
+      };
+    });
+  });
+
   router.on('GET', '/api/batches/:id', ({ req, params }) => {
     auth(req);
     const b = store.get('SELECT b.*, u.name AS author FROM batches b JOIN users u ON u.id = b.user_id WHERE b.id = ?', intParam(params.id));
@@ -561,6 +611,10 @@ export function createApp(ctx) {
       ...(b.kind === 'maintenance' && { result: result }),
       baseCommit: b.base_commit,
       mergedCommit: b.merged_commit,
+      notes: b.notes,
+      createdAt: b.created_at,
+      finishedAt: b.finished_at,
+      files: Object.keys(JSON.parse(b.files_json)),
       returned: result.returned ?? null,
       mergeFailure: result.mergeFailure ?? null,
       changedHeaders: result.changedHeaders ?? [],

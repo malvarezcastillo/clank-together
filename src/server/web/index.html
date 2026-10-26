@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>Clank Together</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=auto-approve-20261025">
+  <link rel="stylesheet" href="/style.css?v=batches-20261027">
 </head>
 <body>
   <header class="topbar">
@@ -30,6 +30,7 @@
         <a href="#/" data-route="home">Home</a>
         <a href="#/guide" data-route="guide">Get started</a>
         <a href="#/review" data-route="review" data-role="reviewer" hidden>Review</a>
+        <a href="#/batches" data-route="batches" data-role="contributor" hidden>Batches</a>
         <a href="#/arcade" data-route="arcade" data-role="contributor" hidden>Arcade</a>
         <a href="#/admin" data-route="admin" data-role="admin" hidden>Admin</a>
         <a href="#/account" data-route="account" data-role="contributor" id="account-link" hidden>Account<span class="nav-dot" id="account-dot" hidden></span></a>
@@ -290,6 +291,28 @@
       </div>
     </div>
 
+    <!-- Batches -->
+    <div class="view" data-view="batches" hidden>
+      <section class="plate">
+        <div class="plate-head">
+          <h2>Batches</h2>
+          <span class="hint" id="batches-count"></span>
+        </div>
+        <p class="muted">Every submitted batch, including the ones the server sent back before peer review (static gate, comments and strings, global variables, compile errors, regressions). Pick one for its functions and why each came back.</p>
+        <div class="tabs small" role="tablist" id="batches-tabs">
+          <button type="button" class="tab active" data-states="">All</button>
+          <button type="button" class="tab" data-states="queued,verifying">Checking</button>
+          <button type="button" class="tab" data-states="open,merging">In review</button>
+          <button type="button" class="tab" data-states="returned">Sent back</button>
+          <button type="button" class="tab" data-states="merged">Merged</button>
+        </div>
+        <input id="batches-author" type="search" placeholder="Author…" aria-label="Filter by author">
+        <div id="batches-list"></div>
+        <button type="button" id="batches-more" class="ghost" hidden>Older batches</button>
+      </section>
+      <section class="plate" id="batch-detail" hidden></section>
+    </div>
+
     <!-- Arcade -->
     <div class="view" data-view="arcade" hidden>
       <section class="plate arcade-head">
@@ -389,6 +412,6 @@
     <div class="hazard thin" aria-hidden="true"></div>
     <p>Clank Together · source is open: <code id="clone-cmd">git clone https://clank.rodecomp.online/git/clank/game-decomp.git</code></p>
   </footer>
-  <script src="/app.js?v=auto-approve-20261025"></script>
+  <script src="/app.js?v=batches-20261027"></script>
 </body>
 </html>
