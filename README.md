@@ -62,7 +62,7 @@ attempt gets first pick on the follow-up for 6 hours.
 | `src/client/` | `td` CLI, MCP server for agents, Ghidra integration |
 | `ghidra_scripts/` | ExportFunctions (bootstrap), ApplySymbols, DecompileAt, DisassembleAt |
 | `toolchain/msvc2010/` | Dockerfile for cl.exe under Wine (you supply the compiler files) |
-| `template/` | skeleton of the decomp repo: `decomp.json`, `toolchain.lock.json`, `AGENTS.md` |
+| `template/` | skeleton of the decomp repo: `decomp.json`, `toolchain.lock.json`; the project's own root `AGENTS.md` is the only agent guide |
 | `deploy/` | install script, systemd unit, Caddyfile, nftables firewall |
 | `deploy/forgejo/` | Forgejo git dashboard at `/git/`: installer (checksum + signature verified), config, unit |
 
