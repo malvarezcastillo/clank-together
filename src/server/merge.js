@@ -88,7 +88,7 @@ export class Merger {
       const approvals = this.store.get(`SELECT COUNT(*) AS n FROM reviews WHERE attempt_id = ? AND action = 'approve'`, attemptId).n;
       const needed = this.requiredApprovals(attempt) - approvals;
       if (hasRole(reviewer, 'maintainer') || needed <= 0) {
-        this.store.run(`UPDATE attempts SET state = 'approved' WHERE id = ?`, attemptId);
+        this.store.run(`UPDATE attempts SET state = 'approved'${skipsPeers ? ', peer_skipped = 1' : ''} WHERE id = ?`, attemptId);
         this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), attempt.task_id);
         return { state: 'approved' };
       }

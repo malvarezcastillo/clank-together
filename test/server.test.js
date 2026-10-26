@@ -932,6 +932,7 @@ test('maintainers can decide a function still in peer review; reviewers cannot',
   assert.throws(() => ctx.merger.review(ctx.accounts.byName('pmaint'), attempt, 'approve'), /attempt is peer_review/, 'skipping peer review must be asked for');
   assert.equal(ctx.merger.review(ctx.accounts.byName('pmaint'), attempt, 'approve', null, { skipPeerReview: true }).state, 'approved');
   assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = ?', task).state, 'approved');
+  assert.ok(ctx.peers.confirmed(attempt), 'the merge re-check must accept a maintainer decision without peer verdicts');
   assert.ok(ctx.store.get(`SELECT 1 FROM events WHERE type = 'review' AND data LIKE '%skippedPeerReview%'`));
 });
 
