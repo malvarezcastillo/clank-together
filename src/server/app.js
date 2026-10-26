@@ -11,6 +11,7 @@ import { Repo, serveGit } from './git.js';
 import { Tasks } from './tasks.js';
 import { Verifier } from './verify.js';
 import { Merger } from './merge.js';
+import { Maintenance } from './maintenance.js';
 import { PeerReviews } from './peer.js';
 import { Originals } from './original.js';
 import { downloadsDir, installPs1, installSh, publishedBuilds } from './install.js';
@@ -98,9 +99,11 @@ export function openServer(dataDir, { log = console } = {}) {
   const originals = new Originals({ store });
   const ghidra = new ServerGhidra({ config, store, originals, log });
   merger.onMerged = (commit) => ghidra.scheduleRefresh(commit);
+  const maintenance = new Maintenance({ store, repo, project, verifier, merger, log });
+  verifier.maintenance = maintenance;
   const checks = new CheckQueue({ store, repo, verifier, config, log });
   const credits = new Credits({ store });
-  return { config, store, repo, project, tasks, regions, quality, trust, credits, verifier, merger, getPe, accounts, peers, originals, ghidra, checks };
+  return { config, store, repo, project, tasks, regions, quality, trust, credits, verifier, merger, maintenance, getPe, accounts, peers, originals, ghidra, checks };
 }
 
 export function createApp(ctx) {
@@ -529,6 +532,18 @@ export function createApp(ctx) {
     return guided({ ...r, state: 'queued' });
   });
 
+  // Structural source changes with no function tasks (maintenance.js): maintainers only. Verified
+  // like any batch; merged only when no function's compiled code changes.
+  router.on('POST', '/api/maintenance', async ({ req }) => {
+    const user = auth(req, { role: 'maintainer' });
+    const body = await readJson(req, 8 * 1024 * 1024);
+    if (typeof body.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(body.baseCommit)) throw new HttpError(400, 'baseCommit must be a full commit hash');
+    if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
+    const r = ctx.maintenance.submit(user, { baseCommit: body.baseCommit, files: lf(body.files), notes: body.notes ? String(body.notes).slice(0, DEFAULT_LIMITS.maxNotesBytes) : null });
+    if (runsWorker) ctx.verifier.pump();
+    return guided(r);
+  });
+
   router.on('GET', '/api/batches/:id', ({ req, params }) => {
     auth(req);
     const b = store.get('SELECT b.*, u.name AS author FROM batches b JOIN users u ON u.id = b.user_id WHERE b.id = ?', intParam(params.id));
@@ -540,8 +555,10 @@ export function createApp(ctx) {
     );
     return guided({
       id: b.id,
+      kind: b.kind,
       author: b.author,
       state: b.state,
+      ...(b.kind === 'maintenance' && { result: result }),
       baseCommit: b.base_commit,
       mergedCommit: b.merged_commit,
       returned: result.returned ?? null,
@@ -775,6 +792,48 @@ export function createApp(ctx) {
       throw new HttpError(409, `0x${hex(addr)} is already ${r.symbol.id} (${r.symbol.kind})`);
     }
     return { id: r.symbol.id, kind: r.symbol.kind, created: r.created, annotation: `// ${{ function: 'FUNCTION', global: 'GLOBAL', vtable: 'VTABLE', string: 'STRING' }[kind]}: ${r.symbol.id}` };
+  });
+
+  // Corrections to the symbol database a maintainer makes from evidence in the original: a size,
+  // a name, or a global that is not one (an address inside another object, registered by mistake).
+  // Retiring removes its address in the current version, so nothing resolves to it any more; its
+  // ID stays reserved. Only symbols no file on main annotates may be retired: a maintenance batch
+  // removes those annotations first.
+  router.on('POST', '/api/admin/symbols/:id', async ({ req, params }) => {
+    const user = auth(req, { role: 'maintainer' });
+    const body = await readJson(req, 4096);
+    const sym = store.get('SELECT * FROM symbols WHERE id = ?', String(params.id));
+    if (!sym) throw new HttpError(404, 'no such symbol');
+    const v = store.currentVersion();
+    const reason = String(body.reason ?? '').trim().slice(0, 500);
+    if (!reason) throw new HttpError(400, 'reason is required: the evidence for the correction');
+    const changes = {};
+    store.tx(() => {
+      if (body.size !== undefined) {
+        const size = Number(body.size);
+        if (!Number.isSafeInteger(size) || size <= 0) throw new HttpError(400, 'size must be a positive integer');
+        store.run('UPDATE symbol_addresses SET size = ? WHERE symbol_id = ? AND version_id = ?', size, sym.id, v.id);
+        changes.size = size;
+      }
+      if (body.name !== undefined) {
+        const name = body.name === null ? null : String(body.name).slice(0, 200);
+        store.run('UPDATE symbols SET name = ? WHERE id = ?', name, sym.id);
+        changes.name = name;
+      }
+      if (body.retire === true) {
+        if (sym.kind !== 'global') throw new HttpError(400, 'only globals are retired this way');
+        let annotated = '';
+        try {
+          annotated = repo.git(['grep', '-l', '-w', '-e', `GLOBAL: ${sym.id}`, 'HEAD', '--', '.']).trim();
+        } catch {}
+        if (annotated) throw new HttpError(409, `${sym.id} is still annotated on main (${annotated.split('\n').map((l) => l.replace(/^HEAD:/, '')).join(', ')}); remove those annotations with a maintenance batch first`);
+        store.run('DELETE FROM symbol_addresses WHERE symbol_id = ? AND version_id = ?', sym.id, v.id);
+        changes.retired = true;
+      }
+      if (!Object.keys(changes).length) throw new HttpError(400, 'nothing to change: give size, name or retire: true');
+      store.event('symbol_corrected', user.id, { id: sym.id, ...changes, reason });
+    });
+    return { id: sym.id, ...changes };
   });
 
   // --- the original function (assembly, pseudocode) for contributors without a local Ghidra.

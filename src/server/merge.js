@@ -404,6 +404,12 @@ export class Merger {
         settleBatch(this.store, split.parent.id, 'its approved functions merged; the others were sent back');
       }
     });
+    this.afterCommit(commit);
+    this.log.info(`merged batch ${batch.id} (${attempts.length} functions) as ${commit.slice(0, 10)}`);
+  }
+
+  /** What follows every commit to main: new tasks, the push to the mirror, listeners. */
+  afterCommit(commit) {
     this.tasks.generate();
     if (this.config.pushRemote) {
       try {
@@ -413,7 +419,6 @@ export class Merger {
       }
     }
     this.onMerged?.(commit);
-    this.log.info(`merged batch ${batch.id} (${attempts.length} functions) as ${commit.slice(0, 10)}`);
   }
 
   /**

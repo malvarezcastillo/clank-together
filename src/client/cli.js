@@ -47,6 +47,11 @@ Work (a region: a source file or class, done as a whole)
   td symbol new <kind> <0xaddr> [--name N]    get a stable ID for a new global/vtable/string/function
   td decompile <symbol> | td disasm <symbol>  query the local Ghidra project
 
+Maintenance (maintainers: structural changes with no function tasks)
+  td maintenance submit --files a.cpp,b.h --notes T   verified like a batch; merges only when no
+                                              function's compiled code changes
+  td maintenance symbol <id> [--size N] [--name N] [--retire] --reason T   correct the symbol database
+
 Peer review (attempts that are not byte-identical; judge by reading, not by tools)
   td peer list                                attempts waiting for review
   td peer claim [attemptId]                   claim one, prints instructions, original and submission
@@ -114,6 +119,8 @@ async function main() {
       range: { type: 'string' },
       files: { type: 'string' },
       reason: { type: 'string' },
+      size: { type: 'string' },
+      retire: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       free: { type: 'boolean', default: false },
       includers: { type: 'boolean', default: false },
@@ -202,6 +209,22 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       const ids = args.filter((x) => /^\d+$/.test(x)).map(Number);
       const files = values.files ? values.files.split(',').map((f) => ops.relPath(ws, f)) : [];
       return print(await ops.submit(ws, ids, { files, notes: values.notes, agentMeta: { client: 'td-cli' } }));
+    }
+    case 'maintenance': {
+      const [sub, id] = args;
+      if (sub === 'submit') {
+        if (!values.files) throw new Error('usage: td maintenance submit --files a.cpp,b.h --notes "what and why"');
+        const files = values.files.split(',').map((f) => ops.relPath(ws, f));
+        return print(await ops.submitMaintenance(ws, files, { notes: values.notes }));
+      }
+      if (sub === 'symbol') {
+        if (!id || !values.reason) throw new Error('usage: td maintenance symbol <id> [--size N] [--name N] [--retire] --reason "evidence"');
+        const body = { reason: values.reason, ...(values.size && { size: Number(values.size) }), ...(values.name && { name: values.name }), ...(values.retire && { retire: true }) };
+        const r = await client.post(`/api/admin/symbols/${id}`, body);
+        await ops.refreshSymbols(ws);
+        return print(r);
+      }
+      throw new Error('usage: td maintenance submit|symbol ...');
     }
     case 'result': {
       const r = await client.get(`/api/attempts/${args[0]}`);

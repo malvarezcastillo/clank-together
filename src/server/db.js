@@ -321,6 +321,8 @@ export class Store {
     this.addColumn('attempts', 'batch_id', 'INTEGER REFERENCES batches(id)');
     // A candidate for a function another agent holds (region claims): it does not move the task.
     this.addColumn('attempts', 'competing', 'INTEGER NOT NULL DEFAULT 0');
+    // A maintenance batch (maintenance.js): structural changes with no function tasks.
+    this.addColumn('batches', 'kind', "TEXT NOT NULL DEFAULT 'code'");
     this.db.exec('CREATE INDEX IF NOT EXISTS events_type_at ON events(type, at)'); // merge rates, feed
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS peer_reviews_reviewer ON peer_reviews(reviewer_id, created_at)'); // reviewer trust

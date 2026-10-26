@@ -1339,6 +1339,77 @@ test('admin: a done task is reopened only with force, and then as open', async (
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, done.id);
 });
 
+test('maintenance batches: maintainers only; merge when no compiled code changes, back otherwise', async () => {
+  const contributor = await activeUser('mtcontrib');
+  const maintainer = await activeUser('mtmaint', 'maintainer');
+  const unit = 'src/maint.cpp';
+  const v = ctx.store.currentVersion();
+  const fid = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402900, size: 8, unit }).symbol.id;
+  ctx.tasks.generate();
+  const onMain = `// FUNCTION: ${fid}\nint mf() { return 1; }\n`;
+  ctx.repo.commitFiles({ [unit]: onMain }, 'seed maint.cpp', 'x <x@y.invalid>');
+  ctx.store.run(`INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash) VALUES (?, ?, 'mismatch', 0.7, 'x', ?, 1, 'mf-main')`, fid, unit, now());
+
+  const realCheck = ctx.verifier.check;
+  ctx.verifier.check = async (files) => {
+    const text = files[unit] ?? '';
+    const body = /int mf\(\) \{ ([^}]*) \}/.exec(text)?.[1] ?? '';
+    const functions = [{ id: fid, status: STATUS.MISMATCH, score: 0.7, file: unit, codeHash: body === 'return 1;' ? 'mf-main' : `mf-${body}`, relocations: [], size: { ours: 8, original: 8 } }];
+    const units = Object.keys(files).filter((f) => f.endsWith('.cpp')).map((file) => ({ file, compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions: file === unit ? functions : [] }));
+    return { check: { annotationErrors: [], units }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: units.map((u) => u.file) };
+  };
+  const submit = (token, files, notes = 'move a global') => call('POST', '/api/maintenance', { baseCommit: ctx.repo.head(), files, notes }, token);
+  const settle = (id, token) => waitFor(async () => { const st = (await call('GET', `/api/batches/${id}`, null, token)).body; return !['queued', 'verifying'].includes(st.state) && st; });
+
+  try {
+    assert.equal((await submit(contributor, { [unit]: onMain })).status, 403);
+
+    // A data-only change (a new unit holding a global) merges, and joins the build in that commit.
+    const added = { 'src/owner.cpp': 'int g_owned;\n' };
+    const ok = await submit(maintainer, added);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const done = await settle(ok.body.batchId, maintainer);
+    assert.equal(done.state, 'merged', JSON.stringify(done));
+    assert.equal(done.kind, 'maintenance');
+    assert.equal(ctx.repo.show('HEAD', 'src/owner.cpp'), added['src/owner.cpp']);
+
+    // Changing a function's compiled code is function work: it goes back, main stays.
+    const changed = await submit(maintainer, { [unit]: onMain.replace('return 1;', 'int x = 1; return x;') });
+    const back = await settle(changed.body.batchId, maintainer);
+    assert.equal(back.state, 'returned');
+    assert.match(back.result.returned, /changes the compiled code of 1 function/);
+    assert.equal(ctx.repo.show('HEAD', unit), onMain);
+
+    // Removing a function's annotation is refused before compiling.
+    const dropped = await submit(maintainer, { [unit]: 'int mf() { return 1; }\n' });
+    assert.match((await settle(dropped.body.batchId, maintainer)).result.returned, new RegExp(`removes the annotation of ${fid}`));
+  } finally {
+    ctx.verifier.check = realCheck;
+  }
+});
+
+test('admin symbol corrections: size and name; a global is retired only once main no longer annotates it', async () => {
+  const maintainer = await activeUser('symmaint', 'maintainer');
+  const contributor = await activeUser('symcontrib');
+  const v = ctx.store.currentVersion();
+  const gid = ctx.store.ensureSymbol({ kind: 'global', versionId: v.id, addr: 0x409100 }).symbol.id;
+  const fix = (id, body, token = maintainer) => call('POST', `/api/admin/symbols/${id}`, body, token);
+
+  assert.equal((await fix(gid, { size: 64, reason: 'r' }, contributor)).status, 403);
+  assert.equal((await fix(gid, { size: 64 })).status, 400, 'a reason is required');
+  assert.equal((await fix(gid, { size: 64, name: 'g_table', reason: 'constructor writes 64 bytes' })).status, 200);
+  const row = ctx.store.get('SELECT a.size, s.name FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id WHERE s.id = ?', gid);
+  assert.deepEqual([row.size, row.name], [64, 'g_table']);
+
+  ctx.repo.commitFiles({ 'src/annotated.cpp': `// GLOBAL: ${gid}\nint g_table;\n` }, 'annotate', 'x <x@y.invalid>');
+  const blocked = await fix(gid, { retire: true, reason: 'member of another object' });
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.body.error, /still annotated on main \(src\/annotated\.cpp\)/);
+  ctx.repo.commitFiles({ 'src/annotated.cpp': 'int g_table;\n' }, 'unannotate', 'x <x@y.invalid>');
+  assert.equal((await fix(gid, { retire: true, reason: 'member of another object' })).status, 200);
+  assert.equal(ctx.store.get('SELECT 1 AS x FROM symbol_addresses WHERE symbol_id = ?', gid), undefined);
+});
+
 test('new work is claimed by region; a single function only to fix one that came back', async () => {
   const token = await activeUser('rtuser');
   const open = ctx.store.get(`SELECT id FROM tasks WHERE state = 'open' LIMIT 1`);

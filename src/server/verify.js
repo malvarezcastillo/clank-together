@@ -90,6 +90,7 @@ export class Verifier {
           `SELECT b.* FROM batches b WHERE b.state = 'queued'
             ORDER BY (SELECT COUNT(*) FROM batches v WHERE v.user_id = b.user_id AND v.state = 'verifying'), b.id LIMIT 1`,
         );
+        if (row && row.kind === 'maintenance' && !this.maintenance) return null;
         if (row) {
           this.store.run(`UPDATE batches SET state = 'verifying' WHERE id = ?`, row.id);
           this.store.run(`UPDATE attempts SET state = 'verifying' WHERE batch_id = ? AND state = 'queued'`, row.id);
@@ -98,7 +99,9 @@ export class Verifier {
       });
       if (!b) return;
       this.running++;
-      this.verifyBatch(b)
+      // A maintenance batch verifies and merges in one step (maintenance.js).
+      const job = b.kind === 'maintenance' ? this.maintenance.run(b.id) : this.verifyBatch(b);
+      job
         .catch((e) => {
           this.log.error(`batch ${b.id}: verifier crashed: ${e.stack}`);
           for (const a of batchAttempts(this.store, b.id)) {

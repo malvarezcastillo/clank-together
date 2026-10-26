@@ -302,6 +302,23 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta, confir
   return api(ws).post('/api/batches', { taskIds: ids, baseCommit: ws.head(), files: contents, notes, agentMeta, envDigest: ws.config.envDigest, ...(confirm.length ? { confirm } : {}) });
 }
 
+/**
+ * A maintenance batch (maintainers): the named files, with no function tasks. The server checks it
+ * like any batch and merges it only when no function's compiled code changes.
+ */
+export async function submitMaintenance(ws, files, { notes } = {}) {
+  if (!files.length) throw new Error('name the files of the change (--files a.cpp,b.h)');
+  const contents = {};
+  for (const f of files) contents[f.replace(/\\/g, '/')] = fs.readFileSync(path.join(ws.dir, f), 'utf8');
+  const errors = lintSubmission(contents, { allowedPaths: [`${ws.project.sourceDirs[0]}/**`, ...ws.project.headerGlobs], limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas, baseSize: (f) => ws.size(f) });
+  if (errors.length) {
+    const e = new Error('submission fails the static gate:\n' + errors.map((x) => `  ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${x.message}`).join('\n'));
+    e.details = errors;
+    throw e;
+  }
+  return api(ws).post('/api/maintenance', { baseCommit: ws.head(), files: contents, notes });
+}
+
 /** Annotated functions whose definition differs from HEAD in the changed (or named) files under allowed paths. */
 function rewrittenFunctions(ws, allowed, files) {
   const out = new Set();
