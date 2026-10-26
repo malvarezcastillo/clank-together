@@ -143,7 +143,7 @@ Show-Line '  1. CONNECT YOUR AI' Yellow
 Show-Line ''
 Show-Line '     CLAUDE CODE' White
 Write-Host '     Install Claude Code if needed:'
-Show-Line '       https://code.claude.com/docs/fr/quickstart' Cyan
+Show-Line '       https://code.claude.com/docs/en/quickstart' Cyan
 Write-Host '     Register this workspace if clank-together is not already configured:'
 Show-Line ('       claude mcp add --scope user clank-together -- "' + $exe + '" mcp --workspace "' + $dir + '"') Cyan
 Write-Host '     Open a new terminal (restart any existing AI session), then run:'
@@ -285,7 +285,7 @@ line "$YELLOW" '  1. CONNECT YOUR AI'
 echo
 echo '     CLAUDE CODE'
 echo '     Install Claude Code if needed:'
-line "$CYAN" '       https://code.claude.com/docs/fr/quickstart'
+line "$CYAN" '       https://code.claude.com/docs/en/quickstart'
 echo '     Register this workspace if clank-together is not already configured:'
 printf '       claude mcp add --scope user clank-together -- "%s" mcp --workspace "%s"\\n' "$BIN/td" "$DIR"
 echo '     Open a new terminal (restart any existing AI session), then run:'
