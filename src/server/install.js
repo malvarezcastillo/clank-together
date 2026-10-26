@@ -79,10 +79,23 @@ Show-Line '  ===================================================================
 Show-Line ''
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-  Write-Host 'Installing git (winget)...'
-  winget install --id Git.Git -e --silent --accept-package-agreements --accept-source-agreements | Out-Null
-  $env:Path += ';' + (Join-Path $env:ProgramFiles 'Git\\cmd')
-  if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is required: install it from https://git-scm.com and run this line again' }
+  Write-Host 'Installing Git (MinGit, no administrator rights required)...'
+  $gitDir = Join-Path $env:LOCALAPPDATA 'ClankTogether\\MinGit'
+  $gitBin = Join-Path $gitDir 'cmd'
+  $gitArchive = Join-Path ([IO.Path]::GetTempPath()) ('clank-mingit-' + [guid]::NewGuid().ToString('N') + '.zip')
+  try {
+    Invoke-WebRequest 'https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-64-bit.zip' -OutFile $gitArchive -UseBasicParsing
+    if ((Get-FileHash $gitArchive -Algorithm SHA256).Hash.ToLower() -ne 'e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877') { throw 'Git download failed its checksum check' }
+    Expand-Archive -LiteralPath $gitArchive -DestinationPath $gitDir -Force
+    & (Join-Path $gitBin 'git.exe') --version
+    if ($LASTEXITCODE -ne 0) { throw 'Downloaded Git could not run' }
+    $gitUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $gitUserPath) { $gitUserPath = '' }
+    if (($gitUserPath -split ';') -notcontains $gitBin) { [Environment]::SetEnvironmentVariable('Path', ($gitUserPath.TrimEnd(';') + ';' + $gitBin), 'User') }
+    if (($env:Path -split ';') -notcontains $gitBin) { $env:Path += ';' + $gitBin }
+  } finally {
+    if (Test-Path -LiteralPath $gitArchive) { Remove-Item -LiteralPath $gitArchive }
+  }
 }
 
 Show-Line '  [1/4] Download client ...'
