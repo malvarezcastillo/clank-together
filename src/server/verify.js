@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { lintSubmission } from '../shared/lint.js';
-import { freeTextErrors } from '../shared/freetext.js';
+import { freeTextErrorsAcross } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal } from '../shared/compare.js';
@@ -225,16 +225,14 @@ export class Verifier {
   /**
    * Comments and strings a submission adds that could carry instructions to other agents: only
    * annotations and markers, and strings of the original executable, are allowed (freetext.js).
+   * What the submitted files held on the base may move between them (a definition moving to its
+   * owner keeps its provenance), but every such line counts once.
    */
   freeTextGate(files, baseCommit) {
     const exe = this.getPe().buf;
     const inOriginal = (bytes) => exe.indexOf(bytes) !== -1;
-    const errors = [];
-    for (const [file, text] of Object.entries(files)) {
-      if (typeof text !== 'string') continue;
-      for (const e of freeTextErrors(text, this.repo.show(baseCommit, file), inOriginal)) errors.push({ file, ...e });
-    }
-    return errors;
+    const pooled = Object.keys(files).map((f) => this.repo.show(baseCommit, f)).filter((t) => t !== null).join('\n');
+    return freeTextErrorsAcross(files, pooled, inOriginal);
   }
 
   /**

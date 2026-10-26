@@ -160,18 +160,35 @@ function encode(s, wide) {
  * @returns {{line: number, message: string}[]}  the messages never repeat the text itself
  */
 export function freeTextErrors(text, baseText, inOriginal) {
-  const now = scanText(text);
-  const base = baseText === null ? { comments: [], strings: [] } : scanText(baseText);
-  const errors = [];
+  return checkText(scanText(text), baseText === null ? { comments: [], strings: [] } : scanText(baseText), inOriginal);
+}
 
-  const baseComments = counts(base.comments.map((c) => c.text.trim()));
+/**
+ * The same check for a whole submission against what all its files held together on the base:
+ * comments and strings may move from one submitted file to another, each base occurrence once.
+ * @returns {{file: string, line: number, message: string}[]}
+ */
+export function freeTextErrorsAcross(files, pooledBase, inOriginal) {
+  const base = scanText(pooledBase);
+  const pool = { comments: counts(base.comments.map((c) => c.text.trim())), strings: counts(base.strings.map(stringKey)) };
+  const errors = [];
+  for (const [file, text] of Object.entries(files)) {
+    if (typeof text !== 'string') continue;
+    for (const e of checkText(scanText(text), pool, inOriginal)) errors.push({ file, ...e });
+  }
+  return errors;
+}
+
+function checkText(now, base, inOriginal) {
+  const errors = [];
+  const baseComments = base.comments instanceof Map ? base.comments : counts(base.comments.map((c) => c.text.trim()));
   for (const c of now.comments) {
     const t = c.text.trim();
     if (take(baseComments, t) || allowedComment(t)) continue;
     errors.push({ line: c.line, message: 'comments are not allowed in submissions (only annotations like // FUNCTION: fn_00001 and offset markers like /* 0010 */); remove it' });
   }
 
-  const baseStrings = counts(base.strings.map(stringKey));
+  const baseStrings = base.strings instanceof Map ? base.strings : counts(base.strings.map(stringKey));
   for (const s of now.strings) {
     if (take(baseStrings, stringKey(s))) continue;
     if (s.include !== null) {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scanText, freeTextErrors, allowedComment } from '../src/shared/freetext.js';
+import { scanText, freeTextErrors, freeTextErrorsAcross, allowedComment } from '../src/shared/freetext.js';
 
 // Stands in for the original executable's bytes.
 const original = Buffer.concat([Buffer.from('Interface\\GlueXML\0', 'latin1'), Buffer.from('hello world\0%d\0', 'latin1'), Buffer.from('Wide\0', 'utf16le')]);
@@ -49,6 +49,14 @@ test('comments and strings already on main stay allowed', () => {
   assert.deepEqual(freeTextErrors(base + 'int y;\n', base, inOriginal), []);
   // But adding a second copy is new text.
   assert.equal(freeTextErrors(base + '// keep me\n', base, inOriginal).length, 1);
+});
+
+test('a submission may move a comment from one of its files to another, once', () => {
+  const base = '// keep me\nextern int g;\n';
+  const files = { 'a.cpp': 'extern int g;\n', 'b.cpp': '// keep me\nint g;\n' };
+  assert.deepEqual(freeTextErrorsAcross(files, base, inOriginal), [], 'moved with its definition');
+  const twice = { 'a.cpp': base, 'b.cpp': '// keep me\nint g;\n' };
+  assert.equal(freeTextErrorsAcross(twice, base, inOriginal).length, 1, 'one base line covers one copy');
 });
 
 test('pieces of a concatenated literal may each come from the original', () => {
