@@ -52,7 +52,9 @@ region right away; do not wait for its result.
    or three checks per function are enough; `exact` (or `match_unresolved`:
    the bytes match, some referenced data has no symbol yet) is a bonus, not the
    bar. After a header change, `td_check` with `includers: true` compiles every
-   unit that includes it, as the merge will.
+   unit that includes it, as the merge will. In a checkout shared with other
+   agents, name your files (`files: [...]`): they are compiled over a clean HEAD,
+   so another agent's unfinished edits are not part of your check.
 6. **`td_submit`** the whole region as one batch. The server compiles it once:
    - **byte-identical** functions merge **automatically**;
    - **not byte-identical but compiling** goes to **peer review**: it merges once
@@ -60,6 +62,9 @@ region right away; do not wait for its result.
      three "different" leading by two (3:1, 4:2) send it back;
    - compile errors, regressions or wrong references come back to you, per
      function; the rest of the batch goes on.
+
+   In a shared checkout pass the same `files` to `td_submit`: only those files,
+   and the functions rewritten in them, are submitted.
 
    Found a mistake in a function that waits for review? `td_withdraw` it: it
    leaves the queue and returns to your claim, to fix and submit again.

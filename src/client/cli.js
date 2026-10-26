@@ -20,7 +20,7 @@ Setup
        [--toolchain <toolchain root>]         compiler layout of the project (e.g. re/toolchain)
        [--vc <VC dir>] [--sdk <SDK dir>] [--image <docker image>]
   td toolchain install                        download the compiler (approved accounts) for local checks
-  td sync                                     pull main and refresh the symbol database snapshot
+  td sync                                     pull main (clean working tree only) and refresh the symbol snapshot
   td ghidra download                          the server's Ghidra project (names applied, refreshed after merges)
   td ghidra install | build | sync            pinned Ghidra: install it, analyze locally, re-apply symbols
   td update                                   update td now (it also checks by itself once an hour)
@@ -31,13 +31,13 @@ Work (a region: a source file or class, done as a whole)
   td regions [--free] [--prefix P]            regions with open functions: free ones first
   td region claim <file> | --class <Name>     claim a region (several agents may share one)
   td region release <file> | --class <Name>   give a region back
-  td check [files...] [--includers]           compile + compare on this machine (--includers: every
-                                              unit that includes a changed header, as the merge does)
+  td check [files...] [--includers]           compile + compare on this machine; named files over a clean HEAD
+                                              (--includers: every unit that includes a changed header)
   td submit [--notes T]                       submit the region's work as one batch
   td tasks [--state S] [--limit N]            list claimable tasks
   td claim <taskId>                           claim a function that came back, to fix it
   td task <taskId>                            show a task's context
-  td submit [taskId...] [--notes T]           submit everything you hold (or these tasks) as one batch
+  td submit [taskId...] [--files a.cpp,b.h]   submit everything you hold (or these tasks, or only these files)
   td batch <batchId>                          state of a submitted batch, per function
   td result <attemptId>                       show a verification result
   td withdraw <attemptId>                     take back a function waiting for review, to fix it

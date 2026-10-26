@@ -133,14 +133,20 @@ export async function refreshSymbols(ws) {
   return r.data;
 }
 
-/** Fast-forwards the clone to the server's main and refreshes the symbol snapshot. */
+/**
+ * Fast-forwards the clone to the server's main and refreshes the symbol snapshot. Only a clean
+ * working tree moves: in a shared checkout, uncommitted files may be someone's unfinished work.
+ */
 export async function sync(ws) {
   ws.git('fetch', '-q', 'origin');
-  let pulled = true;
-  try {
-    ws.git('merge', '-q', '--ff-only', '@{u}');
-  } catch {
-    pulled = false;
+  const changed = ws.changedFiles();
+  let pulled = !changed.length;
+  if (pulled) {
+    try {
+      ws.git('merge', '-q', '--ff-only', '@{u}');
+    } catch {
+      pulled = false;
+    }
   }
   const snap = await refreshSymbols(ws);
   // A newer Ghidra project on the server is only announced (it is a large download).
@@ -149,20 +155,26 @@ export async function sync(ws) {
     const g = await api(ws).get('/api/ghidra-project');
     if (g.sha256 !== ws.config.ghidraPackage) ghidra = `a newer Ghidra project is available (${(g.size / 1048576).toFixed(0)} MB): td ghidra download`;
   } catch {}
-  return { head: ws.head(), fastForwarded: pulled, symbols: snap.symbols.length, ghidra, note: pulled ? null : 'could not fast-forward (local commits or conflicting changes); merge origin/main yourself' };
+  const note = changed.length
+    ? `not fast-forwarded: ${changed.length} uncommitted files (${changed.slice(0, 5).join(', ')}); submit or set them aside first`
+    : 'could not fast-forward (local commits or conflicting changes); merge origin/main yourself';
+  return { head: ws.head(), fastForwarded: pulled, symbols: snap.symbols.length, ghidra, note: pulled ? null : note };
 }
 
 /**
  * Compiles and compares locally with the same pipeline the server uses. `includers`: also every
  * unit that includes a changed header (what the server compiles before it merges), so a header
  * change is known to build everywhere before it is submitted.
+ * Named files are compiled over a clean copy of HEAD, so other edits in a shared checkout (another
+ * agent's unfinished work) are not part of the check. Without files: the working tree as it is.
  */
 export async function check(ws, files, { wait = true, includers = false } = {}) {
   const project = ws.project;
-  const targets = files?.length ? files : ws.changedFiles();
+  const explicit = !!files?.length;
+  const targets = explicit ? files.map((f) => f.replace(/\\/g, '/')) : ws.changedFiles();
   const runner = ws.config.runners?.[project.toolchain];
   if (!runner || runner.type === 'remote') {
-    if (ws.config.remoteChecks) return remoteCheck(ws, targets, { wait });
+    if (ws.config.remoteChecks) return remoteCheck(ws, targets, { wait, explicit });
     throw new Error('no local compiler set up: run "td toolchain install" once (it downloads the compiler from the server, for approved accounts), then check again. The server only compiles submissions.');
   }
   const units = new Set(targets.filter(isUnit));
@@ -176,7 +188,8 @@ export async function check(ws, files, { wait = true, includers = false } = {}) 
   }
   if (!units.size) throw new Error('nothing to check: pass .cpp files or modify some');
   const result = await checkUnits({
-    repoDir: ws.dir,
+    repoDir: explicit ? headTree(ws) : ws.dir,
+    overrides: explicit ? readFiles(ws, targets) : {},
     jobDir: path.join(ws.tdDir, 'build'),
     project,
     units: [...units],
@@ -189,13 +202,28 @@ export async function check(ws, files, { wait = true, includers = false } = {}) 
   return summarizeCheck(result, rec, new Set(targets));
 }
 
+/** A detached worktree at HEAD under .td/, updated on each use. */
+function headTree(ws) {
+  const dir = path.join(ws.tdDir, 'head');
+  if (!fs.existsSync(path.join(dir, '.git'))) ws.git('worktree', 'add', '-q', '--detach', '-f', dir, 'HEAD');
+  // -f: the tree is only read; anything left in it is discarded.
+  execFileSync('git', ['checkout', '-q', '-f', '--detach', ws.head()], { cwd: dir, stdio: 'ignore' });
+  return dir;
+}
+
+function readFiles(ws, files) {
+  const out = {};
+  for (const f of files) out[f] = fs.readFileSync(path.join(ws.dir, f), 'utf8');
+  return out;
+}
+
 /**
  * Compiles and compares on the server (its sandboxed compiler), for contributors without a
  * local toolchain. Sends the changed files and the commit they are based on; nothing is submitted.
  */
-async function remoteCheck(ws, targets, { wait = true } = {}) {
+async function remoteCheck(ws, targets, { wait = true, explicit = false } = {}) {
   const files = {};
-  for (const f of new Set([...targets, ...ws.changedFiles()])) {
+  for (const f of new Set(explicit ? targets : [...targets, ...ws.changedFiles()])) {
     const abs = path.join(ws.dir, f);
     if (fs.existsSync(abs) && /\.(c|cc|cpp|cxx|h|hpp|inl)$/i.test(f)) files[f.replace(/\\/g, '/')] = fs.readFileSync(abs, 'utf8');
   }
@@ -227,17 +255,17 @@ export async function original(ws, query, kind) {
   return r.pseudocode ?? `// no pseudocode for ${r.symbol ?? query} yet (${r.source}); the assembly is available with td disasm`;
 }
 
-/** Submits files for a leased task. Defaults to all changed files the task allows. */
 /**
  * Submits work. `taskIds` empty = every task you hold, as one batch (the regions you claimed,
- * plus functions you took back to fix). Defaults to all changed files those tasks allow.
+ * plus functions you took back to fix). Defaults to all changed files those tasks allow; named
+ * `files` are the whole submission, and only functions rewritten in them count as new work.
  */
 export async function submit(ws, taskIds = [], { files, notes, agentMeta, confirm = [] } = {}) {
   const me = await api(ws).get('/api/me');
   let ids = taskIds.length ? taskIds.map(Number) : me.leases;
   // Held functions whose code was not touched stay held; they are not new work.
   if (!taskIds.length && ids.length) {
-    const rewritten = rewrittenFunctions(ws, me.leasedAllowedPaths ?? []);
+    const rewritten = rewrittenFunctions(ws, me.leasedAllowedPaths ?? [], files);
     const symbols = me.leasedSymbols ?? [];
     ids = symbols.filter((t) => rewritten.has(t.symbol) || confirm.includes(t.symbol)).map((t) => t.taskId);
   }
@@ -245,7 +273,7 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta, confir
   // Shared regions: functions another agent holds are submitted as competing candidates, but only
   // the ones this agent actually rewrote.
   if (!taskIds.length && me.regionTasks?.length) {
-    const rewritten = rewrittenFunctions(ws, me.regionAllowedPaths ?? []);
+    const rewritten = rewrittenFunctions(ws, me.regionAllowedPaths ?? [], files);
     const extra = me.regionTasks.filter((t) => rewritten.has(t.symbol)).map((t) => t.taskId);
     if (extra.length) {
       ids = [...new Set([...ids, ...extra])];
@@ -274,10 +302,11 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta, confir
   return api(ws).post('/api/batches', { taskIds: ids, baseCommit: ws.head(), files: contents, notes, agentMeta, envDigest: ws.config.envDigest, ...(confirm.length ? { confirm } : {}) });
 }
 
-/** Annotated functions whose definition differs from HEAD in the changed files under allowed paths. */
-function rewrittenFunctions(ws, allowed) {
+/** Annotated functions whose definition differs from HEAD in the changed (or named) files under allowed paths. */
+function rewrittenFunctions(ws, allowed, files) {
   const out = new Set();
-  for (const f of ws.changedFiles().filter((x) => matchesAny(x, allowed))) {
+  const changed = files?.length ? files.map((f) => f.replace(/\\/g, '/')) : ws.changedFiles();
+  for (const f of changed.filter((x) => matchesAny(x, allowed))) {
     const abs = path.join(ws.dir, f);
     if (!fs.existsSync(abs)) continue;
     const text = fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n');

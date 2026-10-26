@@ -108,11 +108,11 @@ const TOOLS = [
   {
     name: 'td_check',
     description:
-      'Compile on this machine and compare every annotated function against the original bytes: status, score and byte-level diffs. Default: the changed files (and one unit per changed header). includers: true compiles every unit that includes a changed header, as the merge will; do that before submitting a header change. Needs td_toolchain_install once.',
+      'Compile on this machine and compare every annotated function against the original bytes: status, score and byte-level diffs. Named files are compiled over a clean copy of HEAD (other uncommitted edits, such as another agent\'s unfinished work, are left out); default: the working tree with its changed files (and one unit per changed header). includers: true compiles every unit that includes a changed header, as the merge will; do that before submitting a header change. Needs td_toolchain_install once.',
     inputSchema: {
       type: 'object',
       properties: {
-        files: { type: 'array', items: { type: 'string' }, description: 'repo-relative files; default: all changed files' },
+        files: { type: 'array', items: { type: 'string' }, description: 'repo-relative files, checked over clean HEAD; default: all changed files in the working tree' },
         includers: { type: 'boolean', description: 'also compile every unit including a changed header' },
       },
     },
@@ -132,7 +132,7 @@ const TOOLS = [
       properties: {
         taskIds: { type: 'array', items: { type: 'integer' }, description: 'tasks to submit; default: every function you hold and rewrote' },
         taskId: int('a single task (same as taskIds: [id])'),
-        files: { type: 'array', items: { type: 'string' } },
+        files: { type: 'array', items: { type: 'string' }, description: 'repo-relative files that make up the whole submission; only functions rewritten in them are submitted. Default: every changed file your tasks allow' },
         notes: str('short notes for reviewers and later agents'),
         confirm: { type: 'array', items: { type: 'string' }, description: 'symbol IDs of functions whose existing code on main you checked and want peer-reviewed unchanged (otherwise unchanged functions are not submitted)' },
       },
@@ -239,7 +239,7 @@ const TOOLS = [
   },
   {
     name: 'td_sync',
-    description: 'Fast-forward the local clone to the latest main and refresh the symbol database snapshot.',
+    description: 'Fast-forward the local clone to the latest main and refresh the symbol database snapshot. With uncommitted files in the working tree it only refreshes symbols and says which files hold it back.',
     inputSchema: { type: 'object', properties: {} },
     run: async (ws) => ops.sync(ws),
   },
