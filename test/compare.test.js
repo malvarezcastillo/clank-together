@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture, FN_ADDR, CALLEE_ADDR, GLOBAL_ADDR } from './helpers.js';
+import { fixture, buildCoff, buildDebugS, FN_ADDR, CALLEE_ADDR, GLOBAL_ADDR } from './helpers.js';
 import { PEImage } from '../src/shared/pe.js';
 import { CoffObject } from '../src/shared/coff.js';
 import { parseListing } from '../src/shared/listing.js';
 import { parseAnnotations } from '../src/shared/annotations.js';
-import { compareObject, STATUS, lcsRatio, sameOriginal } from '../src/shared/compare.js';
+import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 
 const FILE = 'src/player.cpp';
@@ -120,6 +120,68 @@ test('annotation with an ID that has no address in this version', () => {
   syms.get('fn_00001').addr = null;
   const { fn } = run({ syms });
   assert.equal(fn.status, STATUS.NO_ADDRESS);
+});
+
+// The optimizer may schedule code inlined from a header first: the listing then shows the
+// header's line before the function's own. Where the function is defined comes from its debug info.
+function inlinedHeaderFirst() {
+  const listing = parseListing(
+    [
+      '; File z:\\job\\src\\player.cpp',
+      '?Update@Player@@QAEXXZ PROC\t\t\t\t; Player::Update, COMDAT',
+      '; File z:\\toolchain\\include\\xtree',
+      '; 1597 :         _Tree_find_result<_Nodeptr> _Result{};',
+      '  00000\t8b 49 04\t mov\t ecx, DWORD PTR [ecx+4]',
+      '; File z:\\job\\src\\player.cpp',
+      '; 5    : {',
+      '  00003\tc3\t\t ret\t 0',
+      '?Update@Player@@QAEXXZ ENDP\t\t\t\t; Player::Update',
+      'END',
+    ].join('\r\n'),
+  );
+  const { annotations } = parseAnnotations(fixture().source, FILE);
+  return { listing, annotations };
+}
+
+test('an annotation binds to its function when inlined header code comes first', () => {
+  const { listing, annotations } = inlinedHeaderFirst();
+  const bind = (locations) => bindAnnotations({ listing, file: FILE, annotations, locations });
+  assert.equal(bind(new Map()).byAnn.size, 0, 'the listing alone puts the function in xtree');
+  const { byAnn, errors } = bind(new Map([['?Update@Player@@QAEXXZ', { file: 'z:\\job\\src\\player.cpp', line: 4 }]]));
+  assert.deepEqual(errors, []);
+  assert.deepEqual([...byAnn.values()], ['?Update@Player@@QAEXXZ']);
+});
+
+test('a function inlining code of the annotated file does not take its annotation', () => {
+  const { listing, annotations } = inlinedHeaderFirst();
+  // Defined in a header, it contains player.cpp's line 4 only through inlining.
+  const { byAnn } = bindAnnotations({ listing, file: FILE, annotations, locations: new Map([['?Update@Player@@QAEXXZ', { file: 'z:\\job\\src\\player.h', line: 30 }]]) });
+  assert.equal(byAnn.size, 0);
+});
+
+test('COFF reader takes each function\'s definition line from its CodeView line table', () => {
+  const debug = buildDebugS([
+    { symbolIndex: 1, file: 'z:\\job\\src\\player.cpp', lines: [[0, 4], [3, 6], [8, 7]] },
+    { symbolIndex: 2, file: 'z:\\job\\src\\other.cpp', lines: [[0, 12]] },
+  ]);
+  const obj = new CoffObject(
+    buildCoff({
+      sections: [
+        { name: '.text$mn', data: Buffer.alloc(16, 0xc3), characteristics: 0x60501020 },
+        { name: '.debug$S', data: debug.data, relocs: debug.relocs, characteristics: 0x42100040 },
+      ],
+      symbols: [
+        { name: '.text$mn', section: 1, storageClass: 3 },
+        { name: '?Update@Player@@QAEXXZ', section: 1, type: 0x20, storageClass: 2 },
+        { name: '?Other@@YAXXZ', section: 1, value: 8, type: 0x20, storageClass: 2 },
+      ],
+    }),
+  );
+  assert.deepEqual(Object.fromEntries(obj.functionLines()), {
+    '?Update@Player@@QAEXXZ': { file: 'z:\\job\\src\\player.cpp', line: 4 },
+    '?Other@@YAXXZ': { file: 'z:\\job\\src\\other.cpp', line: 12 },
+  });
+  assert.equal(new CoffObject(fixture().obj).functionLines().size, 0, 'no debug info, no locations');
 });
 
 test('lcsRatio', () => {

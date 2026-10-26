@@ -72,6 +72,50 @@ export function buildCoff({ sections, symbols }) {
 }
 
 /**
+ * A CodeView (C13) .debug$S section with one line table per function, as /Z7 writes it.
+ * @param {Array<{symbolIndex: number, file: string, lines: Array<[offset: number, line: number]>}>} functions
+ * @returns {{data: Buffer, relocs: Array<{offset, symbolIndex, type}>}}
+ */
+export function buildDebugS(functions) {
+  const files = [...new Set(functions.map((f) => f.file))];
+  const strings = Buffer.concat([Buffer.alloc(1), ...files.map((f) => Buffer.from(f + '\0', 'latin1'))]);
+  const nameOffset = (f) => 1 + files.slice(0, files.indexOf(f)).reduce((n, s) => n + s.length + 1, 0);
+  // File checksum entries: name offset, checksum size 0, kind 0, padded to 4 bytes.
+  const checksums = Buffer.concat(files.map((f) => { const b = Buffer.alloc(8); b.writeUInt32LE(nameOffset(f), 0); return b; }));
+  const fileId = (f) => files.indexOf(f) * 8;
+
+  const parts = [Buffer.from([4, 0, 0, 0])];
+  const relocs = [];
+  let at = 4;
+  const subsection = (type, body) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32LE(type, 0);
+    head.writeUInt32LE(body.length, 4);
+    const pad = Buffer.alloc((4 - (body.length % 4)) % 4);
+    parts.push(head, body, pad);
+    const bodyAt = at + 8;
+    at += 8 + body.length + pad.length;
+    return bodyAt;
+  };
+  for (const fn of functions) {
+    const body = Buffer.alloc(12 + 12 + fn.lines.length * 8);
+    body.writeUInt32LE(Math.max(...fn.lines.map(([o]) => o)) + 1, 8);
+    body.writeUInt32LE(fileId(fn.file), 12);
+    body.writeUInt32LE(fn.lines.length, 16);
+    body.writeUInt32LE(12 + fn.lines.length * 8, 20);
+    fn.lines.forEach(([offset, line], i) => {
+      body.writeUInt32LE(offset, 24 + i * 8);
+      body.writeUInt32LE((line | 0x80000000) >>> 0, 28 + i * 8);
+    });
+    const bodyAt = subsection(0xf2, body);
+    relocs.push({ offset: bodyAt, symbolIndex: fn.symbolIndex, type: 0x0b }, { offset: bodyAt + 4, symbolIndex: fn.symbolIndex, type: 0x0a });
+  }
+  subsection(0xf3, strings);
+  subsection(0xf4, checksums);
+  return { data: Buffer.concat(parts), relocs };
+}
+
+/**
  * @param {{imageBase?: number, sections: Array<{name, rva, data, characteristics?}>, baseRelocs?: number[]}} p
  *        baseRelocs are virtual addresses of HIGHLOW fixups.
  */

@@ -53,6 +53,12 @@ const IMAGE_SCN_LNK_COMDAT = 0x00001000;
 const IMAGE_SCN_LNK_NRELOC_OVFL = 0x01000000;
 const IMAGE_SYM_DTYPE_FUNCTION = 0x20;
 
+// CodeView (C13) debug info, as /Z7 writes it into .debug$S.
+const CV_SIGNATURE_C13 = 4;
+const DEBUG_S_LINES = 0xf2;
+const DEBUG_S_STRINGTABLE = 0xf3;
+const DEBUG_S_FILECHKSMS = 0xf4;
+
 export class CoffObject {
   /** @param {Buffer} buf */
   constructor(buf) {
@@ -177,6 +183,53 @@ export class CoffObject {
           .map((r) => ({ offset: r.offset - s.value, type: r.type, ...relocInfo(this.machine, r.type), symbol: this.symbols[r.symbolIndex] }));
         out.push({ name: s.name, section: secIndex, sectionName: sec.name, offset: s.value, bytes, relocs, isStatic: s.storageClass === 3 });
       });
+    }
+    return out;
+  }
+
+  /**
+   * Where each function is defined, from the CodeView line tables in .debug$S (compiled with /Z7):
+   * decorated name -> {file, line} of its first instruction. Code inlined into a function has
+   * records of its own, so this is the function's own definition even when the optimizer put
+   * inlined code first. Empty without debug info.
+   */
+  functionLines() {
+    const out = new Map();
+    const debug = this.sections.filter((s) => s.name === '.debug$S' && s.size >= 4 && s.data.readUInt32LE(0) === CV_SIGNATURE_C13);
+    const subsections = (s) => {
+      const list = [];
+      for (let p = 4; p + 8 <= s.size; ) {
+        const type = s.data.readUInt32LE(p);
+        const len = s.data.readUInt32LE(p + 4);
+        list.push({ type, off: p + 8, len });
+        p = (p + 8 + len + 3) & ~3;
+      }
+      return list;
+    };
+    let strings = null;
+    let checksums = null;
+    for (const s of debug) {
+      for (const sub of subsections(s)) {
+        if (sub.type === DEBUG_S_STRINGTABLE) strings ??= { data: s.data, off: sub.off };
+        if (sub.type === DEBUG_S_FILECHKSMS) checksums ??= { data: s.data, off: sub.off };
+      }
+    }
+    if (!strings || !checksums) return out;
+    const fileName = (fileId) => {
+      const start = strings.off + checksums.data.readUInt32LE(checksums.off + fileId);
+      return strings.data.toString('latin1', start, strings.data.indexOf(0, start));
+    };
+    for (const s of debug) {
+      const relocAt = new Map(s.relocs.map((r) => [r.offset, r]));
+      for (const sub of subsections(s)) {
+        // Header (offset, segment, flags, code size), then file blocks (file id, line count,
+        // block size) whose line entries (code offset, line) run in code order.
+        if (sub.type !== DEBUG_S_LINES || sub.len < 32) continue;
+        const sym = this.symbols[relocAt.get(sub.off)?.symbolIndex];
+        const block = sub.off + 12;
+        if (!sym || out.has(sym.name) || s.data.readUInt32LE(block + 4) === 0) continue;
+        out.set(sym.name, { file: fileName(s.data.readUInt32LE(block)), line: s.data.readUInt32LE(block + 16) & 0xffffff });
+      }
     }
     return out;
   }

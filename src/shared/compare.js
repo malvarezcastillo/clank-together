@@ -33,16 +33,21 @@ const MAX_DIFF_REGIONS = 24;
 // below the annotated signature; anything further is another function.
 const MAX_SIGNATURE_LINES = 12;
 
-export function bindAnnotations({ listing, file, annotations, nameIndex = new Map(), symbols = new Map(), sizes = new Map() }) {
+// `locations`: decorated name -> {file, line} of each function's definition, from the object's
+// debug info (CoffObject.functionLines). The listing's first source line belongs to whatever code
+// the optimizer scheduled first, which may be inlined from a header; it is only the fallback.
+export function bindAnnotations({ listing, file, annotations, nameIndex = new Map(), symbols = new Map(), sizes = new Map(), locations = new Map() }) {
   const byAnn = new Map();
   const skipped = new Set();
   const errors = [];
   // A compiled function whose decorated name is already known to be another ID is never taken.
   const ownerOf = (p) => nameIndex.get(p.symbol) ?? null;
 
-  // Procs per source file of the listing, and the annotation files they belong to.
+  // Procs per source file of their definition, and the annotation files they belong to.
   const procsByFile = new Map();
-  for (const p of listing.procs) {
+  for (const proc of listing.procs) {
+    const loc = locations.get(proc.symbol);
+    const p = loc ? { ...proc, sourceFile: normalizePath(loc.file), firstLine: loc.line } : proc;
     if (!p.sourceFile || p.firstLine === null) continue;
     if (!procsByFile.has(p.sourceFile)) procsByFile.set(p.sourceFile, []);
     procsByFile.get(p.sourceFile).push(p);
@@ -140,7 +145,7 @@ export function bindAnnotations({ listing, file, annotations, nameIndex = new Ma
 export function compareObject({ obj, listing, file, annotations, symbols, nameIndex = new Map(), pe }) {
   const objFns = new Map(obj.functions().map((f) => [f.name, f]));
   const sizes = new Map([...objFns].map(([n, f]) => [n, f.bytes.length]));
-  const found = bindAnnotations({ listing, file, annotations, nameIndex, symbols, sizes });
+  const found = bindAnnotations({ listing, file, annotations, nameIndex, symbols, sizes, locations: obj.functionLines() });
   const { byAnn, errors } = found;
   // A file-local static (s_ScriptFunctions, a function's static local) has the same name in every
   // unit that defines one: it is known by its object and name (Foo_Scripts.obj|s_ScriptFunctions),

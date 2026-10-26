@@ -38,8 +38,10 @@ export function fillPlaceholders(s, roots) {
 function clArgs({ cflags, includeDirs, src, out, toPath, roots }) {
   const flags = cflags.map((f) => fillPlaceholders(f, roots));
   const inc = includeDirs.map((d) => `/I${toPath(d)}`);
-  // /showIncludes lists every included header (dependency tracking); it does not change codegen.
-  const compile = [...flags, ...inc, '/showIncludes', '/FAcs', `/Fa${toPath(out + '.cod')}`, `/Fo${toPath(out + '.obj')}`, toPath(src)];
+  // /showIncludes lists every included header (dependency tracking); /Z7 puts debug info in the
+  // object, which tells where each function is defined (CoffObject.functionLines). Neither
+  // changes codegen.
+  const compile = [...flags, ...inc, '/showIncludes', '/Z7', '/FAcs', `/Fa${toPath(out + '.cod')}`, `/Fo${toPath(out + '.obj')}`, toPath(src)];
   const preprocess = [...flags.filter((f) => f.toLowerCase() !== '/c'), ...inc, '/P', `/Fi${toPath(out + '.i')}`, toPath(src)];
   return { compile, preprocess };
 }
