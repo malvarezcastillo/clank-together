@@ -414,8 +414,10 @@ export class Verifier {
    * Unknown on main (no fingerprint yet, e.g. before the first rebuild) is not counted.
    */
   // With `userId`, only functions someone else is working on count (held by another account, or in
-  // another account's submission on its way to main). Other neighbours may change: their status is
-  // measured again, and the regression check still protects whatever already matches.
+  // another account's submission on its way to main), and functions on main whose source the
+  // submission rewrote without listing them: those are revisions and need their own review.
+  // Other neighbours may change: their status is measured again, and the regression check still
+  // protects whatever already matches.
   changedOutside(check, files, targets, userId = null) {
     const fileSet = new Set(Object.keys(files));
     const seen = new Map();
@@ -427,7 +429,16 @@ export class Verifier {
       else if (main.code_hash && main.code_hash !== f.codeHash) out.push({ id, file: f.file, why: 'compiled code changed' });
     }
     if (userId == null) return out;
-    return out.filter((o) => this.workedOnByOthers(o.id, userId));
+    return out.filter((o) => this.workedOnByOthers(o.id, userId) || this.unlistedRevision(o, files));
+  }
+
+  /** A function on main whose source this submission rewrote, though it is not one of its tasks. */
+  unlistedRevision(o, files) {
+    const t = this.store.get('SELECT state FROM tasks WHERE symbol_id = ?', o.id);
+    if (!t || !['done', 'skipped'].includes(t.state)) return false;
+    if (this.unchangedFromBase(o.id, files, 'HEAD')) return false;
+    o.why = 'already on main and rewritten: list it in taskIds to submit it as a revision';
+    return true;
   }
 
   workedOnByOthers(symbolId, userId) {

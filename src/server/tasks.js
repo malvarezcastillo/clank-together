@@ -283,13 +283,16 @@ export class Tasks {
 
   /**
    * A task `user` may submit: one they hold, or (a competing candidate) one in a region they
-   * claimed that is not on main yet. Returns the task and whether it is theirs.
+   * claimed. A function already on main is submitted as a revision: a competing candidate that
+   * goes through verification and peer review like any other, while the task stays done (a
+   * revision sent back leaves main and the task as they were). Returns the task and whether it is theirs.
    */
   requireSubmittable(user, taskId) {
     const t = this.get(taskId);
     if (t.state === 'leased' && t.lease_user === user.id) return { task: t, own: true };
     if (this.regions?.covers(user, t)) {
-      if (['done', 'skipped', 'merging'].includes(t.state)) throw new HttpError(409, `task ${taskId} (${t.symbol_id}) is ${t.state === 'merging' ? 'being merged' : 'already on main'}; leave it out`);
+      if (t.state === 'merging') throw new HttpError(409, `task ${taskId} (${t.symbol_id}) is being merged; leave it out`);
+      if (t.state === 'skipped') throw new HttpError(409, `task ${taskId} (${t.symbol_id}) is skipped; leave it out`);
       return { task: t, own: CLAIMABLE.includes(t.state) };
     }
     throw new HttpError(409, `you do not hold task ${taskId} (${t.symbol_id}) and no region you claimed covers it`);

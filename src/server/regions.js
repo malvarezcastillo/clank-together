@@ -3,9 +3,11 @@
 // An agent lists the regions (what is open, done, in flight, and who already works there), looks
 // at the candidates in its own checkout, and registers the one it takes. That leases every open
 // function of the region to it in one step. A region may be claimed by several agents; each may
-// then submit any function of it that is not on main yet. Competing candidates of a function are
-// verified and reviewed independently, and the first accepted one merges (merge.js supersedes the
-// others), so two agents' work combines per function.
+// then submit any function of it. Competing candidates of a function are verified and reviewed
+// independently, and the first accepted one merges (merge.js supersedes the others), so two
+// agents' work combines per function. A function already on main is submitted the same way, as a
+// revision: reviewed like any candidate, and the task stays done whatever its outcome. A region
+// whose functions are all on main can still be claimed for that.
 
 import { HttpError } from './http.js';
 import { now } from './db.js';
@@ -118,8 +120,6 @@ export class Regions {
     return this.store.tx(() => {
       const members = this.members(kind, key);
       if (!members.length) throw new HttpError(404, `no functions in ${kind} ${key}`);
-      const left = members.filter((m) => !FINISHED.includes(m.state));
-      if (!left.length) throw new HttpError(409, `${key} is finished: every function is on main`);
       const expires = now() + this.leaseMs;
       this.store.run(
         `INSERT INTO region_claims (user_id, token_id, kind, key, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)
@@ -174,12 +174,15 @@ export class Regions {
     });
   }
 
-  /** Unfinished functions of `user`'s regions that someone else holds or has on its way. */
+  /**
+   * Functions of `user`'s regions they may submit without holding them: unfinished ones someone
+   * else holds or has on its way, and ones already on main (revisions).
+   */
   sharedTasks(user, own = new Set()) {
     const out = [];
     for (const r of this.mine(user)) {
       for (const m of this.members(r.kind, r.key)) {
-        if (own.has(m.id) || FINISHED.includes(m.state) || m.state === 'merging' || CLAIMABLE.includes(m.state)) continue;
+        if (own.has(m.id) || m.state === 'skipped' || m.state === 'merging' || CLAIMABLE.includes(m.state)) continue;
         out.push({ taskId: m.id, symbol: m.symbol_id, state: m.state });
       }
     }

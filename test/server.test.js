@@ -1233,6 +1233,112 @@ test('regions: two agents claim one file, the first accepted candidate merges, t
   ctx.verifier.check = realCheck;
 });
 
+test('revisions: merged functions of a claimed region are reviewed again; the task stays done whatever the outcome', async () => {
+  const author = await activeUser('rvauthor');
+  delete ctx.merger.pump;
+  const v = ctx.store.currentVersion();
+  const unit = 'src/revision.cpp';
+  const a = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402800, size: 8, unit }).symbol.id;
+  const b = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402840, size: 8, unit }).symbol.id;
+  ctx.tasks.generate();
+  const taskA = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', a).id;
+  const taskB = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', b).id;
+  const onMain = `// FUNCTION: ${a}\nint ra() { return 1; }\n\n// FUNCTION: ${b}\nint rb() { return 2; }\n`;
+  ctx.repo.commitFiles({ [unit]: onMain }, 'seed revision.cpp', 'x <x@y.invalid>');
+  ctx.store.run(
+    `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash) VALUES (?, ?, 'mismatch', 0.7, 'x', ?, 1, 'a-main'), (?, ?, 'mismatch', 0.6, 'x', ?, 1, 'b-main')`,
+    a, unit, now(), b, unit, now(),
+  );
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id IN (?, ?)`, taskA, taskB);
+
+  // Stubbed compiler: a body's score and code follow its text.
+  const realCheck = ctx.verifier.check;
+  const realMergeCheck = ctx.verifier.mergeCheck;
+  const bodyOf = (text, name) => new RegExp(`int ${name}\\(\\) \\{ ([^}]*) \\}`).exec(text)?.[1] ?? '';
+  ctx.verifier.check = async (files) => {
+    const text = files[unit] ?? '';
+    const ra = bodyOf(text, 'ra');
+    const rb = bodyOf(text, 'rb');
+    const functions = [
+      { id: a, status: STATUS.MISMATCH, score: ra.includes('worse') ? 0.4 : ra.includes('better') ? 0.8 : 0.7, file: unit, codeHash: ra === 'return 1;' ? 'a-main' : `a-${ra}`, relocations: [], size: { ours: 8, original: 8 } },
+      { id: b, status: STATUS.MISMATCH, score: 0.6, file: unit, codeHash: rb === 'return 2;' ? 'b-main' : `b-${rb}`, relocations: [], size: { ours: 8, original: 8 } },
+    ];
+    return { check: { annotationErrors: [], units: [{ file: unit, compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions }] }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: [unit] };
+  };
+  ctx.verifier.mergeCheck = async (batch, files) => ({ ...(await ctx.verifier.check(files)), reused: 0, compiled: 1 });
+  const batchState = async (id) => (await call('GET', `/api/batches/${id}`, null, author)).body;
+  const settle = (id) => waitFor(async () => { const st = await batchState(id); return !['queued', 'verifying'].includes(st.state) && st; });
+  const submit = (taskIds, text) => call('POST', '/api/batches', { taskIds, baseCommit: ctx.repo.head(), files: { [unit]: text } }, author);
+  const verdicts = async (attemptId, verdict, names) => {
+    for (const n of names) {
+      await activeUser(n);
+      ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, token_id, verdict, weight, reason, created_at) VALUES (?, ?, NULL, ?, 1, 'read', ?)`, attemptId, ctx.accounts.byName(n).id, verdict, now());
+    }
+    return ctx.peers.decide(ctx.store.get('SELECT * FROM attempts WHERE id = ?', attemptId));
+  };
+
+  try {
+    // Without a claim the merged function cannot be submitted.
+    assert.equal((await submit([taskA], onMain.replace('return 1;', 'int better = 1; return better;'))).status, 409);
+
+    // A region whose functions are all on main can still be claimed, for revisions.
+    const claim = await call('POST', '/api/regions/claim', { kind: 'unit', key: unit }, author);
+    assert.equal(claim.status, 200, JSON.stringify(claim.body));
+    assert.deepEqual(claim.body.leased, []);
+    assert.match(claim.body.note, /revision/);
+    const me = (await call('GET', '/api/me', null, author)).body;
+    assert.ok(me.regionTasks.some((t) => t.taskId === taskA), 'plain td submit finds rewritten merged functions');
+
+    // A revision that moves a confirmed function away from the original goes back.
+    const worse = await submit([taskA], onMain.replace('return 1;', 'int worse = 1; return worse;'));
+    assert.equal(worse.status, 200, JSON.stringify(worse.body));
+    assert.equal(worse.body.attempts[0].competing, true);
+    assert.match((await settle(worse.body.batchId)).functions[0].summary, /breaks 1 function/);
+    assert.equal(ctx.tasks.get(taskA).state, 'done');
+
+    // Rewriting a merged function the submission does not list is refused: it would merge unreviewed.
+    const better = onMain.replace('return 1;', 'int better = 1; return better;');
+    const riding = await submit([taskA], better.replace('return 2;', 'int two = 2; return two;'));
+    const ridingState = await settle(riding.body.batchId);
+    assert.match(ridingState.functions[0].summary, new RegExp(`does not hold: ${b}`));
+    assert.equal(ctx.tasks.get(taskB).state, 'done');
+
+    // Peers find a difference: the revision goes back, main and the task stay as they were.
+    const rejected = await submit([taskA], better);
+    const rejectedState = await settle(rejected.body.batchId);
+    assert.equal(rejectedState.functions[0].state, 'peer_review', JSON.stringify(rejectedState.functions[0]));
+    assert.equal((await verdicts(rejectedState.functions[0].attemptId, 'different', ['rvp1', 'rvp2', 'rvp3'])).state, 'needs_cleanup');
+    assert.equal(ctx.tasks.get(taskA).state, 'done');
+    assert.equal(ctx.repo.show('HEAD', unit), onMain);
+
+    // Peers confirm it: the revision merges, the task stays done, and main records its new code.
+    const accepted = await submit([taskA], better);
+    const acceptedState = await settle(accepted.body.batchId);
+    assert.equal((await verdicts(acceptedState.functions[0].attemptId, 'same', ['rvp4', 'rvp5', 'rvp6'])).state, 'approved');
+    await ctx.merger.pump();
+    await waitFor(async () => (await batchState(accepted.body.batchId)).state === 'merged');
+    assert.equal(ctx.tasks.get(taskA).state, 'done');
+    assert.equal(ctx.repo.show('HEAD', unit), better);
+    const status = ctx.store.get('SELECT score, confirmed, code_hash FROM func_status WHERE symbol_id = ?', a);
+    assert.deepEqual([status.score, status.confirmed, status.code_hash], [0.8, 1, 'a-int better = 1; return better;']);
+  } finally {
+    ctx.verifier.check = realCheck;
+    ctx.verifier.mergeCheck = realMergeCheck;
+    ctx.store.run('DELETE FROM region_claims');
+  }
+});
+
+test('admin: a done task is reopened only with force, and then as open', async () => {
+  await ctx.accounts.createUser('rvadmin', 'admin', PASSWORD);
+  const cookie = await login('rvadmin');
+  const done = ctx.store.get(`SELECT id FROM tasks WHERE state = 'done' LIMIT 1`);
+  const plain = await request('POST', `/api/admin/tasks/${done.id}`, { state: 'open' }, { cookie });
+  assert.equal(plain.body.state, 'done');
+  const forced = await request('POST', `/api/admin/tasks/${done.id}`, { state: 'open', force: true }, { cookie });
+  assert.equal(forced.body.state, 'open');
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, done.id);
+});
+
 test('new work is claimed by region; a single function only to fix one that came back', async () => {
   const token = await activeUser('rtuser');
   const open = ctx.store.get(`SELECT id FROM tasks WHERE state = 'open' LIMIT 1`);

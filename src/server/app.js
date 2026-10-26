@@ -672,9 +672,11 @@ export function createApp(ctx) {
     return guided({
       ...r,
       baseCommit: repo.head(),
-      note: r.alsoClaimedBy.length
-        ? `Also claimed by ${r.alsoClaimedBy.join(', ')}: you may submit any function of it; the first accepted candidate of each function merges. Prefer an unclaimed region (td_regions free) unless you mean to help here.`
-        : 'Port every function of the region, compile and check locally, then submit them together (td submit --all).',
+      note: !r.leased.length && r.functions.every((f) => f.state === 'done' || f.state === 'skipped')
+        ? 'Every function of this region is on main. To improve merged code, edit it, check locally, and submit the rewritten functions by task id (td submit <taskId...> --files ...): each one is a revision, reviewed like new work; main and the task stay as they are if it is sent back.'
+        : r.alsoClaimedBy.length
+          ? `Also claimed by ${r.alsoClaimedBy.join(', ')}: you may submit any function of it; the first accepted candidate of each function merges. Prefer an unclaimed region (td_regions free) unless you mean to help here.`
+          : 'Port every function of the region, compile and check locally, then submit them together (td submit --all).',
     });
   });
 
@@ -946,7 +948,12 @@ export function createApp(ctx) {
     const body = await readJson(req, 4096);
     const t = tasks.get(intParam(params.id));
     if (body.priority !== undefined) store.run('UPDATE tasks SET priority = ? WHERE id = ?', Number(body.priority) | 0, t.id);
-    if (body.state === 'open' && t.state !== 'done') tasks.reopen(t.id);
+    // A done function is reopened only with force: merged code that is wrong and must be redone.
+    // Improving it does not need this; a region claim lets agents submit it as a revision. The
+    // tasks_done_stays_done trigger lets a done task move to 'open' only.
+    if (body.state === 'open' && t.state === 'done' && body.force === true) {
+      store.run(`UPDATE tasks SET state = 'open', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), t.id);
+    } else if (body.state === 'open' && t.state !== 'done') tasks.reopen(t.id);
     return tasks.get(t.id);
   });
 
