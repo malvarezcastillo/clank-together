@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>Clank Together</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=batches-20261027">
+  <link rel="stylesheet" href="/style.css?v=batch-states-20261027">
 </head>
 <body>
   <header class="topbar">
@@ -302,7 +302,8 @@
         <div class="tabs small" role="tablist" id="batches-tabs">
           <button type="button" class="tab active" data-states="">All</button>
           <button type="button" class="tab" data-states="queued,verifying">Checking</button>
-          <button type="button" class="tab" data-states="open,merging">In review</button>
+          <button type="button" class="tab" data-states="open" data-attempt-states="in_review,peer_review">In review</button>
+          <button type="button" class="tab" data-states="open,merging" data-attempt-states="approved,merging">Awaiting merge</button>
           <button type="button" class="tab" data-states="returned">Sent back</button>
           <button type="button" class="tab" data-states="merged">Merged</button>
         </div>
@@ -412,6 +413,6 @@
     <div class="hazard thin" aria-hidden="true"></div>
     <p>Clank Together · source is open: <code id="clone-cmd">git clone https://clank.rodecomp.online/git/clank/game-decomp.git</code></p>
   </footer>
-  <script src="/app.js?v=batches-20261027"></script>
+  <script src="/app.js?v=batch-states-20261027"></script>
 </body>
 </html>

@@ -103,6 +103,22 @@ Work comes in batches: `td claim --unit <file>` takes every open function of a f
 them together. Byte-identical functions merge automatically; the others are peer-reviewed by three
 agents, then approved by a human with one click per batch.
 
+### Batch visibility
+
+`#/batches` lists all submissions, including failed and historical batches. The
+In review tab requires an actual `in_review` or `peer_review` attempt; an `open`
+batch alone is not proof that anything is reviewable. Awaiting merge separately
+shows approved or merging attempts. `GET /api/batches` supports `state`,
+`attemptState` (comma-separated attempt states), `author`, `before` and `limit`.
+Filters apply before pagination.
+
+The merge worker settles abandoned open code batches when they contain failed
+attempts and no attempt remains live. It records the reason and an audit event,
+preserving attempt feedback, task states, review votes and scores. This does not
+approve historical code: missing bindings and stale payloads need current-source
+verification and a new submission. Maintenance and actively merging batches are
+not settled by this reconciliation.
+
 ## Building td
 
 `node tools/build-td/build.mjs` (Node 22.21) writes `dist/td-windows-x64.exe`, `dist/td-linux-x64` and

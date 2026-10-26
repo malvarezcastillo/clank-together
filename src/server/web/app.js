@@ -1131,12 +1131,13 @@ function renderQueue() {
 // --- batches
 
 let batchStates = '';
+let batchAttemptStates = '';
 let batchRows = [];
 
 const BATCH_STATES = {
   queued: 'Waiting for the worker.',
   verifying: 'The worker is checking and compiling it.',
-  open: 'Checked; its functions are in peer review or waiting to merge.',
+  open: 'Not yet closed; each function has its own verification or review state.',
   merging: 'Being merged onto main.',
   merged: 'On main.',
   returned: 'Sent back to its author: see why below.',
@@ -1146,6 +1147,7 @@ const BATCH_STATES = {
 async function loadBatches({ more = false } = {}) {
   const q = new URLSearchParams({ limit: '50' });
   if (batchStates) q.set('state', batchStates);
+  if (batchAttemptStates) q.set('attemptState', batchAttemptStates);
   const author = $('batches-author').value.trim();
   if (author) q.set('author', author);
   if (more && batchRows.length) q.set('before', String(batchRows[batchRows.length - 1].id));
@@ -1180,6 +1182,7 @@ function renderBatches(hasMore) {
 for (const t of document.querySelectorAll('#batches-tabs .tab')) {
   t.addEventListener('click', () => {
     batchStates = t.dataset.states;
+    batchAttemptStates = t.dataset.attemptStates ?? '';
     for (const x of document.querySelectorAll('#batches-tabs .tab')) x.classList.toggle('active', x === t);
     loadBatches().catch((e) => toast(e.message));
   });

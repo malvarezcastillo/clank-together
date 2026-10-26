@@ -554,6 +554,11 @@ export function createApp(ctx) {
       where.push(`b.state IN (${states.map(() => '?').join(',')})`);
       args.push(...states);
     }
+    const attemptStates = (query.get('attemptState') ?? '').split(',').filter(Boolean);
+    if (attemptStates.length) {
+      where.push(`EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN (${attemptStates.map(() => '?').join(',')}))`);
+      args.push(...attemptStates);
+    }
     if (query.get('author')) {
       where.push('u.name = ? COLLATE NOCASE');
       args.push(query.get('author'));

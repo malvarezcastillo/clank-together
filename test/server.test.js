@@ -1907,3 +1907,70 @@ test('the batch list shows every batch, also those sent back before review, filt
   assert.deepEqual((await call('GET', '/api/batches?author=blister&limit=1', null, token)).body.map((b) => b.id), [merged]);
   ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE batch_id = ?`, sentBack);
 });
+
+test('review batch filtering precedes pagination and ignores stale open envelopes', async () => {
+  const token = await activeUser('batchfilter');
+  const user = ctx.accounts.byName('batchfilter');
+  const task = ctx.store.get('SELECT id FROM tasks LIMIT 1').id;
+  const ids = [];
+  const seed = (states) => {
+    const id = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at) VALUES (?, ?, '{}', 'open', ?)`, user.id, ctx.repo.head(), now()).lastInsertRowid);
+    ids.push(id);
+    for (const state of states) ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, created_at) VALUES (?, ?, ?, '{}', ?, ?, ?)`, task, user.id, ctx.repo.head(), state, id, now());
+    return id;
+  };
+  try {
+    const human = seed(['in_review']);
+    const peer = seed(['peer_review', 'needs_cleanup']);
+    const approved = seed(['approved']);
+    seed(['needs_cleanup', 'withdrawn', 'superseded']);
+    const query = '/api/batches?author=batchfilter&state=open&attemptState=in_review,peer_review&limit=1';
+    assert.deepEqual((await call('GET', query, null, token)).body.map((b) => b.id), [peer]);
+    assert.deepEqual((await call('GET', `${query}&before=${peer}`, null, token)).body.map((b) => b.id), [human]);
+    assert.deepEqual((await call('GET', '/api/batches?author=batchfilter&attemptState=approved,merging', null, token)).body.map((b) => b.id), [approved]);
+    assert.equal((await call('GET', '/api/batches?author=batchfilter', null, token)).body.length, 4);
+  } finally {
+    for (const id of ids) {
+      ctx.store.run('DELETE FROM attempts WHERE batch_id = ?', id);
+      ctx.store.run('DELETE FROM batches WHERE id = ?', id);
+    }
+  }
+});
+
+test('the merger settles abandoned open batches without changing attempts, tasks, or live work', async () => {
+  await activeUser('batchsettle');
+  const user = ctx.accounts.byName('batchsettle');
+  const task = ctx.store.get('SELECT * FROM tasks LIMIT 1');
+  const ids = [];
+  const seed = (states, kind = 'code') => {
+    const id = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, kind, created_at) VALUES (?, ?, '{}', 'open', ?, ?)`, user.id, ctx.repo.head(), kind, now()).lastInsertRowid);
+    ids.push(id);
+    for (const state of states) ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, score, result_json, created_at) VALUES (?, ?, ?, '{}', ?, ?, 0.5, ?, ?)`, task.id, user.id, ctx.repo.head(), state, id, JSON.stringify({ feedback: { summary: 'Historical binding failure' } }), now());
+    return id;
+  };
+  try {
+    const abandoned = seed(['needs_cleanup', 'withdrawn', 'superseded']);
+    const rejected = seed(['rejected', 'returned']);
+    const live = ['queued', 'verifying', 'in_review', 'peer_review', 'approved', 'merging'].map((state) => seed(['needs_cleanup', state]));
+    const active = seed(['needs_cleanup']);
+    ctx.merger.active.add(active);
+    const maintenance = seed([], 'maintenance');
+    const empty = seed([]);
+    const before = ctx.store.all('SELECT * FROM attempts WHERE batch_id = ?', abandoned);
+    ctx.merger.settleInactive();
+    for (const id of [abandoned, rejected]) assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'returned');
+    for (const id of [...live, active, maintenance, empty]) assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'open');
+    assert.deepEqual(ctx.store.all('SELECT * FROM attempts WHERE batch_id = ?', abandoned), before);
+    assert.deepEqual(ctx.store.get('SELECT * FROM tasks WHERE id = ?', task.id), task);
+    const eventCount = () => ctx.store.get(`SELECT COUNT(*) n FROM events WHERE type = 'batch_settled' AND json_extract(data, '$.batch') = ?`, abandoned)?.n;
+    assert.equal(eventCount(), 1);
+    ctx.merger.settleInactive();
+    assert.equal(eventCount(), 1, 'reconciliation is idempotent');
+  } finally {
+    for (const id of ids) {
+      ctx.merger.active.delete(id);
+      ctx.store.run('DELETE FROM attempts WHERE batch_id = ?', id);
+      ctx.store.run('DELETE FROM batches WHERE id = ?', id);
+    }
+  }
+});

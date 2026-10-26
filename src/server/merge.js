@@ -4,7 +4,7 @@ import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
-import { returnBatch, batchAttempts, settleBatch } from './batches.js';
+import { returnBatch, batchAttempts, settleBatch, LIVE_STATES } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
 import { addUnitsToCompileCommands } from '../shared/project.js';
 import { RANK, bestResults, BIG_BATCH } from './verify.js';
@@ -173,11 +173,31 @@ export class Merger {
     this.log.info(`${stuck.length} batch(es) returned: a function dropped out and the rest cannot merge without it`);
   }
 
+  // Imports and interrupted state transitions can leave an open batch with no work to merge.
+  // Settle its envelope without changing task states, attempts, reviews or scores.
+  settleInactive() {
+    const ph = LIVE_STATES.map(() => '?').join(',');
+    const batches = this.store.all(
+      `SELECT b.id FROM batches b WHERE b.state = 'open' AND b.kind = 'code'
+          AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN ('needs_cleanup', 'rejected', 'returned'))
+          AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN (${ph}))`,
+      ...LIVE_STATES,
+    ).filter((b) => !this.active.has(b.id));
+    this.store.tx(() => {
+      for (const b of batches) {
+        const reason = 'No attempts remain in verification, review or approval; inspect the individual results and resubmit corrected work.';
+        settleBatch(this.store, b.id, reason);
+        this.store.event('batch_settled', null, { batch: b.id, reason });
+      }
+    });
+  }
+
   /** Starts merges while a lane is free; resolves when the merges it started are done. */
   async pump() {
     if (!this.stopped) {
       this.finishSkips();
       this.returnUnmergeable();
+      this.settleInactive();
     }
     const started = [];
     while (!this.stopped && this.running < MERGE_SLOTS) {
