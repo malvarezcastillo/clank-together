@@ -473,6 +473,18 @@ test('a header batch is verified on its own units and merged with every includer
   }
 });
 
+test('header includers come from the sources too, also for units no merge has compiled', () => {
+  ctx.repo.commitFiles({ 'src/deep.h': 'int deep();\n', 'src/mid.h': '#include "deep.h"\n', 'src/user.cpp': '#include "mid.h"\nint u() { return deep(); }\n', 'src/other.cpp': 'int o() { return 0; }\n' }, 'include chain', 'x <x@y.invalid>');
+  const units = ctx.project.compile?.units;
+  if (units) Object.assign(units, { 'src/user.cpp': 0, 'src/other.cpp': 0 });
+  try {
+    assert.deepEqual(ctx.verifier.includersOf(['src/deep.h']).filter((u) => u.startsWith('src/user') || u.startsWith('src/other')), ['src/user.cpp'], 'a transitive includer, found though no merge recorded it');
+    assert.deepEqual(ctx.verifier.includersOf(['src/deep.h'], { 'src/user.cpp': 'int u() { return 0; }\n' }).filter((u) => u === 'src/user.cpp'), [], 'as the submission changes it');
+  } finally {
+    if (units) for (const u of ['src/user.cpp', 'src/other.cpp']) delete units[u];
+  }
+});
+
 test('agreeing peers accept a function without human review (three ahead)', async () => {
   await activeUser('aaauthor');
   const author = ctx.accounts.byName('aaauthor');

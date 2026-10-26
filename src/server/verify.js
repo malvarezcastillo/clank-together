@@ -11,6 +11,7 @@ import { STATUS, sameOriginal } from '../shared/compare.js';
 import { listSources, isUnit } from '../shared/project.js';
 import { changedNames, unitsMentioning } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
+import { sourceIncluders } from './includers.js';
 import { functionRegions } from './split.js';
 import { className } from './grouping.js';
 import { now } from './db.js';
@@ -117,6 +118,17 @@ export class Verifier {
   }
 
   /**
+   * Units that include any of `headers`: what compiles recorded (unit_deps: the compiler's own
+   * include list), plus what the sources say (includers.js), which also covers units no merge has
+   * compiled yet. As `files` change them.
+   */
+  includersOf(headers, files = {}) {
+    const out = new Set(sourceIncluders(this.repo, this.project, headers, files));
+    for (const h of headers) for (const r of this.store.all('SELECT unit FROM unit_deps WHERE header = ?', h)) out.add(r.unit);
+    return [...out].sort();
+  }
+
+  /**
    * Compiles `files` (already merged onto HEAD) plus every unit they can affect
    * and compares against the current target version.
    */
@@ -135,12 +147,11 @@ export class Verifier {
     const allProjectUnits = () => listSources(this.repo.dir, this.project, { unitsOnly: true });
     if (allUnits) for (const u of allProjectUnits()) units.add(u);
     else if (changedHeaders.length && !onlyUnits) {
-      // Units that include a changed header; all of them until a rebuild has recorded dependencies.
-      // Without dependents, a header-only change compiles one includer per header.
-      const known = this.store.get('SELECT COUNT(*) AS n FROM unit_deps').n > 0;
+      // Units that include a changed header, read from the sources (unit_deps only knows units a
+      // merge compiled). Without dependents, a header-only change compiles one includer per header.
       const headerOnly = !units.size;
       for (const h of changedHeaders) {
-        const deps = known ? this.store.all('SELECT unit FROM unit_deps WHERE header = ? ORDER BY unit', h).map((r) => r.unit) : allProjectUnits();
+        const deps = this.includersOf([h], files);
         if (dependents) for (const u of deps) units.add(u);
         else if (headerOnly && deps.length) units.add(deps[0]);
         // A header expands the same way in every unit that includes it: one of them shows what its
@@ -176,7 +187,7 @@ export class Verifier {
         }
         const names = [...(args.size ? args : classes)];
         for (const h of changedHeaders) {
-          const deps = this.store.all('SELECT unit FROM unit_deps WHERE header = ? ORDER BY unit', h).map((r) => r.unit);
+          const deps = this.includersOf([h], files);
           const hits = names.length ? unitsMentioning(this.repo, deps, names, files) ?? [] : [];
           for (const u of (hits.length ? hits : deps).slice(0, 16)) units.add(u);
         }
@@ -308,7 +319,7 @@ export class Verifier {
     for (const h of Object.keys(files).filter((f) => !isUnit(f))) {
       const before = this.repo.show(head, h);
       if (before === files[h]) continue;
-      const deps = this.store.all('SELECT unit FROM unit_deps WHERE header = ?', h).map((r) => r.unit);
+      const deps = this.includersOf([h], files);
       const narrowed = before === null ? null : unitsMentioning(this.repo, deps, changedNames(before, files[h]), files);
       const pick = narrowed && narrowed.length <= 300 ? narrowed : deps;
       if (pick !== deps) this.log.info(`batch ${batch.id}: ${h} changed; compiling ${pick.length} of its ${deps.length} includers (the ones that mention what changed)`);

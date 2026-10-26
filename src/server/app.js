@@ -341,7 +341,7 @@ export function createApp(ctx) {
     auth(req);
     const body = await readJson(req, 64 * 1024);
     const headers = (Array.isArray(body.headers) ? body.headers : []).slice(0, 200).map(String);
-    return { includers: Object.fromEntries(headers.map((h) => [h, store.all('SELECT unit FROM unit_deps WHERE header = ? ORDER BY unit', h).map((r) => r.unit)])) };
+    return { includers: Object.fromEntries(headers.map((h) => [h, ctx.verifier.includersOf([h])])) };
   });
 
   router.on('POST', '/api/me/password', async ({ req }) => {
