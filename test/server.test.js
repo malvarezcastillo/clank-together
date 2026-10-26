@@ -1803,3 +1803,47 @@ test('an admin sets a reviewer weight: it counts at once, also on verdicts alrea
   ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE id IN (?, ?, ?)`, waiting, alone, objected);
   ctx.store.run('UPDATE tasks SET state = ? WHERE id = ?', saved.state, saved.id);
 });
+
+test('global rules reject undefined data in code and maintenance batches, including known symbol names', async () => {
+  const author = await activeUser('globalguard');
+  const maintainer = await activeUser('globalmaint', 'maintainer');
+  const unit = 'src/globalguard.cpp';
+  const oldRule = ctx.project.globalRules;
+  ctx.project.globalRules = true;
+  const v = ctx.store.currentVersion();
+  const fid = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402A80, size: 8, unit }).symbol.id;
+  ctx.store.ensureSymbol({ kind: 'global', versionId: v.id, addr: 0x409200, name: 'g_guardMissing' });
+  ctx.tasks.generate();
+  const claim = await call('POST', '/api/regions/claim', { kind: 'unit', key: unit }, author);
+  assert.equal(claim.status, 200, JSON.stringify(claim.body));
+  const taskId = claim.body.functions.find((f) => f.symbol === fid).taskId;
+  const originalHead = ctx.repo.head();
+  const payload = { [unit]: `// FUNCTION: ${fid}\nint guardFunction() { return 1; }\n`, 'include/globalguard.h': 'extern int g_guardMissing;\n' };
+  const settle = (id, token) => waitFor(async () => {
+    const r = await call('GET', `/api/batches/${id}`, null, token);
+    return !['queued', 'verifying'].includes(r.body.state) && r.body;
+  });
+  try {
+    const submitted = await call('POST', '/api/batches', { taskIds: [taskId], baseCommit: originalHead, files: payload }, author);
+    assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
+    assert.equal((await settle(submitted.body.batchId, author)).state, 'returned');
+    const feedback = JSON.parse(ctx.store.get('SELECT result_json FROM attempts WHERE id = ?', submitted.body.attempts[0].attemptId).result_json).feedback;
+    assert.deepEqual(feedback.globalErrors.map((e) => [e.name, e.rule]), [['g_guardMissing', 'undefined-extern']]);
+    const maintenance = await call('POST', '/api/maintenance', { baseCommit: originalHead, files: { 'include/globalguard.h': payload['include/globalguard.h'] } }, maintainer);
+    assert.equal(maintenance.status, 200);
+    const rejected = await settle(maintenance.body.batchId, maintainer);
+    assert.equal(rejected.state, 'returned');
+    assert.deepEqual(rejected.result.globalErrors.map((e) => e.rule), ['undefined-extern']);
+    assert.equal(ctx.repo.head(), originalHead);
+    assert.equal(ctx.repo.show('HEAD', 'include/globalguard.h'), null);
+
+    ctx.repo.commitFiles({ 'src/guardOwner.cpp': '// GLOBAL: gl_00001\nint g_guardMissing;\n' }, 'seed global owner', 'x <x@y.invalid>');
+    assert.deepEqual(ctx.verifier.globalsGate({ 'include/globalguard.h': payload['include/globalguard.h'] }, ctx.repo.head()), []);
+    ctx.repo.commitFiles({ 'include/globalguard.h': payload['include/globalguard.h'] }, 'seed declaration', 'x <x@y.invalid>');
+    assert.deepEqual(ctx.verifier.globalsGate({ 'src/guardOwner.cpp': '' }, ctx.repo.head()).map((e) => e.rule), ['undefined-extern']);
+  } finally {
+    ctx.project.globalRules = oldRule;
+    ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, taskId);
+    ctx.regions.release(ctx.accounts.byName('globalguard'), { kind: 'unit', key: unit });
+  }
+});

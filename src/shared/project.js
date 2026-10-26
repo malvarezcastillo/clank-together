@@ -15,6 +15,7 @@ export const DEFAULT_PROJECT = {
   fileOverrides: [],
   allowedPragmas: undefined,
   lintLimits: {},
+  globalRules: false, // opt-in source storage/provenance checks; no symbol-database definition exemption
   // reviewAt: 'exact' requires every relocation target to be a known symbol;
   // 'match_unresolved' also accepts byte matches that reference not-yet-known data
   // (those symbols are created automatically on merge).

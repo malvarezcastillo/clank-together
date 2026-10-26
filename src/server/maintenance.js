@@ -67,12 +67,12 @@ export class Maintenance {
     if (dropped.length) return back(`removes the annotation of ${dropped.join(', ')}: a maintenance batch keeps every function annotated`, { droppedAnnotations: dropped });
     const undefinedNames = this.verifier.undefinedGate(files, batch.base_commit);
     if (undefinedNames.length) return back(`declares functions that are defined nowhere: ${undefinedNames.join(', ')}`, { undefinedFunctions: undefinedNames });
-    const gateErrors = this.verifier.globalsGate?.(files, batch.base_commit) ?? [];
-    if (gateErrors.length) return back('global variable rules (see globalErrors)', { globalErrors: gateErrors });
 
     const startHead = this.repo.head();
     const merged = this.repo.mergeOntoHead(batch.base_commit, files);
     if (merged.conflicts.length) return back('conflicts with newer work on main; sync, merge and resubmit', { conflicts: merged.conflicts });
+    const globalErrors = this.verifier.globalsGate(merged.files, startHead);
+    if (globalErrors.length) return back('global variable rules (see globalErrors)', { globalErrors });
 
     // Every unit the change can affect: the submitted ones, and every includer of a changed header.
     const { check, rec, changedHeaders } = await this.verifier.check(merged.files, `maintenance-${batch.id}`, { dependents: true });

@@ -12,6 +12,7 @@ import { listSources, isUnit } from '../shared/project.js';
 import { changedNames, unitsMentioning } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
 import { sourceIncluders } from './includers.js';
+import { globalViolations } from './globals.js';
 import { functionRegions } from './split.js';
 import { className } from './grouping.js';
 import { now } from './db.js';
@@ -280,6 +281,21 @@ export class Verifier {
       }
     };
     return undefinedDeclarations(files, { before: (f) => this.repo.show(baseCommit, f), existsElsewhere, known });
+  }
+
+  /** Definitions come from the effective source tree, never from symbol metadata or pending work. */
+  globalsGate(files, baseCommit) {
+    if (this.project.globalRules !== true) return [];
+    const head = this.repo.head();
+    if (this.globalSourceHead !== head) {
+      const paths = this.repo.git(['ls-tree', '-r', '--name-only', head]).trim().split('\n');
+      const roots = [...this.project.sourceDirs, ...this.project.includeDirs];
+      this.globalSources = Object.fromEntries(paths
+        .filter((f) => /\.(c|cc|cpp|cxx|h|hpp|inl|inc)$/i.test(f) && roots.some((r) => f.startsWith(`${r.replace(/\/$/, '')}/`)))
+        .map((f) => [f, fs.readFileSync(path.join(this.repo.dir, f), 'utf8')]));
+      this.globalSourceHead = head;
+    }
+    return globalViolations(files, { before: (f) => this.repo.show(baseCommit, f), repository: this.globalSources });
   }
 
   // What a merge needs from the verification's check (without listings and byte diffs).
@@ -551,6 +567,8 @@ export class Verifier {
     }
     const merged = this.repo.mergeOntoHead(batch.base_commit, submitted);
     if (merged.conflicts.length) return finishAll('needs_cleanup', { summary: 'your change conflicts with newer work on main; sync, merge and resubmit', conflicts: merged.conflicts });
+    const globalErrors = this.globalsGate(merged.files, this.repo.head());
+    if (globalErrors.length) return finishAll('needs_cleanup', { summary: 'global variable rules (see globalErrors)', globalErrors });
 
     // Stages 1-3: one compile for the whole batch, then every function on its own.
     // Verify fast: the submitted units (enough to judge and route every submitted function). The

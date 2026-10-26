@@ -303,6 +303,8 @@ export class Merger {
     const startHead = this.repo.head();
     const merged = this.repo.mergeOntoHead(batch.base_commit, files);
     if (merged.conflicts.length) return bounce('conflicts with newer work on main', { conflicts: merged.conflicts });
+    const globalErrors = this.verifier.globalsGate(merged.files, startHead);
+    if (globalErrors.length) return bounce('global variable rules (see globalErrors)', { globalErrors });
 
     // Re-verify on top of the current main: other merges may have landed since verification.
     // The code already passed the lint; units unchanged since verification keep its compile.

@@ -111,3 +111,48 @@ agents, then approved by a human with one click per batch.
 ## Tests
 
 `npm test` uses synthetic PE/COFF files, so it doesn't need a compiler.
+
+## Global storage checks
+
+Set `"globalRules": true` in the target repository's `decomp.json` to enable the
+source-level global gate. It is opt-in; deploying this server does not enable it
+for other projects. Restart web and worker after changing project configuration.
+
+The verifier applies the payload over current main before checking it, and the
+merger checks again before committing. Both ordinary and maintenance batches use
+the same rules:
+
+- An external data declaration needs an actual external definition in main plus
+  the submitted files. Another extern, a local/static namesake, a different
+  namespace, a pending batch or a symbol-database record does not supply storage.
+- Static-storage definitions need a stable data annotation. This includes
+  function pointers, multiline tables, out-of-class static members and local
+  statics. Scalar constant expressions may be folded; arrays and mutable pointers
+  are not exempt merely because their element or pointee type is const.
+- Data annotations belong on definitions. Source units include their owner's
+  header instead of adding extern-variable declarations. DLL-import declarations
+  are distinguished from missing project definitions.
+- Existing violations are grandfathered for unrelated edits. New/changed
+  declarations and removed annotations are checked, as is deletion of a
+  definition still required by an existing extern.
+
+The scanner handles declaration scopes and balanced initializers; it is not a
+C++ type checker or a substitute for a link. Compilation still validates types
+and conditional configurations. These checks establish source ownership, not the
+correct binary address, object extent, initializer values or constructor order.
+Those require original-binary evidence and review.
+
+### Structural maintenance
+
+Maintainers can use `td maintenance submit --files a.cpp,b.h --notes "reason"`
+for structural changes without function tasks. The server runs the submission
+gates, compiles affected units and compares effective code against a fresh main
+build. Behavior-changing function work must use the normal task/review path.
+`td maintenance symbol <id> --size N --reason "evidence"` corrects metadata;
+`--retire` is allowed only after main no longer annotates that global ID.
+
+Neither an unchanged-code fingerprint nor a successful unit compile proves that
+new global storage reproduces the original initializer/destructor behavior.
+Maintenance authors must preserve those semantics; an incomplete object layout
+must not be published as a recovered full size.
+
