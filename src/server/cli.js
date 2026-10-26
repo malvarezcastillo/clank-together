@@ -48,6 +48,8 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   ghidra build | refresh                 the server's Ghidra project (download, pseudocode); refresh also runs after merges
   rebuild                                compile all of main and refresh match status
   tasks generate                         create tasks for functions that have none
+  batch accept-regressions <id> <admin> [comment]
+                                         merge a batch sent back only for lower matching scores
   toolchain pack [--image I]             package the compiler from the compile image for td toolchain
                                          install (downloads: approved accounts only)
 `;
@@ -342,6 +344,14 @@ async function main() {
   if (cmd === 'tasks' && sub === 'generate') {
     const ctx = openServer(dataDir);
     console.log(`created ${ctx.tasks.generate()} tasks`);
+    return;
+  }
+
+  if (cmd === 'batch' && sub === 'accept-regressions') {
+    // The running worker picks the reopened batch up on its next round.
+    const ctx = openServer(dataDir);
+    const [id, admin, ...comment] = rest;
+    console.log(ctx.merger.acceptRegressions(ctx.accounts.requireUser(admin), Number(id), comment.join(' ') || null));
     return;
   }
 

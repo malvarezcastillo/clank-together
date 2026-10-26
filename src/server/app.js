@@ -1000,6 +1000,15 @@ export function createApp(ctx) {
     return r;
   });
 
+  // An admin merges a batch that came back only for lowering matching scores (merge.js).
+  router.on('POST', '/api/admin/batches/:id/accept-regressions', async ({ req, params }) => {
+    const user = auth(req, { role: 'admin', session: true });
+    const body = await readJson(req, 16 * 1024);
+    const r = merger.acceptRegressions(user, intParam(params.id), body.comment ? String(body.comment) : null);
+    if (runsWorker) setImmediate(() => merger.pump().catch(() => {}));
+    return r;
+  });
+
   // --- maintainers and admins (browser session only)
 
   router.on('POST', '/api/admin/tasks/:id', async ({ req, params }) => {

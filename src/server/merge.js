@@ -103,6 +103,35 @@ export class Merger {
   }
 
   /**
+   * An admin's decision that a batch sent back only for lowering matching scores merges anyway:
+   * the project prefers that source (e.g. no calling convention the original code did not need)
+   * over closer bytes. Every function of the batch is accepted as it is, without peer review, and
+   * the merge records the lower scores.
+   */
+  acceptRegressions(admin, batchId, comment) {
+    if (!hasRole(admin, 'admin')) throw new HttpError(403, 'only admins can accept lower matching scores');
+    return this.store.tx(() => {
+      const batch = this.store.get('SELECT * FROM batches WHERE id = ?', batchId);
+      if (!batch) throw new HttpError(404, 'no such batch');
+      if (batch.state !== 'returned') throw new HttpError(409, `batch is ${batch.state}`);
+      const attempts = batchAttempts(this.store, batchId);
+      const blocking = attempts.filter((a) => {
+        const fb = a.result_json ? JSON.parse(a.result_json).feedback ?? {} : {};
+        return !['needs_cleanup', 'returned'].includes(a.state) || fb.compileErrors?.length || fb.annotationErrors?.length || fb.summary === 'compilation failed';
+      });
+      if (!attempts.length || blocking.length) throw new HttpError(409, `only a batch that compiled and came back for its scores can be accepted (${blocking.map((a) => a.symbol_id).join(', ') || 'empty'})`);
+      for (const a of attempts) {
+        this.store.run(`UPDATE attempts SET state = 'approved', regressions_accepted = 1, peer_skipped = 1 WHERE id = ?`, a.id);
+        this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ? AND state != 'done'`, now(), a.task_id);
+        this.store.run('INSERT INTO reviews (attempt_id, reviewer_id, action, comment, created_at) VALUES (?, ?, ?, ?, ?)', a.id, admin.id, 'approve', comment?.slice(0, 4000) ?? null, now());
+      }
+      this.store.run(`UPDATE batches SET state = 'open', result_json = json_remove(COALESCE(result_json, '{}'), '$.returned', '$.mergeFailure') WHERE id = ?`, batchId);
+      this.store.event('regressions_accepted', admin.id, { batch: batchId, attempts: attempts.map((a) => a.id) });
+      return { batchId, accepted: attempts.map((a) => a.id) };
+    });
+  }
+
+  /**
    * Merges the oldest open batch whose attempts are all approved. Failing that, splits off the
    * approved part of a batch whose other functions still wait for review, so finished work
    * doesn't wait for the slowest function of its batch.
@@ -333,8 +362,9 @@ export class Merger {
     const outside = this.verifier.changedOutside(check, merged.files, targets, batch.user_id);
     const confirmedIds = new Set();
     const results = [];
+    const allowRegressions = attempts.some((a) => a.regressions_accepted);
     for (const a of attempts) {
-      const ev = this.verifier.evaluate({ check, rec, targetId: a.symbol_id, files: merged.files, changedHeaders, outside });
+      const ev = this.verifier.evaluate({ check, rec, targetId: a.symbol_id, files: merged.files, changedHeaders, outside, allowRegressions });
       // Byte-identical, or confirmed by peers and approved by a human; anything worse bounces.
       const identical = ev.state === 'approved' || ev.state === 'in_review';
       const peerConfirmed = ev.state === 'peer_review' && this.peers?.confirmed(a.id);

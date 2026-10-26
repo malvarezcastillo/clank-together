@@ -313,6 +313,8 @@ export class Store {
     this.addColumn('peer_reviews', 'weight', 'INTEGER NOT NULL DEFAULT 1');
     this.addColumn('peer_reviews', 'token_id', 'INTEGER');
     this.addColumn('attempts', 'peer_skipped', 'INTEGER NOT NULL DEFAULT 0');
+    // A maintainer accepted that this attempt lowers matching scores (cleaner source over closer bytes).
+    this.addColumn('attempts', 'regressions_accepted', 'INTEGER NOT NULL DEFAULT 0');
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_user_time ON attempts(user_id, created_at)');
     // "No decompile" claims: an attempt that says a function needs no source (peer reviewed like code).
     this.addColumn('attempts', 'kind', "TEXT NOT NULL DEFAULT 'code'"); // code | skip

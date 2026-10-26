@@ -344,6 +344,43 @@ test('the last admin cannot be revoked or demoted', async () => {
   assert.equal((await request('POST', '/api/admin/users/root/role', { role: 'contributor' }, { cookie: admin })).status, 409);
 });
 
+test('an admin accepts a batch sent back only for lower scores; it merges past the regression check', async () => {
+  ctx.store.run(`INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed) VALUES ('fn_00002', 'src/a.cpp', 'mismatch', 0.8, 'x', 0, 1)`);
+  const lower = { annotationErrors: [], units: [{ file: 'src/a.cpp', compiled: true, lintErrors: [], functions: [{ id: 'fn_00002', status: STATUS.MISMATCH, score: 0.7, relocations: [] }], unannotated: [] }] };
+  const rec = { conflicts: [], unknown: [], learned: [] };
+  const ev = (allowRegressions) => ctx.verifier.evaluate({ check: lower, rec, targetId: 'fn_00002', files: { 'src/a.cpp': '' }, changedHeaders: [], allowRegressions });
+  assert.equal(ev(false).state, 'needs_cleanup', 'a lower score of a confirmed function is a regression');
+  assert.equal(ev(true).state, 'peer_review', 'accepted: judged like any other mismatch');
+  ctx.store.run(`DELETE FROM func_status`);
+
+  await ctx.accounts.createUser('rgmaint', 'maintainer', PASSWORD);
+  await activeUser('rgauthor');
+  const author = ctx.accounts.byName('rgauthor');
+  const v = ctx.store.currentVersion();
+  const sym = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x401a00, size: 8, unit: 'src/rg.cpp' }).symbol.id;
+  ctx.tasks.generate();
+  const task = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id;
+  ctx.store.run(`UPDATE tasks SET state = 'needs_cleanup' WHERE id = ?`, task);
+  const batch = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at) VALUES (?, ?, '{}', 'returned', ?)`, author.id, ctx.repo.head(), now()).lastInsertRowid);
+  const feedback = (f) => JSON.stringify({ feedback: f });
+  const attempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, result_json, created_at) VALUES (?, ?, ?, '{}', 'needs_cleanup', ?, ?, ?)`, task, author.id, ctx.repo.head(), batch, feedback({ summary: 'your change breaks 1 function(s) that matched before', compileErrors: [], annotationErrors: [] }), now()).lastInsertRowid);
+
+  assert.throws(() => ctx.merger.acceptRegressions(ctx.accounts.byName('rgmaint'), batch, null), /only admins/);
+  ctx.store.run(`UPDATE attempts SET result_json = ? WHERE id = ?`, feedback({ summary: 'compilation failed', compileErrors: [{ file: 'src/rg.cpp' }] }), attempt);
+  assert.throws(() => ctx.merger.acceptRegressions(ctx.accounts.byName('root'), batch, null), /compiled and came back for its scores/, 'code that does not build is never forced in');
+  ctx.store.run(`UPDATE attempts SET result_json = ? WHERE id = ?`, feedback({ summary: 'your change breaks 1 function(s) that matched before', compileErrors: [], annotationErrors: [] }), attempt);
+
+  assert.deepEqual(ctx.merger.acceptRegressions(ctx.accounts.byName('root'), batch, 'prefer no __stdcall').accepted, [attempt]);
+  const a = ctx.store.get('SELECT * FROM attempts WHERE id = ?', attempt);
+  assert.deepEqual([a.state, a.regressions_accepted, a.peer_skipped], ['approved', 1, 1]);
+  assert.ok(ctx.peers.confirmed(attempt), 'the merge re-check accepts it without peer verdicts');
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', batch).state, 'open', 'back in the merge queue');
+  assert.throws(() => ctx.merger.acceptRegressions(ctx.accounts.byName('root'), batch, null), /batch is open/);
+  ctx.store.run(`UPDATE batches SET state = 'superseded' WHERE id = ?`, batch);
+  ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE id = ?`, attempt);
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, task);
+});
+
 test('changing the password logs out browser sessions', async () => {
   const s = await login('erin');
   const r = await request('POST', '/api/me/password', { current: PASSWORD, password: 'a brand new password' }, { cookie: s });

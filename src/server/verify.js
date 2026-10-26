@@ -663,7 +663,7 @@ export class Verifier {
   }
 
   /** Routes a check result: rejected, needs_cleanup or in_review. */
-  evaluate({ check, rec, targetId, files, changedHeaders, outside = [] }) {
+  evaluate({ check, rec, targetId, files, changedHeaders, outside = [], allowRegressions = false }) {
     const fileSet = new Set(Object.keys(files));
     const policy = this.project.matchPolicy;
     const feedback = { summary: '', warnings: [] };
@@ -687,7 +687,7 @@ export class Verifier {
     for (const w of annWarnings) feedback.warnings.push(`${w.file}:${w.line} ${w.message}`);
     const failed = check.units.filter((u) => !u.compiled);
     const target = check.units.flatMap((u) => u.functions.map((f) => ({ ...f, file: u.file }))).find((f) => f.id === targetId);
-    const regressions = this.regressions(check, files);
+    const regressions = allowRegressions ? [] : this.regressions(check, files);
 
     feedback.target = target ?? null;
     feedback.annotationErrors = annErrors;
