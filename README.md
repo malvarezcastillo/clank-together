@@ -68,6 +68,8 @@ attempt gets first pick on the follow-up for 6 hours.
 
 ## Maintainer bootstrap
 
+Run `npm ci` in the coordinator checkout before starting the server or running tests.
+
 ```sh
 # on the server (as the service user):  td-server <cmd> --data /var/lib/togetherdecomp
 td-server version add 1.0 game.exe              # register the target
@@ -130,6 +132,13 @@ Header-includer discovery reads committed source blobs in one `git cat-file
 Submitted overrides apply only to the current query. Reverse include traversal
 handles cycles without losing transitive dependents; uncommitted working-tree
 text is never used as the baseline.
+
+The original-string gate uses each source unit's configured MSVC execution charset
+(`/execution-charset:.949`, for example) when checking readable Unicode literals.
+Numeric byte escapes remain literal bytes, and wide strings remain UTF-16LE.
+Unrepresentable characters are rejected rather than accepted as replacement `?`
+bytes. Configure source UTF-8 and the target execution code page separately; this
+does not permit new strings absent from the original executable.
 
 ## Building td
 

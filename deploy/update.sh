@@ -32,7 +32,8 @@ OLD=$(readlink -f "$LINK" 2>/dev/null || true)
 
 echo "== preparing $REL"
 mkdir -p "$REL"
-cp -a "$SRC/src" "$SRC/template" "$SRC/ghidra_scripts" "$SRC/toolchain" "$SRC/deploy" "$SRC/package.json" "$REL/"
+cp -a "$SRC/src" "$SRC/template" "$SRC/ghidra_scripts" "$SRC/toolchain" "$SRC/deploy" "$SRC/package.json" "$SRC/package-lock.json" "$REL/"
+(cd "$REL" && PATH="$(dirname "$NODE"):$PATH" "$(dirname "$NODE")/npm" ci --omit=dev --ignore-scripts)
 chown -R root:root "$REL"
 chmod -R go-w,a+rX "$REL"
 for f in $(find "$REL/src" -name '*.js'); do

@@ -4,11 +4,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { lintSubmission } from '../shared/lint.js';
-import { freeTextErrorsAcross } from '../shared/freetext.js';
+import { freeTextErrorsAcross, executionCharset } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal } from '../shared/compare.js';
-import { listSources, isUnit } from '../shared/project.js';
+import { listSources, isUnit, unitSettings } from '../shared/project.js';
 import { changedNames, unitsMentioning } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
 import { sourceIncluders } from './includers.js';
@@ -232,8 +232,9 @@ export class Verifier {
   freeTextGate(files, baseCommit) {
     const exe = this.getPe().buf;
     const inOriginal = (bytes) => exe.indexOf(bytes) !== -1;
-    const pooled = Object.keys(files).map((f) => this.repo.show(baseCommit, f)).filter((t) => t !== null).join('\n');
-    return freeTextErrorsAcross(files, pooled, inOriginal);
+    const baseFiles = Object.fromEntries(this.repo.showMany(baseCommit, Object.keys(files)));
+    const charsetForFile = (file) => executionCharset(unitSettings(this.project, file).cflags);
+    return freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile });
   }
 
   /**

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scanText, freeTextErrors, freeTextErrorsAcross, allowedComment } from '../src/shared/freetext.js';
+import { scanText, freeTextErrors, freeTextErrorsAcross, allowedComment, executionCharset } from '../src/shared/freetext.js';
 
 // Stands in for the original executable's bytes.
 const original = Buffer.concat([Buffer.from('Interface\\GlueXML\0', 'latin1'), Buffer.from('hello world\0%d\0', 'latin1'), Buffer.from('Wide\0', 'utf16le')]);
@@ -62,4 +62,27 @@ test('a submission may move a comment from one of its files to another, once', (
 test('pieces of a concatenated literal may each come from the original', () => {
   assert.deepEqual(freeTextErrors('const char* s = "%d" "hello world";\n', null, inOriginal), []);
   assert.equal(freeTextErrors('const char* s = "%d" "made up";\n', null, inOriginal).length, 1);
+});
+
+test('execution charset matches Hangul and universal escapes while preserving numeric byte escapes', () => {
+  const original = Buffer.from('c0afc0fa005769646500', 'hex');
+  const found = (bytes) => original.includes(bytes);
+  assert.equal(executionCharset(['/source-charset:utf-8', '/execution-charset:.949']), 'cp949');
+  assert.equal(executionCharset(['/execution-charset:.949', '/utf-8']), 'utf8');
+  assert.deepEqual(freeTextErrors('const char* s = "유저";', null, found, 'cp949'), []);
+  assert.deepEqual(freeTextErrors(String.raw`const char* s = "\uC720\uC800";`, null, found, 'cp949'), []);
+  assert.deepEqual(freeTextErrors(String.raw`const char* s = "\xC0\xAF\xC0\xFA";`, null, found, 'cp949'), []);
+  assert.deepEqual(freeTextErrors(String.raw`const char* s = "유\xC0\xFA";`, null, found, 'cp949'), []);
+  assert.equal(freeTextErrors('const char* s = "유저";', null, found, 'utf8').length, 1);
+  assert.equal(freeTextErrors('const char* s = "새 문자열";', null, found, 'cp949').length, 1);
+  assert.equal(freeTextErrors('const char* s = "😀";', null, (b) => b.equals(Buffer.from('?')), 'cp949').length, 1, 'unrepresentable Unicode cannot pass through replacement bytes');
+  assert.deepEqual(scanText('const wchar_t* s = L"유저";', 'cp949').strings[0].pieces, [Buffer.from('유저', 'utf16le')]);
+});
+
+test('mixed execution charsets preserve pooled original byte identity across moves', () => {
+  const baseFiles = { 'a.cpp': String.raw`const char* s = "\xC0\xAF\xC0\xFA";`, 'b.cpp': null };
+  const options = { baseFiles, charsetForFile: (file) => file === 'a.cpp' ? 'utf8' : 'cp949' };
+  assert.deepEqual(freeTextErrorsAcross({ 'a.cpp': '', 'b.cpp': 'const char* s = "유저";' }, '', () => false, options), []);
+  const twice = freeTextErrorsAcross({ 'a.cpp': baseFiles['a.cpp'], 'b.cpp': 'const char* s = "유저";' }, '', () => false, options);
+  assert.equal(twice.length, 1, 'one original occurrence does not exempt an extra copy');
 });

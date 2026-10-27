@@ -4,6 +4,8 @@
 // executable (text the original authors wrote). Identifier names are the only free text left.
 // Comments and strings already on main are left alone: the rules apply to what a submission adds.
 
+import iconv from 'iconv-lite';
+
 const ANNOTATION_RE = /^\/\/\s*(FUNCTION|STUB|GLOBAL|VTABLE|STRING|SIZE|LIBRARY|OFFSET)\s*:\s*[\w.]+(\s+<[\w\s:<>,*&]{1,120}>)?\s*$/;
 const OFFSET_RE = /^\/\*\s*(?:0x)?(?:[0-9A-Fa-f]{1,8}|-{2,8})\s*\*\/$/;
 const BLANK_RE = /^(?:\/\/[\s\-=*\/]*|\/\*[\s\-=*]*\*\/)$/;
@@ -23,7 +25,7 @@ export function allowedComment(text) {
  * Comments and string literals of C++ source. Adjacent literals ("a" "b") form one string.
  * @returns {{comments: {text: string, line: number}[], strings: {pieces: Buffer[], text: string, wide: boolean, line: number, include: string|null, linkage: boolean}[]}}
  */
-export function scanText(src) {
+export function scanText(src, executionCharset = null) {
   const comments = [];
   const literals = [];
   let line = 1;
@@ -59,14 +61,14 @@ export function scanText(src) {
     }
     const wide = c === 'L' && (n === '"' || n === "'") && !/\w/.test(src[i - 1] ?? '');
     if (c === '"' || (wide && n === '"')) {
-      const { value, end } = readQuoted(src, wide ? i + 1 : i);
+      const { value, segments, end } = readQuoted(src, wide ? i + 1 : i);
       const prev = literals[literals.length - 1];
       if (prev && prev.end === lastCodeEnd(src, i) && prev.include === null) {
-        prev.pieces.push(value);
+        prev.pieces.push({ value, segments });
         prev.wide ||= wide;
         prev.end = end;
       } else {
-        literals.push({ pieces: [value], wide, line, include: INCLUDE_RE.test(src.slice(lineBegin, i)) ? value : null, linkage: lastCode === 'extern', end });
+        literals.push({ pieces: [{ value, segments }], wide, line, include: INCLUDE_RE.test(src.slice(lineBegin, i)) ? value : null, linkage: lastCode === 'extern', end });
       }
       i = end;
       continue;
@@ -87,8 +89,8 @@ export function scanText(src) {
     i++;
   }
   const strings = literals.map((l) => ({
-    pieces: l.pieces.map((p) => encode(p, l.wide)),
-    text: l.pieces.join(''),
+    pieces: l.pieces.map((p) => encode(p, l.wide, executionCharset)),
+    text: l.pieces.map((p) => p.value).join(''),
     wide: l.wide,
     line: l.line,
     include: l.include,
@@ -110,46 +112,76 @@ const SIMPLE_ESCAPES = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', f: '\f',
 function readQuoted(src, at) {
   const q = src[at];
   let out = '';
+  const segments = [];
+  const append = (text, raw = false) => {
+    out += text;
+    const previous = segments[segments.length - 1];
+    if (previous && previous.raw === raw) previous.text += text;
+    else segments.push({ text, raw });
+  };
   let j = at + 1;
   while (j < src.length && src[j] !== q && src[j] !== '\n') {
     if (src[j] !== '\\') {
-      out += src[j++];
+      append(src[j++]);
       continue;
     }
     const e = src[j + 1];
     if (e in SIMPLE_ESCAPES) {
-      out += SIMPLE_ESCAPES[e];
+      append(SIMPLE_ESCAPES[e]);
       j += 2;
     } else if (e === 'x') {
       const m = /^[0-9A-Fa-f]+/.exec(src.slice(j + 2, j + 10));
-      out += String.fromCharCode(m ? parseInt(m[0], 16) & 0xffff : 0);
+      append(String.fromCharCode(m ? parseInt(m[0], 16) & 0xffff : 0), true);
       j += 2 + (m ? m[0].length : 0);
     } else if (e === 'u' || e === 'U') {
       const len = e === 'u' ? 4 : 8;
       const cp = parseInt(src.slice(j + 2, j + 2 + len), 16);
-      out += cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+      append(cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '');
       j += 2 + len;
     } else if (/[0-7]/.test(e ?? '')) {
       const m = /^[0-7]{1,3}/.exec(src.slice(j + 1));
-      out += String.fromCharCode(parseInt(m[0], 8));
+      append(String.fromCharCode(parseInt(m[0], 8)), true);
       j += 1 + m[0].length;
     } else if (e === '\n') {
       j += 2; // line continuation
     } else if (e === '\r' && src[j + 2] === '\n') {
       j += 3;
     } else {
-      out += e ?? '';
+      append(e ?? '');
       j += 2;
     }
   }
-  return { value: out, end: j + 1 };
+  return { value: out, segments, end: j + 1 };
 }
 
 // The bytes the compiler emits for a literal (without the terminator).
-function encode(s, wide) {
-  if (wide) return Buffer.from(s, 'utf16le');
-  // Narrow literals are in the ANSI code page; characters beyond Latin-1 keep their UTF-8 bytes.
-  return [...s].every((ch) => ch.codePointAt(0) <= 0xff) ? Buffer.from(s, 'latin1') : Buffer.from(s, 'utf8');
+function encode(piece, wide, executionCharset) {
+  if (wide) return Buffer.from(piece.value, 'utf16le');
+  if (!executionCharset) {
+    return [...piece.value].every((ch) => ch.codePointAt(0) <= 0xff) ? Buffer.from(piece.value, 'latin1') : Buffer.from(piece.value, 'utf8');
+  }
+  const parts = [];
+  for (const segment of piece.segments) {
+    if (segment.raw) {
+      parts.push(Buffer.from(segment.text, 'latin1'));
+      continue;
+    }
+    const bytes = iconv.encode(segment.text, executionCharset);
+    if (iconv.decode(bytes, executionCharset) !== segment.text) return null;
+    parts.push(bytes);
+  }
+  return Buffer.concat(parts);
+}
+
+export function executionCharset(cflags) {
+  let charset = null;
+  for (const flag of cflags ?? []) {
+    if (/^[/-]utf-8$/i.test(flag)) charset = 'utf8';
+    const match = /^[/-]execution-charset:(.+)$/i.exec(flag);
+    if (match) charset = match[1].replace(/^\.(\d+)$/, 'cp$1');
+  }
+  if (charset && !iconv.encodingExists(charset)) throw new Error(`unsupported execution character set: ${charset}`);
+  return charset;
 }
 
 /**
@@ -159,8 +191,8 @@ function encode(s, wide) {
  * @param {(bytes: Buffer) => boolean} inOriginal  whether the bytes occur in the original executable
  * @returns {{line: number, message: string}[]}  the messages never repeat the text itself
  */
-export function freeTextErrors(text, baseText, inOriginal) {
-  return checkText(scanText(text), baseText === null ? { comments: [], strings: [] } : scanText(baseText), inOriginal);
+export function freeTextErrors(text, baseText, inOriginal, charset = null) {
+  return checkText(scanText(text, charset), baseText === null ? { comments: [], strings: [] } : scanText(baseText, charset), inOriginal);
 }
 
 /**
@@ -168,13 +200,13 @@ export function freeTextErrors(text, baseText, inOriginal) {
  * comments and strings may move from one submitted file to another, each base occurrence once.
  * @returns {{file: string, line: number, message: string}[]}
  */
-export function freeTextErrorsAcross(files, pooledBase, inOriginal) {
-  const base = scanText(pooledBase);
-  const pool = { comments: counts(base.comments.map((c) => c.text.trim())), strings: counts(base.strings.map(stringKey)) };
+export function freeTextErrorsAcross(files, pooledBase, inOriginal, { charsetForFile = () => null, baseFiles = null } = {}) {
+  const bases = baseFiles ? Object.entries(baseFiles).filter(([, text]) => text !== null).map(([file, text]) => scanText(text, charsetForFile(file))) : [scanText(pooledBase)];
+  const pool = { comments: counts(bases.flatMap((base) => base.comments.map((c) => c.text.trim()))), strings: counts(bases.flatMap((base) => base.strings.map(stringKey))) };
   const errors = [];
   for (const [file, text] of Object.entries(files)) {
     if (typeof text !== 'string') continue;
-    for (const e of checkText(scanText(text), pool, inOriginal)) errors.push({ file, ...e });
+    for (const e of checkText(scanText(text, charsetForFile(file)), pool, inOriginal)) errors.push({ file, ...e });
   }
   return errors;
 }
@@ -190,6 +222,10 @@ function checkText(now, base, inOriginal) {
 
   const baseStrings = base.strings instanceof Map ? base.strings : counts(base.strings.map(stringKey));
   for (const s of now.strings) {
+    if (s.pieces.some((piece) => piece === null)) {
+      errors.push({ line: s.line, message: 'this string literal cannot be represented in the configured execution character set' });
+      continue;
+    }
     if (take(baseStrings, stringKey(s))) continue;
     if (s.include !== null) {
       if (!INCLUDE_PATH_RE.test(s.include) || s.include.startsWith('/')) {
@@ -205,7 +241,7 @@ function checkText(now, base, inOriginal) {
   return errors;
 }
 
-const stringKey = (s) => `${s.wide ? 'L' : ''}${s.include !== null ? '#' : ''}${Buffer.concat(s.pieces).toString('hex')}`;
+const stringKey = (s) => `${s.wide ? 'L' : ''}${s.include !== null ? '#' : ''}${s.pieces.some((p) => p === null) ? `unencodable:${s.text}` : Buffer.concat(s.pieces).toString('hex')}`;
 
 function counts(list) {
   const m = new Map();

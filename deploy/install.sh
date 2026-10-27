@@ -61,7 +61,8 @@ usermod -aG docker togetherdecomp
 # Code updates go through update.sh (releases behind a symlink); here it only lays the code down.
 if [ ! -e "$APP" ]; then
   mkdir -p /opt/togetherdecomp-releases/initial
-  cp -a "$SRC/src" "$SRC/template" "$SRC/ghidra_scripts" "$SRC/toolchain" "$SRC/deploy" "$SRC/package.json" /opt/togetherdecomp-releases/initial/
+  cp -a "$SRC/src" "$SRC/template" "$SRC/ghidra_scripts" "$SRC/toolchain" "$SRC/deploy" "$SRC/package.json" "$SRC/package-lock.json" /opt/togetherdecomp-releases/initial/
+  (cd /opt/togetherdecomp-releases/initial && PATH="/opt/node/bin:$PATH" /opt/node/bin/npm ci --omit=dev --ignore-scripts)
   chown -R root:root /opt/togetherdecomp-releases && chmod -R go-w,a+rX /opt/togetherdecomp-releases
   ln -s /opt/togetherdecomp-releases/initial "$APP"
 else
