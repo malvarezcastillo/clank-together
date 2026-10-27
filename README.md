@@ -125,6 +125,12 @@ approve historical code: missing bindings and stale payloads need current-source
 verification and a new submission. Maintenance and actively merging batches are
 not settled by this reconciliation.
 
+Header-includer discovery reads committed source blobs in one `git cat-file
+--batch` operation and reuses that snapshot until HEAD or source roots change.
+Submitted overrides apply only to the current query. Reverse include traversal
+handles cycles without losing transitive dependents; uncommitted working-tree
+text is never used as the baseline.
+
 ## Building td
 
 `node tools/build-td/build.mjs` (Node 22.21) writes `dist/td-windows-x64.exe`, `dist/td-linux-x64` and

@@ -13,7 +13,7 @@ export class Repo {
 
   git(args, opts = {}) {
     try {
-      return execFileSync('git', args, { cwd: this.dir, encoding: opts.encoding ?? 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], input: opts.input });
+      return execFileSync('git', args, { cwd: this.dir, encoding: opts.encoding === undefined ? 'utf8' : opts.encoding, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], input: opts.input });
     } catch (e) {
       // git's own explanation, not just "Command failed".
       const why = `${e.stderr ?? ''}${e.stdout ?? ''}`.trim();
@@ -42,6 +42,31 @@ export class Repo {
     } catch {
       return null;
     }
+  }
+
+  /** Reads a committed source snapshot with one Git process, not one process per file. */
+  showMany(commit, files) {
+    const result = new Map();
+    if (!files.length) return result;
+    const data = this.git(['cat-file', '--batch'], { input: files.map((f) => `${commit}:${f}\n`).join(''), encoding: null });
+    let offset = 0;
+    for (const file of files) {
+      const end = data.indexOf(10, offset);
+      if (end < 0) throw new Error('incomplete git cat-file response');
+      const header = data.toString('utf8', offset, end);
+      offset = end + 1;
+      if (header.endsWith(' missing')) {
+        result.set(file, null);
+        continue;
+      }
+      const match = /^[0-9a-f]+ blob (\d+)$/.exec(header);
+      if (!match) throw new Error(`expected source blob for ${file}`);
+      const size = Number(match[1]);
+      if (offset + size >= data.length || data[offset + size] !== 10) throw new Error('incomplete git source blob');
+      result.set(file, data.toString('utf8', offset, offset + size));
+      offset += size + 1;
+    }
+    return result;
   }
 
   /** Size in bytes of a file at a commit, or null if it does not exist there. */

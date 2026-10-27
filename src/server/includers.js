@@ -5,6 +5,18 @@
 import { listSources } from '../shared/project.js';
 
 const INCLUDE_RE = /^\s*#\s*include\s+"([^"]+)"/gm;
+const snapshots = new WeakMap();
+
+function sourceSnapshot(repo, project) {
+  const head = repo.head();
+  const roots = JSON.stringify([project.sourceDirs, project.includeDirs]);
+  const cached = snapshots.get(repo);
+  if (cached?.head === head && cached.roots === roots) return cached;
+  const paths = listSources(repo.dir, project).filter((file) => !/[\r\n]/.test(file));
+  const snapshot = { head, roots, sources: repo.showMany(head, paths) };
+  snapshots.set(repo, snapshot);
+  return snapshot;
+}
 
 /**
  * @param {import('./git.js').Repo} repo
@@ -15,9 +27,10 @@ const INCLUDE_RE = /^\s*#\s*include\s+"([^"]+)"/gm;
  */
 export function sourceIncluders(repo, project, headers, files = {}) {
   if (!headers.length) return [];
-  const read = (f) => files[f] ?? repo.show('HEAD', f);
+  const { sources } = sourceSnapshot(repo, project);
+  const read = (f) => Object.hasOwn(files, f) ? files[f] : sources.get(f);
   const roots = [...project.sourceDirs, ...project.includeDirs].map((d) => d.replace(/\/+$/, ''));
-  const known = new Set([...listSources(repo.dir, project), ...Object.keys(files)]);
+  const known = new Set([...sources.keys(), ...Object.keys(files)]);
   const resolve = (from, spec) => {
     const dir = from.slice(0, from.lastIndexOf('/') + 1);
     for (const base of [dir.replace(/\/$/, ''), ...roots]) {
@@ -34,18 +47,24 @@ export function sourceIncluders(repo, project, headers, files = {}) {
     }
     return edges.get(f);
   };
-  const want = new Set(headers);
-  const reaches = new Map();
-  const hits = (f, seen = new Set()) => {
-    if (reaches.has(f)) return reaches.get(f);
-    if (seen.has(f)) return false;
-    seen.add(f);
-    const r = includesOf(f).some((h) => want.has(h) || hits(h, seen));
-    reaches.set(f, r);
-    return r;
-  };
+  const reverse = new Map();
+  for (const file of known) {
+    for (const dependency of includesOf(file)) {
+      if (!reverse.has(dependency)) reverse.set(dependency, []);
+      reverse.get(dependency).push(file);
+    }
+  }
+  const affected = new Set(headers);
+  const pending = [...headers];
+  while (pending.length) {
+    for (const parent of reverse.get(pending.pop()) ?? []) {
+      if (affected.has(parent)) continue;
+      affected.add(parent);
+      pending.push(parent);
+    }
+  }
   const units = listSources(repo.dir, project, { unitsOnly: true });
-  return units.filter((u) => hits(u));
+  return units.filter((u) => affected.has(u));
 }
 
 function normalize(p) {
