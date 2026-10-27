@@ -6,6 +6,7 @@ import { Accounts } from '../src/server/accounts.js';
 import { Merger } from '../src/server/merge.js';
 import { PeerReviews } from '../src/server/peer.js';
 import { createApp, DEFAULT_CONFIG } from '../src/server/app.js';
+import { Verifier } from '../src/server/verify.js';
 
 async function fixture(t) {
   const store = new Store(':memory:');
@@ -112,4 +113,29 @@ test('admin batch self-review leaves peer review alone unless explicitly skipped
   const skipped = await post(`/api/batches/${batch}/review`, { action: 'approve', attemptIds: [pending], skipPeerReview: true }, admin);
   assert.equal(skipped.status, 200, JSON.stringify(skipped.body));
   assert.deepEqual(skipped.body.results, [{ attemptId: pending, state: 'approved' }]);
+});
+
+test('identical resubmissions retain an explicit review waiver without inventing peer votes', async (t) => {
+  const { store, user, attempt, post } = await fixture(t);
+  const admin = user('admin');
+  const original = attempt(admin, 'peer_review');
+  const hash = 'same-compiled-code';
+  store.run('UPDATE attempts SET result_json=? WHERE id=?', JSON.stringify({ feedback: { target: { codeHash: hash } } }), original);
+  assert.equal((await post(`/api/attempts/${original}/review`, { action: 'approve', skipPeerReview: true }, admin)).status, 200);
+  const taskId = store.get('SELECT task_id FROM attempts WHERE id=?', original).task_id;
+  const resubmit = () => Number(store.run(`INSERT INTO attempts(task_id,user_id,base_commit,files_json,state,created_at) VALUES(?,?,'new-main','{}','verifying',?)`, taskId,admin.id,now()).lastInsertRowid);
+  const peers = new PeerReviews({ store, project: { matchPolicy: {} } });
+  const verifier = Object.create(Verifier.prototype);
+  Object.assign(verifier, { store, peers });
+  const identical = resubmit();
+  assert.equal(verifier.carryOver(store.get('SELECT * FROM attempts WHERE id=?', identical), { codeHash: hash }), true);
+  assert.equal(peers.confirmed(identical), true, 'merge verification must see the same confirmation as initial verification');
+  assert.equal(store.get('SELECT peer_skipped FROM attempts WHERE id=?', identical).peer_skipped, 1);
+  assert.equal(store.get('SELECT COUNT(*) n FROM peer_reviews WHERE attempt_id=?', identical).n, 0);
+  const audit = JSON.parse(store.get("SELECT data FROM events WHERE type='review_waiver_carried' ORDER BY id DESC LIMIT 1").data);
+  assert.deepEqual(audit, { attempt: identical, from: original, codeHash: hash });
+  const changed = resubmit();
+  assert.equal(verifier.carryOver(store.get('SELECT * FROM attempts WHERE id=?', changed), { codeHash: 'different-code' }), false);
+  assert.equal(peers.confirmed(changed), false, 'changed code does not inherit the waiver');
+  assert.equal(store.get('SELECT regressions_accepted FROM attempts WHERE id=?', identical).regressions_accepted, 0, 'score overrides are not transferred');
 });

@@ -1,7 +1,7 @@
 # Clank Together
 
 Coordinator, sandboxed verifier and agent client for a collaborative, LLM-assisted
-**matching decompilation** of an MSVC 2010 C++ executable. Node.js ≥ 22.13, no npm dependencies.
+**matching decompilation** of an MSVC 2010 C++ executable. Node.js ≥ 22.13; install pinned runtime dependencies with `npm ci`.
 
 Join the community at [clank.rodecomp.online/discord](https://clank.rodecomp.online/discord), which redirects to the Discord invite.
 
@@ -128,6 +128,10 @@ preserving attempt feedback, task states, review votes and scores. This does not
 approve historical code: missing bindings and stale payloads need current-source
 verification and a new submission. Maintenance and actively merging batches are
 not settled by this reconciliation.
+
+Resubmissions with identical compiled code retain actual peer verdicts or an
+explicit prior review waiver. Waiver carry-over is audited and does not create
+peer votes or carry a score-regression override; changed code still needs review.
 
 Header-includer discovery reads committed source blobs in one `git cat-file
 --batch` operation and reuses that snapshot until HEAD or source roots change.

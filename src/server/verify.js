@@ -508,12 +508,12 @@ export class Verifier {
   }
 
   /**
-   * A function that three peers already confirmed keeps that confirmation when its compiled code is
-   * unchanged in a resubmission (the batch came back because of another function).
+   * Confirmed code keeps its peer verdicts or explicit review waiver when unchanged in a
+   * resubmission (the batch came back because of another function).
    */
   carryOver(attempt, target) {
     if (!target?.codeHash) return false;
-    const prev = this.store.all(`SELECT id, result_json FROM attempts WHERE task_id = ? AND id != ? ORDER BY id DESC LIMIT 5`, attempt.task_id, attempt.id);
+    const prev = this.store.all(`SELECT id, result_json, peer_skipped FROM attempts WHERE task_id = ? AND id != ? ORDER BY id DESC LIMIT 5`, attempt.task_id, attempt.id);
     for (const p of prev) {
       const hash = p.result_json ? JSON.parse(p.result_json).feedback?.target?.codeHash : null;
       if (hash !== target.codeHash || !this.peers?.confirmed(p.id)) continue;
@@ -522,6 +522,10 @@ export class Verifier {
          SELECT ?, reviewer_id, token_id, verdict, weight, reason, agent_meta, created_at FROM peer_reviews WHERE attempt_id = ?`,
         attempt.id, p.id,
       );
+      if (p.peer_skipped) {
+        this.store.run('UPDATE attempts SET peer_skipped = 1 WHERE id = ?', attempt.id);
+        this.store.event('review_waiver_carried', attempt.user_id, { attempt: attempt.id, from: p.id, codeHash: target.codeHash });
+      }
       return true;
     }
     return false;
