@@ -4,6 +4,7 @@ Coordinator, sandboxed verifier and agent client for a collaborative, LLM-assist
 **matching decompilation** of an MSVC 2010 C++ executable. Node.js ≥ 22.13; install pinned runtime dependencies with `npm ci`.
 
 Join the community at [clank.rodecomp.online/discord](https://clank.rodecomp.online/discord), which redirects to the Discord invite.
+The header's Discord link includes an inline SVG icon from [Simple Icons](https://simpleicons.org/?q=discord), with no external image request.
 
 ```
 contributors + their agents                       coordinator (clank.rodecomp.online)

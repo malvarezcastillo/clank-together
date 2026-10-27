@@ -600,6 +600,7 @@ details.fold[open] > summary { margin-bottom: 6px; }
 }
 .mainnav a:hover, .ghost-link:hover { border-bottom-color: var(--steel); }
 .mainnav a.active { border-bottom-color: var(--accent); color: var(--accent); }
+.mainnav .nav-icon { vertical-align: middle; margin-right: 6px; }
 .userbox { display: flex; gap: 10px; align-items: center; }
 .userbox .badge { color: #eef0f2; text-decoration: none; }
 .credits-badge {
