@@ -55,10 +55,10 @@ async function runHeadless(ws, args, timeoutMs) {
   return r.output;
 }
 
-/** Downloads and unpacks the Ghidra release pinned in toolchain.lock.json. */
+/** Downloads and unpacks the Ghidra release pinned in data/toolchain.lock.json. */
 export async function installGhidra(ws) {
   const lock = loadToolchainLock(ws.dir).ghidra;
-  if (!lock?.url || !lock?.sha256) throw new Error('toolchain.lock.json has no ghidra { url, sha256, dir } entry');
+  if (!lock?.url || !lock?.sha256) throw new Error('data/toolchain.lock.json has no ghidra { url, sha256, dir } entry');
   const toolsDir = path.join(ws.tdDir, 'tools');
   fs.mkdirSync(toolsDir, { recursive: true });
   const zip = path.join(toolsDir, path.basename(new URL(lock.url).pathname));

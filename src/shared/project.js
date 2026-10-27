@@ -1,4 +1,4 @@
-// Loads the decomp repo's configuration (decomp.json) and scans its sources.
+// Loads the decomp repo's configuration (data/decomp.json) and scans its sources.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +27,7 @@ const UNIT_EXT = new Set(['.c', '.cpp', '.cc', '.cxx']);
 const SOURCE_EXT = new Set([...UNIT_EXT, '.h', '.hpp', '.inl']);
 
 export function loadProject(repoDir) {
-  const file = path.join(repoDir, 'decomp.json');
+  const file = path.join(repoDir, 'data', 'decomp.json');
   const cfg = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
   const project = { ...DEFAULT_PROJECT, ...cfg, matchPolicy: { ...DEFAULT_PROJECT.matchPolicy, ...(cfg.matchPolicy ?? {}) } };
   // Optional exact per-unit command lines: { env, shapes: [[args]], units: { file: shapeIndex } }.
@@ -72,7 +72,7 @@ export function addUnitsToCompileCommands(project, text, files) {
 }
 
 export function loadToolchainLock(repoDir) {
-  const file = path.join(repoDir, 'toolchain.lock.json');
+  const file = path.join(repoDir, 'data', 'toolchain.lock.json');
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
 }
 

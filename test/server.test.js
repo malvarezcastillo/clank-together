@@ -119,7 +119,7 @@ test('public info, symbol snapshot, and the target is not served by default', as
 test('the repository can be cloned over HTTP but not pushed to', async () => {
   const dest = path.join(dataDir, 'clone');
   await promisify(execFile)("git", ["clone", "-q", `${base}/repo.git`, dest]);
-  assert.ok(fs.existsSync(path.join(dest, 'decomp.json')));
+  assert.ok(fs.existsSync(path.join(dest, 'data', 'decomp.json')));
   const res = await fetch(`${base}/repo.git/info/refs?service=git-receive-pack`);
   assert.equal(res.status, 403);
 });

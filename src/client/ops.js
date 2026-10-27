@@ -99,7 +99,7 @@ function runnerConfig({ runner, vc, sdk, image, toolchain, project }) {
   const type = runner ?? (os.platform() === 'win32' && vc ? 'native' : 'docker');
   if (type === 'remote') return { type };
   if (type === 'docker') {
-    if (!image) throw new Error('no docker image configured; pass --image or set it in toolchain.lock.json');
+    if (!image) throw new Error('no docker image configured; pass --image or set it in data/toolchain.lock.json');
     return { type, image };
   }
   if (!vc) throw new Error(`--vc <path to the VC directory of Visual Studio 2010> is required for the ${type} runner`);

@@ -33,7 +33,7 @@ for (const [file, value] of Object.entries(payload.files)) {
   fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
   fs.writeFileSync(path.join(repo, file), value.text);
 }
-git('add', '-A', '--', 'Source', 'CODING_RULES.md', '.clang-format', 'CMakeLists.txt', 'compile.json', 'README.md');
+git('add', '-A', '--', 'Source', 'CODING_RULES.md', '.clang-format', 'CMakeLists.txt', 'data/compile.json', 'README.md');
 git('-c', 'user.name=ragnarok-clanker', '-c', 'user.email=ragnarok-clanker@users.clank-together.invalid', 'commit', '-m', `${payload.message}\n\nAdministrative source import: native x86 compilation passed for 423 authored units. Source placement and submission states are migrated separately; this commit does not imply peer acceptance.\n\nPrevious head: ${payload.baseCommit}\nPayload SHA256: ${backup.payloadSha256}`);
 const commit = git('rev-parse', 'HEAD');
 const changes = { symbolsMoved: 0, symbolsPlacedFromAnnotations: 0, funcStatusPaths: 0, dependencyPaths: 0, regionPaths: 0 };

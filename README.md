@@ -65,7 +65,7 @@ attempt gets first pick on the follow-up for 6 hours.
 | `src/client/` | `td` CLI, MCP server for agents, Ghidra integration |
 | `ghidra_scripts/` | ExportFunctions (bootstrap), ApplySymbols, DecompileAt, DisassembleAt |
 | `toolchain/msvc2010/` | Dockerfile for cl.exe under Wine (you supply the compiler files) |
-| `template/` | skeleton of the decomp repo: `decomp.json`, `toolchain.lock.json`; the project's own root `AGENTS.md` is the only agent guide |
+| `template/` | skeleton of the decomp repo: `data/decomp.json`, `data/toolchain.lock.json`; the project's own root `AGENTS.md` is the only agent guide |
 | `deploy/` | install script, systemd unit, Caddyfile, nftables firewall |
 | `deploy/forgejo/` | Forgejo git dashboard at `/git/`: installer (checksum + signature verified), config, unit |
 
@@ -81,7 +81,7 @@ analyzeHeadless /tmp/g boot -import game.exe -scriptPath ghidra_scripts -postScr
 td-server symbols import functions.csv          # one stable ID per function, tasks get created
 td-server symbols units units.csv               # optional: start,end,src/file.cpp
 td-server user add alice --role reviewer
-# build the compiler image (see toolchain/msvc2010/Dockerfile), pin clSha256 in toolchain.lock.json
+# build the compiler image (see toolchain/msvc2010/Dockerfile), pin clSha256 in data/toolchain.lock.json
 ```
 
 New target version later: `td-server version add 1.1 game11.exe`, then

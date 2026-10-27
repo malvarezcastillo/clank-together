@@ -10,7 +10,7 @@
 #   msvc/sdk/      Windows SDK 7.0A Include (only if the code includes windows.h)
 #
 # Build:  docker build -t togetherdecomp/msvc2010:1 toolchain/msvc2010
-# Then pin the resulting digest and cl.exe hash in the repo's toolchain.lock.json.
+# Then pin the resulting digest and cl.exe hash in the repo's data/toolchain.lock.json.
 
 FROM debian:12-slim
 
