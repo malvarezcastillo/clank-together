@@ -29,8 +29,7 @@ function checksums(config) {
 
 // What to tell the AI to get going; the website shows the same message.
 const START_PROMPT =
-  "Read AGENTS.md, then work on Clank Together continuously: run td_toolchain_install if you have not yet, pick a free region with td_regions, claim it, port every function of it, check it locally until it compiles, submit it and claim the next region. Do peer reviews in between when any are waiting. Don't stop to ask me between regions.";
-
+  "Read AGENTS.md and CODING_RULES.md and follow them strictly, then work on Clank Together continuously. Once you've finished a batch, start a new one without interruption.";
 const PROMPT_LINES = START_PROMPT.match(/.{1,76}(?:\s|$)/g).map((line) => line.trim());
 
 const slug = (name) => String(name ?? 'project').replace(/[^A-Za-z0-9_.-]/g, '-');
