@@ -1241,8 +1241,11 @@ async function openAttempt(id) {
   if (!location.hash.startsWith(`#/review/${id}`)) history.replaceState(null, '', `#/review/${id}`);
   const f = a.feedback || {};
   const t = f.target;
-  $('attempt-title').textContent = `${t ? t.demangled || t.id : `Attempt #${a.id}`}`;
-  $('attempt-meta').textContent = `#${a.id} by ${a.author} · ${t ? `${t.id} · ` : ''}${a.state.replace('_', ' ')} · ${((a.score || 0) * 100).toFixed(1)}% of bytes · size ${t?.size?.ours ?? '?'} / ${t?.size?.original ?? '?'} · base ${a.baseCommit.slice(0, 10)}`;
+  const identity = a.symbol ?? t;
+  const claimed = a.kind === 'skip';
+  $('attempt-title').textContent = `${t?.demangled || identity?.name || identity?.id || `Attempt #${a.id}`}`;
+  const measurement = claimed ? 'no handwritten source submitted; byte matching does not apply' : `${a.score === null ? 'unmeasured' : `${(a.score * 100).toFixed(1)}% of bytes`} · size ${t?.size?.ours ?? '?'} / ${t?.size?.original ?? '?'}`;
+  $('attempt-meta').textContent = `#${a.id} by ${a.author} · ${identity?.id ? `${identity.id} · ` : ''}${a.state.replace('_', ' ')} · ${measurement} · base ${a.baseCommit.slice(0, 10)}`;
   const n = (v) => (a.peerReviews ?? []).filter((p) => p.verdict === v).length;
   const vm = $('attempt-verdicts');
   vm.replaceChildren(el('span', 'same'), pips(n('same'), 0, a.peerRequired ?? 5), el('span', 'different'), pips(0, n('different'), 0));
@@ -1258,12 +1261,15 @@ async function openAttempt(id) {
     r.append(d);
   }
 
-  compare = { source: a.targetSource, ourAsm: t?.asm ?? null, original: null, error: null };
-  showCompare(compareView);
-  if (t?.id) {
-    api(`/api/original/${t.id}`)
-      .then((o) => (compare.original = o))
-      .catch((e) => (compare.error = e.message))
+  compare = { source: a.targetSource, ourAsm: t?.asm ?? null, original: null, error: null, claim: a.claim ?? null };
+  const selectedCompare = compare;
+  document.querySelector('#compare-tabs [data-view="code"]').textContent = claimed ? 'Claim and original pseudocode' : 'C++ vs pseudocode';
+  document.querySelector('#compare-tabs [data-view="asm"]').textContent = claimed ? 'Original assembly' : 'Assembly vs assembly';
+  showCompare(claimed ? 'asm' : compareView);
+  if (identity?.id) {
+    api(`/api/original/${identity.id}`)
+      .then((o) => { if (currentAttempt === a) selectedCompare.original = o; })
+      .catch((e) => { if (currentAttempt === a) selectedCompare.error = e.message; })
       .finally(() => currentAttempt === a && showCompare(compareView));
   }
 
@@ -1281,11 +1287,15 @@ async function openAttempt(id) {
     fold(`Other functions in the file (${f.otherFunctions.length}, ${exact} byte-identical)`, table(['Function', 'Status', 'Score'], f.otherFunctions.map((x) => [x.id, x.status, `${(x.score * 100).toFixed(1)}%`])));
   }
   const files = Object.entries(a.mergedFiles || a.files || {});
-  fold(`Submitted files (${files.length})`, ...files.map(([p, content]) => {
-    const d = el('details');
-    d.append(el('summary', p), el('pre', content, 'code'));
-    return d;
-  }));
+  if (claimed) {
+    fold('No source files expected', el('p', 'This is a claim about how the original function was produced, not a C++ implementation. Review the stated evidence against the original instructions.'));
+  } else {
+    fold(`Submitted files (${files.length})`, ...files.map(([p, content]) => {
+      const d = el('details');
+      d.append(el('summary', p), el('pre', content, 'code'));
+      return d;
+    }));
+  }
   fold(a.notes ? 'Notes from the author (untrusted)' : 'Notes from the author (none)', el('pre', a.notes || '(none)', 'notes'));
 
   // Deciding a function still in peer review is for maintainers.
@@ -1309,6 +1319,14 @@ function showCompare(view) {
   if (!compare) return;
   const o = compare.original;
   const pending = !o && !compare.error ? 'Loading the original…' : `Original not available${compare.error ? `: ${compare.error}` : ''}`;
+  if (compare.claim) {
+    const claim = compare.claim;
+    const explanation = `No C++ implementation is expected for this claim (${claim.category}).\n\nReason (untrusted):\n${claim.reason}\n\nApprove only if the original instructions support the claim; otherwise request an implementation.`;
+    const original = view === 'asm' ? o?.asm : o?.pseudocode;
+    const title = view === 'asm' ? 'Original assembly' : 'Original pseudocode (reading aid)';
+    body.append(twoPanes(['No handwritten source required — claim', explanation], [o ? `${title} · ${o.addr}` : title, original ?? (o ? 'No original text is available in this view.' : pending)]));
+    return;
+  }
   if (view === 'code') {
     body.append(
       twoPanes(

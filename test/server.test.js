@@ -1976,3 +1976,23 @@ test('the merger settles abandoned open batches without changing attempts, tasks
     }
   }
 });
+
+test('skip attempt details expose original identity without inventing a compiled target or source', async () => {
+  const token = await activeUser('skipdetail');
+  const user = ctx.accounts.byName('skipdetail');
+  const task = ctx.store.get(`SELECT t.id, t.symbol_id, s.name, a.addr, a.size FROM tasks t JOIN symbols s ON s.id=t.symbol_id JOIN symbol_addresses a ON a.symbol_id=s.id WHERE a.version_id=? LIMIT 1`, ctx.store.currentVersion().id);
+  const reason = 'Calls the ordinary destructor, tests flags bit 1, conditionally deletes storage and returns this.';
+  const id = Number(ctx.store.run(`INSERT INTO attempts (task_id,user_id,base_commit,files_json,state,kind,skip_category,notes,result_json,created_at) VALUES (?,?,?,'{}','peer_review','skip','compiler_generated',?,'{}',?)`, task.id,user.id,ctx.repo.head(),reason,now()).lastInsertRowid);
+  try {
+    const response = await call('GET', `/api/attempts/${id}`, null, token);
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.symbol, { id: task.symbol_id, name: task.name, addr: '0x' + task.addr.toString(16).padStart(8, '0'), size: task.size });
+    assert.deepEqual(response.body.claim, { category: 'compiler_generated', reason, noSourceExpected: true });
+    assert.deepEqual(response.body.files, {});
+    assert.equal(response.body.score, null);
+    assert.equal(response.body.targetSource, null);
+    assert.equal(response.body.feedback, null);
+  } finally {
+    ctx.store.run('DELETE FROM attempts WHERE id = ?', id);
+  }
+});

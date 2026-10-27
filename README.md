@@ -113,6 +113,11 @@ separately shows approved or merging attempts. `GET /api/batches` supports `stat
 `attemptState` (comma-separated attempt states), `author`, `before` and `limit`.
 Filters apply before pagination.
 
+Skip-claim reviews show the claim category and reason beside the original
+instructions/pseudocode. They intentionally contain no submitted C++ or byte
+comparison. Attempt details expose the original symbol identity independently of
+compiled results so these reviews can load evidence without inventing a target.
+
 The merge worker settles abandoned open code batches when they contain failed
 attempts and no attempt remains live. It records the reason and an audit event,
 preserving attempt feedback, task states, review votes and scores. This does not

@@ -803,10 +803,16 @@ export function createApp(ctx) {
     const result = a.result_json ? JSON.parse(a.result_json) : null;
     const batch = a.batch_id ? store.get('SELECT result_json FROM batches WHERE id = ?', a.batch_id) : null;
     const batchResult = batch?.result_json ? JSON.parse(batch.result_json) : {};
+    const symbol = store.get(
+      `SELECT s.id, s.name, ad.addr, ad.size FROM tasks t JOIN symbols s ON s.id = t.symbol_id
+         LEFT JOIN symbol_addresses ad ON ad.symbol_id = s.id AND ad.version_id = ? WHERE t.id = ?`,
+      store.currentVersion().id, a.task_id,
+    );
     const isReviewer = hasRole(user, 'reviewer');
     return {
       id: a.id,
       taskId: a.task_id,
+      symbol: symbol ? { ...symbol, addr: symbol.addr === null ? null : '0x' + hex(symbol.addr) } : null,
       author: a.author,
       state: a.state,
       score: a.score,
@@ -822,7 +828,7 @@ export function createApp(ctx) {
       mergedFiles: isReviewer ? batchResult.mergedFiles ?? result?.mergedFiles ?? null : undefined,
       reviews: store.all('SELECT r.action, r.comment, r.created_at, u.name AS reviewer FROM reviews r JOIN users u ON u.id = r.reviewer_id WHERE r.attempt_id = ?', a.id),
       kind: a.kind,
-      claim: a.kind === 'skip' ? { category: a.skip_category, reason: a.notes } : undefined,
+      claim: a.kind === 'skip' ? { category: a.skip_category, reason: a.notes, noSourceExpected: true } : undefined,
       peerReviews: peers.verdicts(a.id),
       peerRequired: peers.needed(peers.counts(a.id).different), // "same" verdicts (by weight) that accept it as it stands
       targetSource: targetSource(result?.feedback?.target?.id, batchResult.mergedFiles ?? store.attemptFiles(a)),
