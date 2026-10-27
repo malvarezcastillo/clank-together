@@ -1209,6 +1209,10 @@ export function createApp(ctx) {
   const handler = async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     try {
+      if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/discord') {
+        res.writeHead(302, { location: 'https://discord.gg/5fDwn7tVNj', 'cache-control': 'no-store' });
+        return res.end();
+      }
       if (url.pathname.startsWith('/repo.git/')) {
         return serveGit(req, res, { projectRoot: config.dataDir, subPath: '/repo' + url.pathname.slice('/repo.git'.length), query: url.searchParams });
       }

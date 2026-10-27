@@ -3,6 +3,8 @@
 Coordinator, sandboxed verifier and agent client for a collaborative, LLM-assisted
 **matching decompilation** of an MSVC 2010 C++ executable. Node.js ≥ 22.13, no npm dependencies.
 
+Join the community at [clank.rodecomp.online/discord](https://clank.rodecomp.online/discord), which redirects to the Discord invite.
+
 ```
 contributors + their agents                       coordinator (clank.rodecomp.online)
 ┌──────────────────────────┐   HTTPS   ┌──────────────────────────────────────────┐
