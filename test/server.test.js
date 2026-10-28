@@ -221,6 +221,20 @@ test('regressions are detected against func_status', () => {
   ctx.store.run(`DELETE FROM func_status`);
 });
 
+test('removing the annotation of a skipped function is not a regression', () => {
+  ctx.store.run(`INSERT INTO func_status (symbol_id, file, status, score, confirmed, commit_hash, updated_at) VALUES ('fn_00002', 'src/a.cpp', 'mismatch', 0.7, 1, 'x', 0)`);
+  const check = { annotationErrors: [], units: [{ file: 'src/a.cpp', compiled: true, lintErrors: [], functions: [{ id: 'fn_00002', status: STATUS.MISMATCH, score: 0.4 }], unannotated: [] }] };
+  const task = ctx.store.get(`SELECT id, state FROM tasks WHERE symbol_id = 'fn_00002'`);
+  try {
+    assert.deepEqual(ctx.verifier.regressions(check).map((r) => r.id), ['fn_00002'], 'a confirmed function moving away from the original is a regression');
+    ctx.store.run(`UPDATE tasks SET state = 'skipped' WHERE id = ?`, task.id);
+    assert.deepEqual(ctx.verifier.regressions(check), [], 'not once it is skipped as needing no decompilation');
+  } finally {
+    ctx.store.run(`UPDATE tasks SET state = ? WHERE id = ?`, task.state, task.id);
+    ctx.store.run(`DELETE FROM func_status`);
+  }
+});
+
 test('expired leases return to the pool', async () => {
   const token = await activeUser('dave');
   const c = (await leaseTask(token)).body;

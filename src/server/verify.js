@@ -458,7 +458,8 @@ export class Verifier {
     const results = new Map([...bestResults(check)].map(([id, b]) => [id, b.f]));
     const compiledFiles = new Set(check.units.map((u) => u.file));
     const out = [];
-    for (const row of this.store.all(`SELECT * FROM func_status WHERE status IN ('exact', 'match_unresolved') OR confirmed = 1`)) {
+    // An accepted "no decompile" claim retires the function: removing its old annotation is the fix.
+    for (const row of this.store.all(`SELECT * FROM func_status WHERE (status IN ('exact', 'match_unresolved') OR confirmed = 1) AND symbol_id NOT IN (SELECT symbol_id FROM tasks WHERE state = 'skipped')`)) {
       if (!compiledFiles.has(row.file)) continue;
       const now_ = results.get(row.symbol_id);
       // Exact and match_unresolved are the same bytes: whether a referenced label resolves depends
