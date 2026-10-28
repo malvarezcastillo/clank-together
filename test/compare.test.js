@@ -5,7 +5,7 @@ import { PEImage } from '../src/shared/pe.js';
 import { CoffObject } from '../src/shared/coff.js';
 import { parseListing } from '../src/shared/listing.js';
 import { parseAnnotations } from '../src/shared/annotations.js';
-import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal } from '../src/shared/compare.js';
+import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 
 const FILE = 'src/player.cpp';
@@ -225,4 +225,18 @@ test('sameOriginal: two copies of a function match when their calls reach the sa
   image[0x101] = 2; // mov ecx, 2
   assert.equal(sameOriginal(pe, 0x1000, 0x1100, 12), false, 'an immediate differs');
   assert.equal(sameOriginal(pe, 0x1000, 0x1100, 0), false, 'no size, no claim');
+});
+
+test('isDeletingDestructor tells scalar deleting destructors from plain ones', () => {
+  const at = (hexBytes) => {
+    const bytes = Buffer.from(hexBytes, 'hex');
+    return { pe: { read: (va, len) => bytes.subarray(va - 0x1000, va - 0x1000 + len) }, size: bytes.length };
+  };
+  // CSurfaceDX9 at 0x5708F0: test [ebp+8], 1 / operator delete / retn 4.
+  const deleting = at('558bec6aff689de2eb0064a100000000505156a1981b360133c5508d45f464a3000000008bf18975f0c70634d60d01c745fc000000008b4e1085c9740d8b0151ff5008c7461000000000c745fcffffffff8bcee8281a0000f6450801740b6a1456e829198f0083c4088bc68b4df464890d00000000595e8be55dc20400');
+  assert.equal(isDeletingDestructor(deleting.pe, 0x1000, deleting.size), true);
+  // ??1CFile@@UAE@XZ: a plain destructor (no flags argument).
+  const plain = at('558bec6aff68c096eb0064a100000000505156a1981b360133c5508d45f464a3000000008bf18975f0c70604960d01c745fc00000000e8d5960500c745fcffffffff8d4e14e82676fdff8b4df464890d00000000595e8be55dc3');
+  assert.equal(isDeletingDestructor(plain.pe, 0x1000, plain.size), false);
+  assert.equal(isDeletingDestructor(deleting.pe, 0x1000, 0), false, 'unknown size');
 });

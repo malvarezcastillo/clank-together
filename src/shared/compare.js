@@ -180,7 +180,8 @@ export function compareObject({ obj, listing, file, annotations, symbols, nameIn
     const r = compareFunction({ fn: withLocalNames(fn), addr: sym.addr, origSize: sym.size, pe, resolve, symbols, proc, literalOf: (s) => obj.literal(s) });
     inferred.push(...r.inferred);
     delete r.inferred;
-    functions.push({ ...base, addr: sym.addr, ...r, asm: procText(proc) });
+    const deletingDestructor = /^\?\?1/.test(symbol) && isDeletingDestructor(pe, sym.addr, sym.size);
+    functions.push({ ...base, addr: sym.addr, ...r, ...(deletingDestructor && { deletingDestructor: true }), asm: procText(proc) });
   }
 
   const boundSymbols = new Set([...bindings.keys(), ...byAnn.values()]);
@@ -197,6 +198,21 @@ function procText(proc) {
 function isCompilerGenerated(name) {
   // scalar/vector deleting destructors, thunks, CRT helpers
   return /^\?\?_[GEH]|^__|^\$|^_\$E/.test(name);
+}
+
+// MSVC's scalar deleting destructor: tests bit 0 of its flags argument ([ebp+8] or [esp+4/8]),
+// calls operator delete on it, and returns this with `retn 4`. A plain destructor takes no argument.
+export function isDeletingDestructor(pe, addr, size) {
+  if (!size || size < 8) return false;
+  let code;
+  try {
+    code = pe.read(addr, size);
+  } catch {
+    return false;
+  }
+  const tail = code.subarray(code.length - 3);
+  if (tail[0] !== 0xc2 || tail[1] !== 0x04 || tail[2] !== 0x00) return false;
+  return [[0xf6, 0x45, 0x08, 0x01], [0xf6, 0x44, 0x24, 0x04, 0x01], [0xf6, 0x44, 0x24, 0x08, 0x01]].some((sig) => code.indexOf(Buffer.from(sig)) >= 0);
 }
 
 function dedupeInferred(list) {

@@ -792,6 +792,9 @@ export class Verifier {
     } else if (!target) {
       feedback.summary = `no compiled function is annotated with // FUNCTION: ${targetId}`;
       state = 'needs_cleanup';
+    } else if (target.deletingDestructor) {
+      feedback.summary = `${targetId} is a scalar deleting destructor in the original (it frees the object when flags&1 and returns this, retn 4), compiler generated from the virtual destructor: do not annotate the destructor with it; claim it no-decompile (td_mark_no_decompile, category compiler_generated)`;
+      state = 'needs_cleanup';
     } else if (regressions.length) {
       feedback.summary = `your change breaks ${regressions.length} function(s) that matched before`;
       state = 'needs_cleanup';

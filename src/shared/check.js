@@ -128,6 +128,7 @@ export function summarizeCheck(result, rec, files = null) {
         size: f.size,
         diffRegions: f.diffRegions?.slice(0, 12),
         relocations: f.relocations,
+        ...(f.deletingDestructor && { deletingDestructor: true }),
       })),
     })),
     referenceConflicts: rec.conflicts,

@@ -209,6 +209,9 @@ test('evaluate routes results', () => {
   assert.equal(ev(check(withRef), { ...rec, conflicts: [{ symbol: '?Foo@@YAXXZ', hard: true, message: 'Foo is elsewhere' }] }).state, 'needs_cleanup');
   assert.equal(ev(check(withRef), { ...rec, conflicts: [{ symbol: '?Bar@@YAXXZ', hard: true, message: 'Bar is elsewhere' }] }).state, 'approved');
   assert.equal(ev(check(withRef), { ...rec, conflicts: [{ symbol: '?Foo@@YAXXZ', message: 'Foo seen twice' }] }).state, 'approved');
+  const deleting = ev(check({ ...fn(STATUS.MISMATCH, 0.4), deletingDestructor: true }));
+  assert.equal(deleting.state, 'needs_cleanup', 'a deleting destructor annotated on a destructor goes back');
+  assert.match(deleting.feedback.summary, /no-decompile/);
 });
 
 test('regressions are detected against func_status', () => {
