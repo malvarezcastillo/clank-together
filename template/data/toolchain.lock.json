@@ -5,10 +5,10 @@
     "clSha256": null
   },
   "ghidra": {
-    "version": "11.2.1",
-    "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2.1_build/ghidra_11.2.1_PUBLIC_20241105.zip",
-    "sha256": "ce4db5117da0fbaf8f33863fec4f40902f754f06b68945a59fb1c0f9b1bc461c",
-    "dir": "ghidra_11.2.1_PUBLIC",
-    "jdk": "21"
+    "version": "12.2",
+    "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip",
+    "sha256": "2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67",
+    "dir": "ghidra_12.2_PUBLIC",
+    "jdk": "25"
   }
 }

@@ -5,9 +5,9 @@ set -eu
 
 HOST="${1:?usage: install.sh <public-hostname>}"
 NODE_VERSION=v22.21.0
-GHIDRA_VERSION=11.2.1
-GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2.1_build/ghidra_11.2.1_PUBLIC_20241105.zip
-GHIDRA_SHA256=ce4db5117da0fbaf8f33863fec4f40902f754f06b68945a59fb1c0f9b1bc461c
+GHIDRA_VERSION=12.2
+GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip
+GHIDRA_SHA256=2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 APP=/opt/togetherdecomp
 DATA=/var/lib/togetherdecomp
@@ -31,7 +31,7 @@ fi
 
 echo "== ghidra $GHIDRA_VERSION (server-side project and pseudocode)"
 # The JDK, not just the runtime: Ghidra compiles its .java scripts.
-apt-get install -y -q openjdk-21-jdk-headless unzip >/dev/null
+apt-get install -y -q openjdk-25-jdk-headless unzip >/dev/null
 GHIDRA_HOME="/opt/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC"
 if [ ! -x "$GHIDRA_HOME/support/analyzeHeadless" ]; then
   tmp=$(mktemp -d)

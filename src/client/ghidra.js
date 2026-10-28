@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { run } from '../shared/build.js';
 import { hex } from '../shared/annotations.js';
 import { loadToolchainLock } from '../shared/project.js';
+import { GHIDRA_RELEASE, ghidraAtLeast, ghidraVersionAt } from '../shared/ghidra.js';
 import { Api } from './api.js';
 
 const SCRIPT_NAMES = ['ApplySymbols.java', 'DecompileAt.java', 'DisassembleAt.java', 'ExportFunctions.java', 'ExportOriginals.java'];
@@ -55,24 +56,44 @@ async function runHeadless(ws, args, timeoutMs) {
   return r.output;
 }
 
-/** Downloads and unpacks the Ghidra release pinned in data/toolchain.lock.json. */
-export async function installGhidra(ws) {
-  const lock = loadToolchainLock(ws.dir).ghidra;
-  if (!lock?.url || !lock?.sha256) throw new Error('data/toolchain.lock.json has no ghidra { url, sha256, dir } entry');
+/**
+ * Downloads and unpacks a Ghidra release: the one the server builds its project with (so the
+ * downloaded project opens), else the one pinned in data/toolchain.lock.json, else td's own pin.
+ */
+export async function installGhidra(ws, release = null) {
+  const lock = release?.url ? release : loadToolchainLock(ws.dir).ghidra?.url ? loadToolchainLock(ws.dir).ghidra : GHIDRA_RELEASE;
+  if (!lock?.url || !lock?.sha256) throw new Error('no Ghidra release to install (data/toolchain.lock.json has no ghidra { url, sha256, dir } entry)');
   const toolsDir = path.join(ws.tdDir, 'tools');
   fs.mkdirSync(toolsDir, { recursive: true });
   const zip = path.join(toolsDir, path.basename(new URL(lock.url).pathname));
   if (!fs.existsSync(zip)) {
-    console.log(`downloading ${lock.url}`);
+    console.error(`downloading ${lock.url}`);
     await new Api('').download(lock.url, zip, lock.sha256);
   }
   // Windows' own tar.exe (bsdtar) unpacks zip files; a GNU tar earlier on PATH (Git Bash) would not.
   const winTar = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
   const r = os.platform() === 'win32' ? await run(winTar, ['-xf', zip, '-C', toolsDir], { timeoutMs: 600_000 }) : await run('unzip', ['-q', '-o', zip, '-d', toolsDir], { timeoutMs: 600_000 });
   if (r.code !== 0) throw new Error(`could not unpack Ghidra: ${r.output}`);
+  fs.rmSync(zip, { force: true });
   ws.config.ghidraHome = path.join(toolsDir, lock.dir);
   ws.save();
   return ws.config.ghidraHome;
+}
+
+/**
+ * A local Ghidra older than the one the server's project was saved with cannot open it. Upgrades
+ * the Ghidra td installed itself; a Ghidra the user configured is reported, not replaced.
+ */
+export async function ensureGhidraFor(ws, release) {
+  if (!release?.version || !ws.config.ghidraHome) return null;
+  const local = ghidraVersionAt(ws.config.ghidraHome);
+  if (local && ghidraAtLeast(local, release.version)) return null;
+  const managed = path.resolve(ws.config.ghidraHome).startsWith(path.resolve(path.join(ws.tdDir, 'tools')));
+  if (!managed || !release.url) {
+    throw new Error(`the server's Ghidra project needs Ghidra ${release.version}${release.jdk ? ` (JDK ${release.jdk})` : ''}, but ${ws.config.ghidraHome} is ${local ?? 'unknown'}: install it and run \`td config ghidraHome <dir>\`, or run \`td ghidra install\``);
+  }
+  console.error(`upgrading Ghidra ${local ?? '?'} -> ${release.version} (the server's project needs it)`);
+  return installGhidra(ws, release);
 }
 
 function writeSymbolFile(ws) {
@@ -127,6 +148,7 @@ export function disassemble(ws, addr) {
 export async function downloadGhidraProject(ws, { force = false } = {}) {
   const client = new Api(ws.config.server, ws.config.token);
   const info = await client.get('/api/ghidra-project');
+  await ensureGhidraFor(ws, info.release ?? (info.ghidra ? { version: info.ghidra } : null));
   if (!force && ws.config.ghidraPackage === info.sha256 && fs.existsSync(path.join(ws.tdDir, 'ghidra', `${PROJECT_NAME}.gpr`))) {
     return { updated: false, info };
   }
@@ -140,7 +162,22 @@ export async function downloadGhidraProject(ws, { force = false } = {}) {
   const r = await run(tar, ['-xzf', tgz, '-C', projDir], { timeoutMs: 1800_000 });
   if (r.code !== 0) throw new Error(`could not unpack the Ghidra project: ${r.output}`);
   fs.rmSync(tgz, { force: true });
+  takeProjectOwnership(projDir);
   ws.config.ghidraPackage = info.sha256;
   ws.save();
   return { updated: true, info };
+}
+
+/**
+ * Ghidra opens a project only for the user recorded as its owner (its user.name, spaces removed).
+ * The server packs its project under its own account, so the unpacked copy is handed to whoever
+ * runs td.
+ */
+function takeProjectOwnership(projDir) {
+  const prp = path.join(projDir, `${PROJECT_NAME}.rep`, 'project.prp');
+  if (!fs.existsSync(prp)) return;
+  const user = os.userInfo().username.replace(/\s/g, '').replace(/[<>&"]/g, '');
+  const text = fs.readFileSync(prp, 'utf8');
+  const owned = text.replace(/(<STATE NAME="OWNER" TYPE="string" VALUE=")[^"]*(" \/>)/, (_, a, b) => a + user + b);
+  if (owned !== text) fs.writeFileSync(prp, owned);
 }

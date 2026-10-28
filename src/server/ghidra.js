@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { run } from '../shared/build.js';
 import { hex } from '../shared/annotations.js';
+import { GHIDRA_RELEASE, ghidraVersionAt } from '../shared/ghidra.js';
 
 const SCRIPTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'ghidra_scripts');
 const PROJECT = 'td';
@@ -47,9 +48,8 @@ export class ServerGhidra {
   async headless(args, timeoutMs) {
     fs.mkdirSync(this.projectDir, { recursive: true });
     const exe = path.join(this.config.ghidraHome, 'support', 'analyzeHeadless');
-    // Ghidra 11.2 is made for JDK 21; the system default may be newer.
-    const jdk21 = '/usr/lib/jvm/java-21-openjdk-amd64';
-    const javaHome = this.config.ghidraJavaHome ?? (fs.existsSync(jdk21) ? jdk21 : process.env.JAVA_HOME);
+    // Ghidra 12.2 needs JDK 25; `ghidraJavaHome` overrides a different default JDK.
+    const javaHome = this.config.ghidraJavaHome ?? process.env.JAVA_HOME;
     const env = { ...process.env, MAXMEM: this.config.ghidraMaxMem ?? '6G', ...(javaHome ? { JAVA_HOME: javaHome, PATH: `${javaHome}/bin:${process.env.PATH}` } : {}) };
     const r = await run(exe, [this.projectDir, PROJECT, ...args, '-scriptPath', SCRIPTS_DIR], { timeoutMs, env });
     if (r.code !== 0) throw new Error(`Ghidra failed (exit ${r.code}): ${r.output.slice(-2000)}`);
@@ -101,7 +101,8 @@ export class ServerGhidra {
     const old = this.info();
     fs.renameSync(tmp, path.join(this.dir, name));
     const sha256 = await sha256File(path.join(this.dir, name));
-    const info = { version: v.id, file: name, sha256, size: fs.statSync(path.join(this.dir, name)).size, builtAt: Date.now(), commit: head, functions: n, ghidra: this.config.ghidraVersion ?? '11.2.1' };
+    const ghidra = ghidraVersionAt(this.config.ghidraHome) ?? this.config.ghidraVersion ?? GHIDRA_RELEASE.version;
+    const info = { version: v.id, file: name, sha256, size: fs.statSync(path.join(this.dir, name)).size, builtAt: Date.now(), commit: head, functions: n, ghidra };
     fs.writeFileSync(path.join(this.dir, 'package.json'), JSON.stringify(info, null, 2));
     if (old?.file && old.file !== name) fs.rmSync(path.join(this.dir, old.file), { force: true });
     this.store.setMeta('ghidra.refreshedAt', Date.now());

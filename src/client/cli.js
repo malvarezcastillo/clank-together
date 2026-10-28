@@ -296,7 +296,7 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
     }
     case 'config': {
       // td config                    show settings (token hidden)
-      // td config <key> <value>      set one, e.g. `td config ghidraHome D:\ghidra_11.2.1_PUBLIC`
+      // td config <key> <value>      set one, e.g. `td config ghidraHome D:\ghidra_12.2_PUBLIC`
       const [key, value] = args;
       const SETTABLE = ['ghidraHome', 'server'];
       if (!key) return print({ ...ws.config, token: ws.config.token ? '(set)' : null });
@@ -311,7 +311,7 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       if (args[0] === 'sync') return void (await ghidra.syncGhidraProject(ws), print('symbols applied'));
       if (args[0] === 'download') {
         const r = await ghidra.downloadGhidraProject(ws, { force: values.force });
-        return print(r.updated ? `Ghidra project of ${r.info.version} downloaded${ws.config.ghidraHome ? '' : ' (open it with Ghidra 11.2.1, or run td ghidra install)'}` : 'the Ghidra project is up to date');
+        return print(r.updated ? `Ghidra project of ${r.info.version} downloaded${ws.config.ghidraHome ? '' : ` (open it with Ghidra ${r.info.ghidra}, or run td ghidra install)`}` : 'the Ghidra project is up to date');
       }
       throw new Error('usage: td ghidra install|download|build|sync');
     case 'decompile':

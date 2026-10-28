@@ -31,6 +31,7 @@ import { PEImage } from '../shared/pe.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
 import { hex } from '../shared/annotations.js';
+import { GHIDRA_RELEASE } from '../shared/ghidra.js';
 
 // TD_WEB_DIR points through the release symlink in production, so new pages are live without a restart.
 const WEB_DIR = process.env.TD_WEB_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'web');
@@ -1011,7 +1012,8 @@ export function createApp(ctx) {
     auth(req);
     const info = ctx.ghidra.info();
     if (!info) throw new HttpError(404, 'no Ghidra project has been built on this server yet');
-    return { ...info, download: `${config.publicUrl}/api/ghidra-project/download` };
+    const ghidra = GHIDRA_RELEASE.version === info.ghidra ? GHIDRA_RELEASE : { version: info.ghidra };
+    return { ...info, release: ghidra, download: `${config.publicUrl}/api/ghidra-project/download` };
   });
 
   router.on('GET', '/api/ghidra-project/download', ({ req, res }) => {

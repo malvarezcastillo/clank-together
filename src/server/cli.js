@@ -13,6 +13,7 @@ import { Accounts } from './accounts.js';
 import { agentGuidance, setAgentGuidance, resetAgentGuidance } from './guidance.js';
 import { productivity, formatProductivity } from './stats.js';
 import { PEImage } from '../shared/pe.js';
+import { GHIDRA_RELEASE } from '../shared/ghidra.js';
 
 const TEMPLATE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'template');
 
@@ -323,9 +324,9 @@ async function main() {
   }
 
   if (cmd === 'ghidra' && (sub === 'build' || sub === 'refresh')) {
-    // The server's Ghidra project (needs ghidraHome in server.json and a JDK 21).
+    // The server's Ghidra project (needs ghidraHome in server.json and the JDK that Ghidra needs).
     const ctx = openServer(dataDir);
-    if (!ctx.ghidra.enabled) throw new Error('set ghidraHome in server.json to a Ghidra 11.2.1 installation');
+    if (!ctx.ghidra.enabled) throw new Error(`set ghidraHome in server.json to a Ghidra ${GHIDRA_RELEASE.version} installation`);
     ctx.store.setMeta('ghidra.commit', ctx.repo.head());
     const info = sub === 'build' ? await ctx.ghidra.build() : await ctx.ghidra.refresh();
     console.log(JSON.stringify(info, null, 2));

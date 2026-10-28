@@ -240,10 +240,13 @@ async function remoteCheck(ws, targets, { wait = true, explicit = false } = {}) 
 
 /**
  * The original function as text. A local Ghidra (td ghidra install/build) answers locally;
- * otherwise the server's Ghidra export does.
+ * otherwise, or when it is older than the release td pins (it cannot open the server's project),
+ * the server's Ghidra export does.
  */
 export async function original(ws, query, kind) {
-  if (ws.config.ghidraHome) {
+  const { ghidraVersionAt, ghidraAtLeast, GHIDRA_RELEASE } = await import('../shared/ghidra.js');
+  const local = ws.config.ghidraHome ? ghidraVersionAt(ws.config.ghidraHome) : null;
+  if (local && ghidraAtLeast(local, GHIDRA_RELEASE.version)) {
     const { decompile, disassemble } = await import('./ghidra.js');
     const s = ws.findSymbol(query);
     const addr = s?.addr ?? (/^0x[0-9a-f]+$/i.test(query) ? Number.parseInt(query, 16) : null);
