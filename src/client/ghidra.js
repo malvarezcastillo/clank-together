@@ -4,6 +4,7 @@
 // exe plus the symbol snapshot, so everyone sees the same names. Nothing done in
 // Ghidra flows back except through source code and symbol requests.
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,6 +34,22 @@ async function scriptsDir(ws) {
 const PROJECT_NAME = 'td';
 const PROGRAM = 'target.exe';
 
+/**
+ * The workspace's Ghidra project directory. Ghidra 12 refuses project paths with an element that
+ * starts with '.', so it cannot live under .td/: it goes to ~/clank-ghidra/<workspace hash>.
+ * A project unpacked under .td/ghidra by an older td is moved there.
+ */
+export function projectDir(ws) {
+  const id = crypto.createHash('sha256').update(path.resolve(ws.dir).toLowerCase()).digest('hex').slice(0, 16);
+  const dir = path.join(os.homedir(), 'clank-ghidra', id);
+  const legacy = path.join(ws.tdDir, 'ghidra');
+  if (!fs.existsSync(dir) && fs.existsSync(path.join(legacy, `${PROJECT_NAME}.gpr`))) {
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    fs.renameSync(legacy, dir);
+  }
+  return dir;
+}
+
 export function ghidraHome(ws) {
   return ws.config.ghidraHome ?? null;
 }
@@ -47,7 +64,7 @@ function headless(ws) {
 
 async function runHeadless(ws, args, timeoutMs) {
   const exe = headless(ws);
-  const projDir = path.join(ws.tdDir, 'ghidra');
+  const projDir = projectDir(ws);
   fs.mkdirSync(projDir, { recursive: true });
   const full = [projDir, PROJECT_NAME, ...args, '-scriptPath', await scriptsDir(ws)];
   // .bat files need a shell on Windows.
@@ -109,7 +126,7 @@ function writeSymbolFile(ws) {
 
 /** (Re)creates the local Ghidra project from the target exe and the symbol snapshot. */
 export async function buildGhidraProject(ws) {
-  const projDir = path.join(ws.tdDir, 'ghidra');
+  const projDir = projectDir(ws);
   fs.rmSync(projDir, { recursive: true, force: true });
   const symFile = writeSymbolFile(ws);
   await runHeadless(ws, ['-import', ws.targetFile, '-overwrite', '-postScript', 'ApplySymbols.java', symFile], 3_600_000);
@@ -149,13 +166,13 @@ export async function downloadGhidraProject(ws, { force = false } = {}) {
   const client = new Api(ws.config.server, ws.config.token);
   const info = await client.get('/api/ghidra-project');
   await ensureGhidraFor(ws, info.release ?? (info.ghidra ? { version: info.ghidra } : null));
-  if (!force && ws.config.ghidraPackage === info.sha256 && fs.existsSync(path.join(ws.tdDir, 'ghidra', `${PROJECT_NAME}.gpr`))) {
+  if (!force && ws.config.ghidraPackage === info.sha256 && fs.existsSync(path.join(projectDir(ws), `${PROJECT_NAME}.gpr`))) {
     return { updated: false, info };
   }
   const tgz = path.join(ws.tdDir, 'ghidra-project.tar.gz');
   console.error(`downloading the Ghidra project of ${info.version} (${(info.size / 1048576).toFixed(0)} MB)...`);
   await client.download(info.download, tgz, info.sha256);
-  const projDir = path.join(ws.tdDir, 'ghidra');
+  const projDir = projectDir(ws);
   fs.rmSync(projDir, { recursive: true, force: true });
   fs.mkdirSync(projDir, { recursive: true });
   const tar = os.platform() === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'tar.exe') : 'tar';
