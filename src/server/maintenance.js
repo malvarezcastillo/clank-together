@@ -50,6 +50,8 @@ export class Maintenance {
   }
 
   async verifyAndMerge(batch) {
+    // The verifier pump synchronized the repository at the idle cohort boundary, before this
+    // batch entered a lane. Never fetch here: another batch may already be compiling.
     const files = JSON.parse(batch.files_json);
     const back = (returned, details = {}) => ({ state: 'returned', result: { returned, ...details } });
     const sourceDir = this.project.sourceDirs[0];

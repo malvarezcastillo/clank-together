@@ -51,6 +51,7 @@ Maintenance (maintainers: structural changes with no function tasks)
   td maintenance submit --files a.cpp,b.h --notes T   verified like a batch; merges only when no
                                               function's compiled code changes
   td maintenance symbol <id> [--size N] [--name N] [--retire] --reason T   correct the symbol database
+       [--decorated N | --swap-decorated-with ID]   correct a decorated name or atomically swap two
 
 Peer review (attempts that are not byte-identical; judge by reading, not by tools)
   td peer list                                attempts waiting for review
@@ -120,6 +121,8 @@ async function main() {
       files: { type: 'string' },
       reason: { type: 'string' },
       size: { type: 'string' },
+      decorated: { type: 'string' },
+      'swap-decorated-with': { type: 'string' },
       retire: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       free: { type: 'boolean', default: false },
@@ -218,11 +221,16 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
         return print(await ops.submitMaintenance(ws, files, { notes: values.notes }));
       }
       if (sub === 'symbol') {
-        if (!id || !values.reason) throw new Error('usage: td maintenance symbol <id> [--size N] [--name N] [--retire] --reason "evidence"');
-        const body = { reason: values.reason, ...(values.size && { size: Number(values.size) }), ...(values.name && { name: values.name }), ...(values.retire && { retire: true }) };
-        const r = await client.post(`/api/admin/symbols/${id}`, body);
-        await ops.refreshSymbols(ws);
-        return print(r);
+        if (!id || !values.reason) throw new Error('usage: td maintenance symbol <id> [--size N] [--name N] [--retire] [--decorated N | --swap-decorated-with ID] --reason "evidence"');
+        const body = {
+          reason: values.reason,
+          ...(values.size !== undefined && { size: Number(values.size) }),
+          ...(values.name !== undefined && { name: values.name }),
+          ...(values.retire && { retire: true }),
+          ...(values.decorated !== undefined && { decorated: values.decorated }),
+          ...(values['swap-decorated-with'] !== undefined && { swapDecoratedWith: values['swap-decorated-with'] }),
+        };
+        return print(await ops.correctSymbol(ws, id, body));
       }
       throw new Error('usage: td maintenance submit|symbol ...');
     }

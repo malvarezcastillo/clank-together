@@ -106,6 +106,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'td_correct_symbol',
+    description: 'Maintainers only: correct symbol metadata from original-binary evidence, recording old/new values and the reason. Set decorated to replace one mapping, or swapDecoratedWith to atomically exchange two existing names of symbols with the same kind (no other correction fields with a swap). IDs, addresses, function state and confirmations remain unchanged for name corrections. Refreshes the workspace symbol snapshot.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: str('stable symbol ID to correct'),
+        reason: { type: 'string', minLength: 1, maxLength: 500, description: 'original-binary evidence for this correction' },
+        size: { type: 'integer', minimum: 1, description: 'correct size in the current target version' },
+        name: { type: ['string', 'null'], maxLength: 200, description: 'human-readable name; null clears it' },
+        decorated: { type: 'string', minLength: 1, maxLength: 2048, pattern: '^[!-~]+$', description: 'exact decorated name; visible ASCII only, no whitespace or truncation' },
+        swapDecoratedWith: { type: 'string', pattern: '^(fn|gl|vt|st)_[0-9]+$', description: 'other stable ID of the same symbol kind whose decorated name is exchanged with this one' },
+        retire: { type: 'boolean', description: 'retire a global only after main no longer annotates it' },
+      },
+      required: ['id', 'reason'],
+    },
+    run: async (ws, { id, ...correction }) => ops.correctSymbol(ws, id, correction),
+  },
+  {
     name: 'td_check',
     description:
       'Compile on this machine and compare every annotated function against the original bytes: status, score and byte-level diffs. Named files are compiled over a clean copy of HEAD (other uncommitted edits, such as another agent\'s unfinished work, are left out); default: the working tree with its changed files (and one unit per changed header). includers: true compiles every unit that includes a changed header, as the merge will; do that before submitting a header change. Needs td_toolchain_install once.',

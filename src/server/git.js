@@ -13,7 +13,7 @@ export class Repo {
 
   git(args, opts = {}) {
     try {
-      return execFileSync('git', args, { cwd: this.dir, encoding: opts.encoding === undefined ? 'utf8' : opts.encoding, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], input: opts.input });
+      return execFileSync('git', args, { cwd: this.dir, encoding: opts.encoding === undefined ? 'utf8' : opts.encoding, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], input: opts.input, timeout: opts.timeout, env: opts.env });
     } catch (e) {
       // git's own explanation, not just "Command failed".
       const why = `${e.stderr ?? ''}${e.stdout ?? ''}`.trim();
@@ -28,10 +28,19 @@ export class Repo {
 
   isAncestor(commit) {
     try {
-      this.git(['merge-base', '--is-ancestor', commit, 'HEAD']);
-      return true;
+      return this.ancestorOf(commit, 'HEAD');
     } catch {
-      return false;
+      return false; // a submitted base may not exist locally
+    }
+  }
+
+  ancestorOf(commit, descendant) {
+    try {
+      this.git(['merge-base', '--is-ancestor', commit, descendant]);
+      return true;
+    } catch (e) {
+      if (e.status === 1) return false;
+      throw e;
     }
   }
 
@@ -80,6 +89,37 @@ export class Repo {
 
   isClean() {
     return this.git(['status', '--porcelain']).trim() === '';
+  }
+
+  /** Fetches the branch we push, without discarding local commits or working-tree edits. */
+  sync(remote) {
+    const local = this.head();
+    let branch;
+    try {
+      branch = this.git(['symbolic-ref', '--quiet', 'HEAD']).trim();
+    } catch (e) {
+      throw new Error(`repository sync refused at local HEAD ${local}: no checked-out branch; check out the branch to synchronize`, { cause: e });
+    }
+    const target = `${remote} ${branch}`;
+    try {
+      // Explicit refspec: never trust a stale tracking ref or fetch a differently named upstream.
+      this.git(['fetch', '--no-tags', '--', remote, branch], { timeout: 120_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' } });
+      const upstream = this.git(['rev-parse', '--verify', 'FETCH_HEAD^{commit}']).trim();
+      const result = { remote, branch, before: local, head: local, remoteHead: upstream };
+      if (!this.isClean()) {
+        throw new Error(`dirty server working tree at local HEAD ${local}, remote ${upstream}; preserve and commit or move the edits before retrying; no working-tree files were changed`);
+      }
+      if (local === upstream) return { ...result, state: 'current' };
+      if (this.ancestorOf(upstream, local)) return { ...result, state: 'ahead' };
+      if (!this.ancestorOf(local, upstream)) {
+        throw new Error(`diverged: local HEAD ${local}, remote ${upstream}; a maintainer must reconcile these histories explicitly and retry; no reset, rebase or merge was performed`);
+      }
+      // --no-overwrite-ignore also preserves ignored local files that become tracked upstream.
+      this.git(['-c', 'merge.autoStash=false', 'merge', '--ff-only', '--no-autostash', '--no-overwrite-ignore', upstream]);
+      return { ...result, state: 'fast-forward', head: this.head() };
+    } catch (e) {
+      throw new Error(`repository sync from ${target} failed (local HEAD ${local}): ${e.message}`, { cause: e });
+    }
   }
 
   /**

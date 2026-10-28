@@ -82,7 +82,7 @@ export async function maybeUpdate({ server, force = false, log = (m) => process.
     if (!force && state.checkedAt && Date.now() - state.checkedAt < CHECK_EVERY_MS) return null;
     state.checkedAt = Date.now();
 
-    const res = await fetch(`${base}/download/SHA256SUMS`, { signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${base}/download/SHA256SUMS`, { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return writeState(state), null;
     const want = new RegExp(`^([0-9a-f]{64})\\s+${ASSET.replace('.', '\\.')}$`, 'm').exec(await res.text())?.[1];
     if (!want || want === (await ownHash(exe, state))) return writeState(state), null;
@@ -91,7 +91,8 @@ export async function maybeUpdate({ server, force = false, log = (m) => process.
     // Slow connections take as long as they need; only a download that stalls is given up.
     const stall = new AbortController();
     let timer = setTimeout(() => stall.abort(), STALL_MS);
-    const bin = await fetch(`${base}/download/${ASSET}`, { signal: stall.signal });
+    // A new manifest must not reuse a CDN's cached copy of the previous build.
+    const bin = await fetch(`${base}/download/${ASSET}?sha256=${want}`, { signal: stall.signal });
     if (!bin.ok) return clearTimeout(timer), writeState(state), null;
     const parts = [];
     for await (const chunk of bin.body) {

@@ -319,6 +319,13 @@ export async function submitMaintenance(ws, files, { notes } = {}) {
   return api(ws).post('/api/maintenance', { baseCommit: ws.head(), files: contents, notes });
 }
 
+/** Correct symbol metadata and immediately replace the workspace's cached name mappings. */
+export async function correctSymbol(ws, id, correction) {
+  const result = await api(ws).post(`/api/admin/symbols/${encodeURIComponent(id)}`, correction);
+  await refreshSymbols(ws);
+  return result;
+}
+
 /** Annotated functions whose definition differs from HEAD in the changed (or named) files under allowed paths. */
 function rewrittenFunctions(ws, allowed, files) {
   const out = new Set();

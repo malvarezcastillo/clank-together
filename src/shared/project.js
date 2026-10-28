@@ -26,13 +26,16 @@ export const DEFAULT_PROJECT = {
 const UNIT_EXT = new Set(['.c', '.cpp', '.cc', '.cxx']);
 const SOURCE_EXT = new Set([...UNIT_EXT, '.h', '.hpp', '.inl']);
 
-export function loadProject(repoDir) {
-  const file = path.join(repoDir, 'data', 'decomp.json');
-  const cfg = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+export function loadProject(repoDir, readFile = (file) => readProjectFile(repoDir, file)) {
+  const cfg = JSON.parse(readFile('data/decomp.json') ?? '{}');
   const project = { ...DEFAULT_PROJECT, ...cfg, matchPolicy: { ...DEFAULT_PROJECT.matchPolicy, ...(cfg.matchPolicy ?? {}) } };
   // Optional exact per-unit command lines: { env, shapes: [[args]], units: { file: shapeIndex } }.
   // Args may use ${SRC} (repo root) and ${TC} (toolchain root); the runner fills them in.
-  if (cfg.compileCommands) project.compile = JSON.parse(fs.readFileSync(path.join(repoDir, cfg.compileCommands), 'utf8'));
+  if (cfg.compileCommands) {
+    const commands = readFile(cfg.compileCommands);
+    if (commands === null) throw new Error(`missing compile commands: ${cfg.compileCommands}`);
+    project.compile = JSON.parse(commands);
+  }
   return project;
 }
 
@@ -71,9 +74,13 @@ export function addUnitsToCompileCommands(project, text, files) {
   return { text: JSON.stringify(doc, null, 1), added, units: doc.units };
 }
 
-export function loadToolchainLock(repoDir) {
-  const file = path.join(repoDir, 'data', 'toolchain.lock.json');
-  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+export function loadToolchainLock(repoDir, readFile = (file) => readProjectFile(repoDir, file)) {
+  return JSON.parse(readFile('data/toolchain.lock.json') ?? '{}');
+}
+
+function readProjectFile(repoDir, file) {
+  const absolute = path.join(repoDir, file);
+  return fs.existsSync(absolute) ? fs.readFileSync(absolute, 'utf8') : null;
 }
 
 /** Compiler flags and toolchain for one translation unit. */

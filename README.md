@@ -147,10 +147,45 @@ Unrepresentable characters are rejected rather than accepted as replacement `?`
 bytes. Configure source UTF-8 and the target execution code page separately; this
 does not permit new strings absent from the original executable.
 
+### Repository synchronization before verification
+
+When `server.json` sets `pushRemote`, the single worker fetches that remote's
+branch matching its checked-out branch at startup and before admitting each
+code/maintenance verification cohort. Existing verification, maintenance, merge
+and remote-check jobs drain first; new jobs do not start during synchronization.
+No remote is guessed when `pushRemote` is unset.
+
+Only a fast-forward is automatic. Local-ahead commits are retained. Divergence
+reports both full commit IDs and requires a maintainer to reconcile the histories;
+there is no automatic reset, rebase or merge commit. Dirty tracked, staged and
+untracked files block synchronization, and ignored files cannot be overwritten by
+incoming tracked files. Preserve local edits before retrying.
+
+Fetch/authentication failures and unsafe states leave batches queued with an
+explicit `result.repositorySync.error`; merge and remote-check admission pauses.
+The worker retries at its next pump and removes the diagnostic after a successful
+sync, so operator repairs do not require resubmission or a restart. Fetch is
+noninteractive and bounded to two minutes.
+
+After synchronization the worker reloads `data/decomp.json`, its selected
+compile-command file and `data/toolchain.lock.json` from one committed snapshot,
+updates the shared project object and invalidates checks cached under old settings.
+The separate web process adopts only the published snapshot, never partially
+updated working-tree configuration. Direct uncommitted configuration changes are
+not loaded this way; commit them, or restart web and worker when no remote is used.
+
+
 ## Building td
 
 `node tools/build-td/build.mjs` (Node 22.21) writes `dist/td-windows-x64.exe`, `dist/td-linux-x64` and
 `SHA256SUMS`; copy them to `<dataDir>/downloads` on the server.
+
+These download names are mutable: the server sends `Cache-Control: no-store` on `/download/`
+responses, including the manifest and compressed binaries. Self-updates revalidate the manifest,
+request the binary with `?sha256=<expected hash>` to bypass an older unversioned CDN entry, and
+still verify its SHA-256 before replacing the installed executable. When deploying this policy
+behind a CDN, purge existing `/download/` cache entries once: new origin headers do not evict
+already-cached responses used by older clients.
 
 ## Tests
 
@@ -160,7 +195,8 @@ does not permit new strings absent from the original executable.
 
 Set `"globalRules": true` in the target repository's `decomp.json` to enable the
 source-level global gate. It is opt-in; deploying this server does not enable it
-for other projects. Restart web and worker after changing project configuration.
+for other projects. Committed configuration is refreshed by repository synchronization
+when `pushRemote` is configured; otherwise restart web and worker after changing it.
 
 The verifier applies the payload over current main before checking it, and the
 merger checks again before committing. Both ordinary and maintenance batches use
@@ -194,6 +230,38 @@ gates, compiles affected units and compares effective code against a fresh main
 build. Behavior-changing function work must use the normal task/review path.
 `td maintenance symbol <id> --size N --reason "evidence"` corrects metadata;
 `--retire` is allowed only after main no longer annotates that global ID.
+
+From a contributor workspace, a maintainer can correct a decorated/linker name
+without changing a symbol's ID, address, task state, match state or confirmations:
+
+```sh
+td maintenance symbol fn_00123 --decorated '?CorrectName@@YAXXZ' --reason "original-binary evidence"
+td maintenance symbol fn_00123 --swap-decorated-with fn_00456 --reason "call targets show the names were reversed"
+```
+
+The maintained HTTP route is `POST /api/admin/symbols/:id`. Send either
+`{"decorated":"?CorrectName@@YAXXZ","reason":"original-binary evidence"}` or
+`{"swapDecoratedWith":"fn_00456","reason":"call-target evidence"}`. MCP exposes
+the same fields through `td_correct_symbol`, with an additional `id` argument.
+Both clients refresh their symbol snapshots after a successful correction.
+
+`decorated` must be a string of 1-2048 visible ASCII characters, with no whitespace
+or control characters; it is never coerced, trimmed or truncated. C-linkage names
+are supported as well as C++ decorated names. Null and empty values are rejected.
+The evidence `reason` must be a nonblank string of at most 500 characters.
+Unknown request fields are rejected. Existing `size`, `name` and `retire` fields
+remain available; a swap cannot be combined with other corrections.
+
+A name already mapped to another ID returns HTTP 409 without applying any part
+of the request. A swap requires two distinct, existing, unambiguous mappings
+whose symbols have the same kind; it exchanges only their decorated names in
+one database transaction. Do not
+clear a mapping or use a temporary name as an intermediate step. Each affected
+ID receives a `symbol_corrected` event containing the acting user, `old` and
+`new` values, and the evidence reason (plus the other ID for a swap). Audit
+records and corrections commit together. Symbol snapshot caches in every web
+process and target version are invalidated by the committed correction, so an
+immediate conditional refresh observes the new names rather than a stale 304.
 
 Neither an unchanged-code fingerprint nor a successful unit compile proves that
 new global storage reproduces the original initializer/destructor behavior.

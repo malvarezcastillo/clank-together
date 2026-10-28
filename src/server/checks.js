@@ -115,7 +115,7 @@ export class CheckQueue {
   }
 
   pump() {
-    if (this.stopped) return;
+    if (this.stopped || this.verifier.repositoryBlocked) return;
     const max = this.config.remoteCheckConcurrency ?? 2;
     while (this.running < max) {
       const job = this.store.tx(() => {

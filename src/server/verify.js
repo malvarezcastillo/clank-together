@@ -8,7 +8,7 @@ import { freeTextErrorsAcross, executionCharset } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal } from '../shared/compare.js';
-import { listSources, isUnit, unitSettings } from '../shared/project.js';
+import { listSources, isUnit, unitSettings, loadProject, loadToolchainLock } from '../shared/project.js';
 import { changedNames, unitsMentioning } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
 import { sourceIncluders } from './includers.js';
@@ -56,6 +56,7 @@ export class Verifier {
 
   start() {
     this.stopped = false;
+    this.needsSync = !!this.config.pushRemote;
     this.store.run(`UPDATE batches SET state = 'queued' WHERE state = 'verifying'`);
     this.store.run(`UPDATE attempts SET state = 'queued' WHERE state = 'verifying'`);
     // Queue order needs every batch's size (batches from before sizes were recorded).
@@ -79,8 +80,77 @@ export class Verifier {
     this.stopped = true; // finishing verifications must not start new ones
   }
 
+  // A queued batch drains the existing cohort, including merge and remote-check lanes. Git
+  // and project reload are synchronous, so no job can start between the idle check and FF.
+  get syncPending() {
+    return !!this.config.pushRemote && (this.needsSync || !!this.store.get(`SELECT 1 FROM batches WHERE state = 'queued' AND kind IN ('code', 'maintenance') LIMIT 1`));
+  }
+
+  get repositoryBlocked() {
+    return this.syncPending || !!this.syncError;
+  }
+
+  /** Read one immutable commit, including a newly selected compile-command path. */
+  refreshProject(head = this.repo.head(), { invalidateChecks = true } = {}) {
+    if (this.projectHead === head) return false;
+    const readFile = (file) => this.repo.showMany(head, [file]).get(file);
+    const project = loadProject(this.repo.dir, readFile);
+    const lock = loadToolchainLock(this.repo.dir, readFile);
+    const digest = lock[project.toolchain]?.clSha256 ?? null;
+    const changed = JSON.stringify(project) !== JSON.stringify(this.project) || JSON.stringify(lock) !== JSON.stringify(this.config.toolchainLock);
+    if (changed) {
+      // Every component holds this same object; remove obsolete optional settings as well.
+      for (const key of Object.keys(this.project)) delete this.project[key];
+      Object.assign(this.project, project);
+      this.config.envDigest = digest;
+      this.config.toolchainLock = lock;
+      this.baselineAt?.clear();
+      this.trust?.forget();
+      // Compile results from old flags, roots or policy cannot be reused by mergeCheck.
+      if (invalidateChecks) this.store.run('DELETE FROM batch_checks');
+    }
+    this.projectHead = head;
+    return changed;
+  }
+
+  refreshPublishedProject() {
+    if (!this.config.pushRemote) return;
+    const head = this.store.getMeta('repository_project_head');
+    if (head) this.refreshProject(head, { invalidateChecks: false });
+  }
+
+  syncRepository() {
+    if (!this.config.pushRemote) {
+      this.syncError = null;
+      this.needsSync = false;
+      return;
+    }
+    if (this.running || this.merger?.busy || this.checks?.running) throw new Error('repository sync requires idle verification, merge and remote-check lanes');
+    const result = this.repo.sync(this.config.pushRemote);
+    this.refreshProject();
+    this.store.setMeta('repository_project_head', result.head);
+    this.syncError = null;
+    this.needsSync = false;
+    this.store.run(`UPDATE batches SET result_json = json_remove(result_json, '$.repositorySync') WHERE state = 'queued' AND json_extract(result_json, '$.repositorySync') IS NOT NULL`);
+    if (result.state === 'fast-forward') this.log.info(`repository fast-forwarded from ${result.before} to ${result.head} (${result.remote} ${result.branch})`);
+    return result;
+  }
+
   pump() {
     if (this.stopped) return;
+    if (this.repositoryBlocked) {
+      if (this.running || this.merger?.busy || this.checks?.running) return;
+      try {
+        this.syncRepository();
+      } catch (e) {
+        if (this.syncError !== e.message) this.log.error(e.message);
+        this.syncError = e.message;
+        // Infrastructure failures leave submissions queued for a clean retry, with the actual
+        // diagnostic visible in the batch result instead of a misleading bad-base rejection.
+        this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.repositorySync', json(?)) WHERE state = 'queued' AND kind IN ('code', 'maintenance')`, JSON.stringify({ error: e.message }));
+        return;
+      }
+    }
     const max = this.config.verifyConcurrency ?? 3;
     while (this.running < max) {
       // Verification compiles only the submitted units, so every batch is small here; the units

@@ -200,7 +200,7 @@ export class Merger {
       this.settleInactive();
     }
     const started = [];
-    while (!this.stopped && this.running < MERGE_SLOTS) {
+    while (!this.stopped && !this.verifier.repositoryBlocked && this.running < MERGE_SLOTS) {
       const pick = this.next(this.runningBig > 0);
       if (!pick) break;
       const big = (pick.batch.cost ?? 0) > BIG_BATCH;
@@ -470,6 +470,7 @@ export class Merger {
         this.log.error(`push to ${this.config.pushRemote} failed: ${e.message}`);
       }
     }
+    this.store.setMeta('repository_project_head', commit);
     this.onMerged?.(commit);
   }
 

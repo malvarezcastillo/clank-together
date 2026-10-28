@@ -67,8 +67,12 @@ export function openServer(dataDir, { log = console } = {}) {
   const config = loadConfig(dataDir);
   const store = new Store(path.join(config.dataDir, 'td.sqlite'));
   const repo = new Repo(path.join(config.dataDir, 'repo'));
-  const project = loadProject(repo.dir);
-  config.envDigest = loadToolchainLock(repo.dir)[project.toolchain]?.clSha256 ?? null;
+  // Web and worker share Git, not JS objects. Never read half of a working-tree FF.
+  const projectHead = config.pushRemote ? store.getMeta('repository_project_head') ?? repo.head() : null;
+  const readProjectFile = projectHead ? (file) => repo.showMany(projectHead, [file]).get(file) : undefined;
+  const project = loadProject(repo.dir, readProjectFile);
+  config.toolchainLock = loadToolchainLock(repo.dir, readProjectFile);
+  config.envDigest = config.toolchainLock[project.toolchain]?.clSha256 ?? null;
 
   let peCache = null;
   const getPe = () => {
@@ -94,6 +98,7 @@ export function openServer(dataDir, { log = console } = {}) {
   const peers = new PeerReviews({ store, project, trust });
   const verifier = new Verifier({ store, config, repo, project, tasks, getPe, peers, trust, log });
   verifier.regions = regions;
+  verifier.projectHead = projectHead;
   const merger = new Merger({ store, config, repo, project, tasks, verifier, getPe, peers, log });
   const accounts = new Accounts(store);
   const originals = new Originals({ store });
@@ -102,6 +107,8 @@ export function openServer(dataDir, { log = console } = {}) {
   const maintenance = new Maintenance({ store, repo, project, verifier, merger, log });
   verifier.maintenance = maintenance;
   const checks = new CheckQueue({ store, repo, verifier, config, log });
+  verifier.merger = merger;
+  verifier.checks = checks;
   const credits = new Credits({ store });
   return { config, store, repo, project, tasks, regions, quality, trust, credits, verifier, merger, maintenance, getPe, accounts, peers, originals, ghidra, checks };
 }
@@ -176,7 +183,7 @@ export function createApp(ctx) {
       gitWeb: config.gitWebUrl ?? null,
       version: v ? { id: v.id, label: v.label ?? v.id, sha256: v.sha256, size: v.size, download: config.distributeTarget ? `${config.publicUrl}/api/target/${encodeURIComponent(v.id)}` : null } : null,
       toolchain: project.toolchain,
-      toolchainLock: loadToolchainLock(repo.dir),
+      toolchainLock: config.pushRemote ? config.toolchainLock : loadToolchainLock(repo.dir),
       limits: { ...DEFAULT_LIMITS, ...project.lintLimits },
       matchPolicy: project.matchPolicy,
     };
@@ -200,12 +207,12 @@ export function createApp(ctx) {
   router.on('GET', '/api/symbols', ({ req, res, query }) => {
     const v = query.get('version') ? store.get('SELECT * FROM versions WHERE id = ?', query.get('version')) : store.currentVersion();
     if (!v) throw new HttpError(404, 'unknown version');
-    // Building it takes a while; a minute-old table is fine for agents.
+    // A correction revision invalidates cached snapshots in every web process and version.
     const { body, etag } = cached(`symbols:${v.id}`, 60_000, () => {
       const rows = [...store.symbolMap(v.id).values()].map((s) => [s.id, s.kind, s.addr, s.size, s.name, s.decorated, s.library ? 1 : 0, s.unit]);
       const json = JSON.stringify({ version: v.id, columns: ['id', 'kind', 'addr', 'size', 'name', 'decorated', 'library', 'unit'], symbols: rows });
       return { body: json, etag: `"${crypto.createHash('sha1').update(json).digest('hex')}"` };
-    });
+    }, store.getMeta('symbolCorrectionsRevision'));
     const headers = { etag, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' };
     if (req.headers['if-none-match'] === etag) {
       res.writeHead(304, headers);
@@ -220,11 +227,11 @@ export function createApp(ctx) {
   const ACTIVE_MS = 15 * 60_000;
   // Public numbers every open page polls: computed at most once per `ttl` and shared by everyone.
   const shared = new Map();
-  const cached = (key, ttl, compute) => {
+  const cached = (key, ttl, compute, revision = null) => {
     const hit = shared.get(key);
-    if (hit && Date.now() - hit.at < ttl) return hit.value;
+    if (hit && hit.revision === revision && Date.now() - hit.at < ttl) return hit.value;
     const value = compute();
-    shared.set(key, { at: Date.now(), value });
+    shared.set(key, { at: Date.now(), value, revision });
     return value;
   };
 
@@ -859,31 +866,70 @@ export function createApp(ctx) {
     return { id: r.symbol.id, kind: r.symbol.kind, created: r.created, annotation: `// ${{ function: 'FUNCTION', global: 'GLOBAL', vtable: 'VTABLE', string: 'STRING' }[kind]}: ${r.symbol.id}` };
   });
 
-  // Corrections to the symbol database a maintainer makes from evidence in the original: a size,
-  // a name, or a global that is not one (an address inside another object, registered by mistake).
+  // Evidence-backed metadata corrections never change stable IDs or function match/review state.
+  // Decorated names can be replaced or exchanged atomically when two mappings were reversed.
   // Retiring removes its address in the current version, so nothing resolves to it any more; its
   // ID stays reserved. Only symbols no file on main annotates may be retired: a maintenance batch
   // removes those annotations first.
   router.on('POST', '/api/admin/symbols/:id', async ({ req, params }) => {
     const user = auth(req, { role: 'maintainer' });
     const body = await readJson(req, 4096);
-    const sym = store.get('SELECT * FROM symbols WHERE id = ?', String(params.id));
-    if (!sym) throw new HttpError(404, 'no such symbol');
-    const v = store.currentVersion();
-    const reason = String(body.reason ?? '').trim().slice(0, 500);
-    if (!reason) throw new HttpError(400, 'reason is required: the evidence for the correction');
-    const changes = {};
-    store.tx(() => {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'body must be an object');
+    const allowed = ['reason', 'size', 'name', 'retire', 'decorated', 'swapDecoratedWith'];
+    if (Object.keys(body).some((key) => !allowed.includes(key))) throw new HttpError(400, 'unknown symbol correction field');
+    if (typeof body.reason !== 'string' || !body.reason.trim() || body.reason.length > 500) throw new HttpError(400, 'reason must be 1-500 characters: the evidence for the correction');
+    const reason = body.reason.trim();
+    const validDecorated = (value) => typeof value === 'string' && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]/.test(value);
+    if (body.decorated !== undefined && !validDecorated(body.decorated)) throw new HttpError(400, 'decorated must be 1-2048 visible ASCII characters without whitespace');
+    if (body.retire !== undefined && typeof body.retire !== 'boolean') throw new HttpError(400, 'retire must be a boolean');
+    if (body.swapDecoratedWith !== undefined) {
+      if (typeof body.swapDecoratedWith !== 'string' || !/^(fn|gl|vt|st)_[0-9]+$/.test(body.swapDecoratedWith) || body.swapDecoratedWith === params.id) throw new HttpError(400, 'swapDecoratedWith must be a different symbol ID');
+      if (['size', 'name', 'retire', 'decorated'].some((key) => body[key] !== undefined)) throw new HttpError(400, 'swapDecoratedWith cannot be combined with other corrections');
+    }
+    const result = store.tx(() => {
+      const sym = store.get('SELECT * FROM symbols WHERE id = ?', params.id);
+      if (!sym) throw new HttpError(404, 'no such symbol');
+      const assertUnique = (decorated, ownerId) => {
+        const duplicate = store.get('SELECT id FROM symbols WHERE decorated = ? AND id != ? LIMIT 1', decorated, ownerId);
+        if (duplicate) throw new HttpError(409, `decorated name is already mapped to ${duplicate.id}; use swapDecoratedWith to exchange two mappings`);
+      };
+      if (body.swapDecoratedWith !== undefined) {
+        const other = store.get('SELECT * FROM symbols WHERE id = ?', body.swapDecoratedWith);
+        if (!other) throw new HttpError(404, 'no such swap symbol');
+        if (sym.kind !== other.kind) throw new HttpError(409, 'a swap requires symbols of the same kind');
+        if (!validDecorated(sym.decorated) || !validDecorated(other.decorated) || sym.decorated === other.decorated) throw new HttpError(409, 'a swap requires two distinct existing decorated names');
+        assertUnique(sym.decorated, sym.id);
+        assertUnique(other.decorated, other.id);
+        store.run('UPDATE symbols SET decorated = CASE id WHEN ? THEN ? ELSE ? END WHERE id IN (?, ?)', sym.id, other.decorated, sym.decorated, sym.id, other.id);
+        for (const [from, to] of [[sym, other], [other, sym]]) {
+          store.event('symbol_corrected', user.id, { id: from.id, decorated: to.decorated, old: { decorated: from.decorated }, new: { decorated: to.decorated }, swapDecoratedWith: to.id, reason });
+        }
+        store.setMeta('symbolCorrectionsRevision', Number(store.getMeta('symbolCorrectionsRevision') ?? 0) + 1);
+        return { id: sym.id, decorated: other.decorated, swapped: { id: other.id, decorated: sym.decorated } };
+      }
+      const v = store.currentVersion();
+      const changes = {};
+      const old = {};
       if (body.size !== undefined) {
         const size = Number(body.size);
         if (!Number.isSafeInteger(size) || size <= 0) throw new HttpError(400, 'size must be a positive integer');
+        const address = v && store.get('SELECT size FROM symbol_addresses WHERE symbol_id = ? AND version_id = ?', sym.id, v.id);
+        if (!address) throw new HttpError(409, 'symbol has no address in the current version');
+        old.size = address.size;
         store.run('UPDATE symbol_addresses SET size = ? WHERE symbol_id = ? AND version_id = ?', size, sym.id, v.id);
         changes.size = size;
       }
       if (body.name !== undefined) {
         const name = body.name === null ? null : String(body.name).slice(0, 200);
+        old.name = sym.name;
         store.run('UPDATE symbols SET name = ? WHERE id = ?', name, sym.id);
         changes.name = name;
+      }
+      if (body.decorated !== undefined) {
+        assertUnique(body.decorated, sym.id);
+        old.decorated = sym.decorated;
+        store.run('UPDATE symbols SET decorated = ? WHERE id = ?', body.decorated, sym.id);
+        changes.decorated = body.decorated;
       }
       if (body.retire === true) {
         if (sym.kind !== 'global') throw new HttpError(400, 'only globals are retired this way');
@@ -892,13 +938,17 @@ export function createApp(ctx) {
           annotated = repo.git(['grep', '-l', '-w', '-e', `GLOBAL: ${sym.id}`, 'HEAD', '--', '.']).trim();
         } catch {}
         if (annotated) throw new HttpError(409, `${sym.id} is still annotated on main (${annotated.split('\n').map((l) => l.replace(/^HEAD:/, '')).join(', ')}); remove those annotations with a maintenance batch first`);
+        if (!v) throw new HttpError(409, 'no current version');
+        old.retired = !store.get('SELECT 1 FROM symbol_addresses WHERE symbol_id = ? AND version_id = ?', sym.id, v.id);
         store.run('DELETE FROM symbol_addresses WHERE symbol_id = ? AND version_id = ?', sym.id, v.id);
         changes.retired = true;
       }
-      if (!Object.keys(changes).length) throw new HttpError(400, 'nothing to change: give size, name or retire: true');
-      store.event('symbol_corrected', user.id, { id: sym.id, ...changes, reason });
+      if (!Object.keys(changes).length) throw new HttpError(400, 'nothing to change: give size, name, decorated, swapDecoratedWith or retire: true');
+      store.event('symbol_corrected', user.id, { id: sym.id, ...changes, old, new: changes, reason });
+      store.setMeta('symbolCorrectionsRevision', Number(store.getMeta('symbolCorrectionsRevision') ?? 0) + 1);
+      return { id: sym.id, ...changes };
     });
-    return { id: sym.id, ...changes };
+    return result;
   });
 
   // --- the original function (assembly, pseudocode) for contributors without a local Ghidra.
@@ -1211,6 +1261,7 @@ export function createApp(ctx) {
   const handler = async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     try {
+      if (ctx.runsWorker === false) ctx.verifier?.refreshPublishedProject();
       if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/discord') {
         res.writeHead(302, { location: 'https://discord.gg/5fDwn7tVNj', 'cache-control': 'no-store' });
         return res.end();
@@ -1224,7 +1275,7 @@ export function createApp(ctx) {
         res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
         return res.end(script);
       }
-      if (req.method === 'GET' && url.pathname.startsWith('/download/')) return serveDownload(url.pathname.slice(10), req, res);
+      if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/download/')) return serveDownload(url.pathname.slice(10), req, res);
       if (req.method === 'GET' && !url.pathname.startsWith('/api/')) return serveStatic(url.pathname, res);
       const m = router.match(req.method, url.pathname);
       if (!m) throw new HttpError(404, 'not found');
@@ -1284,6 +1335,8 @@ function withUpdateNote(req, result) {
 }
 
 function serveDownload(name, req, res) {
+  // Published names are overwritten on every release, including SHA256SUMS and gzip copies.
+  res.setHeader('cache-control', 'no-store');
   const file = DOWNLOADS.has(name) && downloadsRoot ? path.join(downloadsRoot, name) : null;
   if (!file || !fs.existsSync(file)) {
     res.writeHead(404, { 'content-type': 'text/plain' });
@@ -1302,6 +1355,7 @@ function serveDownload(name, req, res) {
     vary: 'accept-encoding',
     ...(zipped ? { 'content-encoding': 'gzip' } : {}),
   });
+  if (req.method === 'HEAD') return res.end();
   fs.createReadStream(sent).pipe(res);
 }
 
