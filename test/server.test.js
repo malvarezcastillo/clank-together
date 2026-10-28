@@ -1389,6 +1389,19 @@ test('admin: a done task is reopened only with force, and then as open', async (
   ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, done.id);
 });
 
+test('admin: task reopen accepts admin API tokens but not maintainer tokens', async () => {
+  await ctx.accounts.createUser('rvadmintok', 'admin', PASSWORD);
+  await ctx.accounts.createUser('rvmainttok', 'maintainer', PASSWORD);
+  const done = ctx.store.get(`SELECT id FROM tasks WHERE state = 'done' LIMIT 1`);
+  const maintToken = ctx.accounts.createApiToken(ctx.accounts.byName('rvmainttok').id, 'agent').token;
+  assert.equal((await request('POST', `/api/admin/tasks/${done.id}`, { state: 'open', force: true }, { token: maintToken })).status, 403);
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = ?', done.id).state, 'done');
+  const adminToken = ctx.accounts.createApiToken(ctx.accounts.byName('rvadmintok').id, 'agent').token;
+  const forced = await request('POST', `/api/admin/tasks/${done.id}`, { state: 'open', force: true }, { token: adminToken });
+  assert.equal(forced.body.state, 'open');
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, done.id);
+});
+
 test('maintenance batches: maintainers only; merge when no compiled code changes, back otherwise', async () => {
   const contributor = await activeUser('mtcontrib');
   const maintainer = await activeUser('mtmaint', 'maintainer');

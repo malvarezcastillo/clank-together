@@ -1057,7 +1057,8 @@ export function createApp(ctx) {
 
   // One click for a whole batch: every function of it that waits for a human.
   router.on('POST', '/api/batches/:id/review', async ({ req, params }) => {
-    const user = auth(req, { role: 'reviewer', session: true });
+    const user = auth(req, { role: 'reviewer' });
+    if (user.via !== 'session' && !hasRole(user, 'admin')) throw new HttpError(403, 'this action needs a password login in the browser; only admin API tokens can do it');
     const body = await readJson(req, 16 * 1024);
     const attemptIds = Array.isArray(body.attemptIds) ? body.attemptIds.map((x) => intParam(x)) : null;
     const r = merger.reviewBatch(user, intParam(params.id), String(body.action ?? ''), body.comment ? String(body.comment) : null, { attemptIds, skipPeerReview: body.skipPeerReview === true });
@@ -1077,7 +1078,8 @@ export function createApp(ctx) {
   // --- maintainers and admins (browser session only)
 
   router.on('POST', '/api/admin/tasks/:id', async ({ req, params }) => {
-    auth(req, { role: 'maintainer', session: true });
+    const user = auth(req, { role: 'maintainer' });
+    if (user.via !== 'session' && !hasRole(user, 'admin')) throw new HttpError(403, 'this action needs a password login in the browser; only admin API tokens can do it');
     const body = await readJson(req, 4096);
     const t = tasks.get(intParam(params.id));
     if (body.priority !== undefined) store.run('UPDATE tasks SET priority = ? WHERE id = ?', Number(body.priority) | 0, t.id);

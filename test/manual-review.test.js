@@ -115,6 +115,22 @@ test('admin batch self-review leaves peer review alone unless explicitly skipped
   assert.deepEqual(skipped.body.results, [{ attemptId: pending, state: 'approved' }]);
 });
 
+test('batch review accepts admin API tokens but not tokens of other roles', async (t) => {
+  const { store, accounts, user, attempt, post } = await fixture(t);
+  const admin = user('admin');
+  const maintainer = user('maintainer');
+  const author = user('contributor');
+  const batch = Number(store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at) VALUES (?, 'base', '{}', 'open', ?)`, author.id, now()).lastInsertRowid);
+  const pending = attempt(author, 'peer_review', batch);
+  const maintainerToken = accounts.createApiToken(maintainer.id, 'agent').token;
+  assert.equal((await post(`/api/batches/${batch}/review`, { action: 'approve', skipPeerReview: true }, { token: maintainerToken })).status, 403);
+  assert.equal(store.get('SELECT state FROM attempts WHERE id = ?', pending).state, 'peer_review');
+  const adminToken = accounts.createApiToken(admin.id, 'agent').token;
+  const result = await post(`/api/batches/${batch}/review`, { action: 'approve', attemptIds: [pending], skipPeerReview: true }, { token: adminToken });
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.deepEqual(result.body.results, [{ attemptId: pending, state: 'approved' }]);
+});
+
 test('identical resubmissions retain an explicit review waiver without inventing peer votes', async (t) => {
   const { store, user, attempt, post } = await fixture(t);
   const admin = user('admin');
