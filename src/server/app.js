@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Store, now } from './db.js';
 import { Accounts, AccountError, hasRole, ROLES } from './accounts.js';
 import { Repo, serveGit } from './git.js';
-import { Tasks } from './tasks.js';
+import { Tasks, untrusted } from './tasks.js';
 import { Verifier } from './verify.js';
 import { Merger } from './merge.js';
 import { Maintenance } from './maintenance.js';
@@ -636,6 +636,53 @@ export function createApp(ctx) {
         return { attemptId: a.id, taskId: a.task_id, symbol: a.symbol_id, name: a.name, state: a.state, score: a.score, summary: fb?.summary ?? null, status: fb?.target?.status ?? null };
       }),
     });
+  });
+
+  // The caller's functions that came back and still need work: the latest attempt of each task,
+  // sent back, gate-rejected or returned with its batch, while the task is not done. Grouped by batch.
+  router.on('GET', '/api/me/returned', ({ req, query }) => {
+    const user = auth(req);
+    const since = query.get('since') ? intParam(query.get('since')) : 0;
+    const limit = Math.min(500, Math.max(1, intParam(query.get('limit') ?? '200')));
+    const rows = store.all(
+      `SELECT a.id, a.batch_id, a.task_id, a.state, a.score, a.finished_at, a.result_json, t.symbol_id, t.state AS task_state, t.cleanup_cycles,
+              s.name, s.unit, lu.name AS holder, b.result_json AS batch_result
+         FROM attempts a JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
+         LEFT JOIN users lu ON lu.id = t.lease_user AND t.state = 'leased'
+         LEFT JOIN batches b ON b.id = a.batch_id
+        WHERE a.user_id = ? AND a.state IN ('needs_cleanup', 'rejected', 'returned') AND COALESCE(a.finished_at, a.created_at) >= ?
+          AND t.state IN ('open', 'leased', 'needs_cleanup', 'hard')
+          AND NOT EXISTS (SELECT 1 FROM attempts n WHERE n.task_id = a.task_id AND n.id > a.id)
+        ORDER BY a.batch_id DESC, a.id LIMIT ?`,
+      user.id, since, limit,
+    );
+    const batches = new Map();
+    for (const r of rows) {
+      if (!batches.has(r.batch_id)) {
+        const br = r.batch_result ? JSON.parse(r.batch_result) : {};
+        batches.set(r.batch_id, { batchId: r.batch_id, returned: br.returned ?? null, functions: [] });
+      }
+      const res = r.result_json ? JSON.parse(r.result_json) : {};
+      const fb = res.feedback ?? {};
+      batches.get(r.batch_id).functions.push({
+        attemptId: r.id,
+        taskId: r.task_id,
+        symbol: r.symbol_id,
+        name: r.name,
+        unit: r.unit,
+        state: r.state,
+        score: r.score,
+        taskState: r.task_state,
+        holder: r.holder ?? null,
+        cleanupCycles: r.cleanup_cycles,
+        finishedAt: r.finished_at,
+        summary: fb.summary ?? res.returned ?? null,
+        peerOutcome: res.peerOutcome ?? null,
+        peerDifferent: peers.verdicts(r.id).filter((v) => v.verdict === 'different').map((v) => ({ reviewer: v.reviewer, reason: v.reason })),
+        reviewerComments: store.all(`SELECT r.action, r.comment FROM reviews r WHERE r.attempt_id = ? AND r.action != 'approve'`, r.id).map((c) => ({ action: c.action, comment: untrusted(c.comment) })),
+      });
+    }
+    return guided({ functions: rows.length, batches: [...batches.values()] });
   });
 
   router.on('POST', '/api/tasks/heartbeat-all', ({ req }) => {

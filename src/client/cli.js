@@ -39,6 +39,8 @@ Work (a region: a source file or class, done as a whole)
   td task <taskId>                            show a task's context
   td submit [taskId...] [--files a.cpp,b.h]   submit everything you hold (or these tasks, or only these files)
   td batch <batchId>                          state of a submitted batch, per function
+  td returned [--watch] [--json]              your functions that came back (sent back, rejected, returned), per batch,
+                                              with why; --watch polls and prints new ones as they come back
   td result <attemptId>                       show a verification result
   td withdraw <attemptId>                     take back a function waiting for review, to fix it
   td heartbeat [taskId] | td release <taskId> extend your leases (all without an id)
@@ -77,6 +79,36 @@ function printCheck(r) {
     if (u.unannotated.length) console.log(`  unannotated: ${u.unannotated.join(', ')}`);
   }
   for (const c of r.referenceConflicts) console.log(`conflict: ${c.message ?? c}`);
+}
+
+function printReturned(r) {
+  for (const b of r.batches) {
+    console.log(`\nbatch ${b.batchId}${b.returned ? `: ${b.returned}` : ''}`);
+    for (const f of b.functions) {
+      const score = f.score == null ? '-' : `${(f.score * 100).toFixed(1)}%`;
+      const held = f.taskState === 'leased' ? ` held by ${f.holder}` : ` task ${f.taskState}`;
+      console.log(`  #${f.taskId} ${f.symbol} ${(f.name ?? '').padEnd(30)} ${f.state.padEnd(13)} ${score.padStart(6)} attempt ${f.attemptId}${held}  ${f.unit ?? ''}`);
+      if (f.summary) console.log(`      ${f.summary}`);
+      if (f.peerOutcome) console.log(`      ${f.peerOutcome}`);
+      for (const v of f.peerDifferent) console.log(`      different (${v.reviewer}): ${v.reason?.text ?? v.reason ?? ''}`);
+      for (const c of f.reviewerComments) console.log(`      ${c.action}: ${c.comment?.text ?? ''}`);
+    }
+  }
+  console.log(`\n${r.functions} function(s) to fix in ${r.batches.length} batch(es); td claim <taskId>, fix, td check, td submit <taskIds> --files ...`);
+}
+
+async function watchReturned(client, json) {
+  const seen = new Set();
+  for (;;) {
+    const r = await client.get('/api/me/returned');
+    const fresh = r.batches.map((b) => ({ ...b, functions: b.functions.filter((f) => !seen.has(f.attemptId)) })).filter((b) => b.functions.length);
+    for (const b of r.batches) for (const f of b.functions) seen.add(f.attemptId);
+    if (fresh.length) {
+      const out = { functions: fresh.reduce((n, b) => n + b.functions.length, 0), batches: fresh };
+      json ? console.log(JSON.stringify(out)) : (console.log(`== ${new Date().toISOString()}`), printReturned(out));
+    }
+    await new Promise((done) => setTimeout(done, 60_000));
+  }
 }
 
 /** How an MCP client starts us: the td binary itself, or node + this script when run from source. */
@@ -133,6 +165,7 @@ async function main() {
       force: { type: 'boolean', default: false },
       workspace: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
+      watch: { type: 'boolean', default: false },
     },
   });
   const [cmd, ...args] = positionals;
@@ -181,6 +214,9 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       return print(args[0] ? await client.post(`/api/tasks/${args[0]}/heartbeat`) : await client.post('/api/tasks/heartbeat-all'));
     case 'batch':
       return print(await client.get(`/api/batches/${args[0]}`));
+    case 'returned':
+      if (values.watch) return watchReturned(client, values.json);
+      return values.json ? print(await client.get('/api/me/returned')) : printReturned(await client.get('/api/me/returned'));
     case 'release':
       return print(await client.post(`/api/tasks/${args[0]}/release`));
     case 'withdraw':

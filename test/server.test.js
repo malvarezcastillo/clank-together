@@ -1938,6 +1938,47 @@ test('the batch list shows every batch, also those sent back before review, filt
   ctx.store.run(`UPDATE attempts SET state = 'rejected' WHERE batch_id = ?`, sentBack);
 });
 
+test('returned lists the latest failed attempt of each unfinished task of the caller, per batch, with the reasons', async () => {
+  const token = await activeUser('rlister');
+  const me = ctx.accounts.byName('rlister');
+  await activeUser('rlother');
+  const other = ctx.accounts.byName('rlother');
+  const head = ctx.repo.head();
+  const task = (symbol) => {
+    ctx.store.run(`INSERT INTO symbols (id, kind, name, created_at) VALUES (?, 'function', ?, ?)`, symbol, symbol, now());
+    return { id: Number(ctx.store.run(`INSERT INTO tasks (symbol_id, state, updated_at) VALUES (?, 'open', ?)`, symbol, now()).lastInsertRowid), state: 'done' };
+  };
+  const [fixMe, fixedLater, done] = ['fn_rl_1', 'fn_rl_2', 'fn_rl_3'].map(task);
+  const batch = (user, result) => Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, result_json, created_at) VALUES (?, ?, '{}', 'returned', ?, ?)`, user.id, head, JSON.stringify(result), now()).lastInsertRowid);
+  const attempt = (user, task, state, batchId, feedback) =>
+    Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, result_json, created_at, finished_at) VALUES (?, ?, ?, '{}', ?, ?, ?, ?, ?)`, task.id, user.id, head, state, batchId, JSON.stringify({ feedback }), now(), now()).lastInsertRowid);
+  try {
+    const b = batch(me, { returned: '2 of 3 functions need work' });
+    const a = attempt(me, fixMe, 'needs_cleanup', b, { summary: 'peers sent it back' });
+    attempt(me, fixedLater, 'needs_cleanup', b, { summary: 'compilation failed' });
+    attempt(me, done, 'rejected', b, { summary: 'rejected by the static gate' });
+    attempt(other, fixedLater, 'peer_review', batch(other, {}), { summary: 'not byte-identical' });
+    ctx.store.run(`UPDATE tasks SET state = 'needs_cleanup' WHERE id = ?`, fixMe.id);
+    ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id = ?`, done.id);
+    ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, 'different', 'the original checks the flag first', ?)`, a, other.id, now());
+
+    assert.equal((await call('GET', '/api/me/returned')).status, 401);
+    const r = (await call('GET', '/api/me/returned', null, token)).body;
+    assert.equal(r.functions, 1, 'a newer attempt and a done task are not work to fix');
+    assert.equal(r.batches.length, 1);
+    assert.equal(r.batches[0].batchId, b);
+    assert.equal(r.batches[0].returned, '2 of 3 functions need work');
+    const [f] = r.batches[0].functions;
+    assert.deepEqual([f.attemptId, f.taskId, f.state, f.taskState, f.summary], [a, fixMe.id, 'needs_cleanup', 'needs_cleanup', 'peers sent it back']);
+    assert.equal(f.peerDifferent[0].reason.untrusted, true);
+    assert.equal(f.peerDifferent[0].reason.text, 'the original checks the flag first');
+    assert.equal((await call('GET', `/api/me/returned?since=${now() + 60_000}`, null, token)).body.functions, 0);
+    assert.equal((await call('GET', '/api/me/returned', null, await activeUser('rlister2'))).body.functions, 0, 'only the caller\'s own attempts');
+  } finally {
+    for (const t of [fixMe, fixedLater, done]) ctx.store.run(`UPDATE tasks SET state = ? WHERE id = ?`, t.state, t.id);
+  }
+});
+
 test('review batch filtering precedes pagination and ignores stale open envelopes', async () => {
   const token = await activeUser('batchfilter');
   const user = ctx.accounts.byName('batchfilter');

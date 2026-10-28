@@ -209,6 +209,12 @@ const TOOLS = [
     run: async (ws, a) => ops.api(ws).get(`/api/batches/${a.batchId}`),
   },
   {
+    name: 'td_returned',
+    description: 'Your functions that came back and still need work (sent back by peers or reviewers, rejected at a gate, returned with their batch), grouped by batch: task id, attempt id, why (summary, peer "different" reasons, reviewer comments) and whether the task is held. Fix them with td_claim_task, td_check and td_submit; read details with td_get_result.',
+    inputSchema: { type: 'object', properties: { since: int('only attempts finished at or after this time (ms since epoch)') } },
+    run: async (ws, a) => ops.api(ws).get(`/api/me/returned${a.since ? `?since=${a.since}` : ''}`),
+  },
+  {
     name: 'td_get_result',
     description: 'Get the verification result of a submitted attempt (state queued/verifying until done).',
     inputSchema: { type: 'object', properties: { attemptId: int('attempt id') }, required: ['attemptId'] },
