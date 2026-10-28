@@ -72,6 +72,7 @@ export async function setup({ server, dir, token, exe, runner, vc, sdk, image, t
     log(`WARNING: your cl.exe (sha256 ${ws.config.envDigest}) is not the pinned one (${lock.clSha256}); results may differ from the server`);
   }
   ws.save();
+  writeEditorCompileDb(ws);
   return ws;
 }
 
@@ -134,6 +135,34 @@ export async function refreshSymbols(ws) {
 }
 
 /**
+ * Writes the clangd compile database the repo's `.clangd` points at (`CompilationDatabase:`), from
+ * data/compile.json with this clone's paths and the local toolchain. Every clone (main or worker
+ * slot) gets its own, so editor diagnostics resolve includes of the clone being edited.
+ */
+export function writeEditorCompileDb(ws) {
+  const clangd = path.join(ws.dir, '.clangd');
+  const compile = ws.project.compile;
+  const runner = ws.config.runners?.[ws.project.toolchain];
+  if (!compile?.units || !runner?.toolchainRoot || !fs.existsSync(clangd)) return null;
+  const dbDir = /^\s*CompilationDatabase:\s*(\S+)\s*$/m.exec(fs.readFileSync(clangd, 'utf8'))?.[1];
+  if (!dbDir) return null;
+  const toolchain = (runner.type === 'wine' ? runner.toolchainRoot.replace(/^Z:/i, '') : runner.toolchainRoot).replace(/\\/g, '/');
+  const source = path.resolve(ws.dir).replace(/\\/g, '/');
+  const expand = (s) => s.replaceAll('${TC}', toolchain).replaceAll('${SRC}', source);
+  const compiler = expand(compile.compiler ?? runner.clPath);
+  const includes = (compile.env?.INCLUDE ?? '').split(';').filter(Boolean).map((p) => `/imsvc${expand(p)}`);
+  const entries = Object.entries(compile.units).map(([unit, shape]) => {
+    const file = `${source}/${unit}`;
+    const flags = compile.shapes[shape].filter((f) => !/^[/-]execution-charset:\./i.test(f)).map(expand);
+    return { directory: source, file, arguments: [compiler, ...flags, ...includes, file] };
+  });
+  const out = path.join(ws.dir, dbDir, 'compile_commands.json');
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, JSON.stringify(entries, null, 1));
+  return out;
+}
+
+/**
  * Fast-forwards the clone to the server's main and refreshes the symbol snapshot. Only a clean
  * working tree moves: in a shared checkout, uncommitted files may be someone's unfinished work.
  */
@@ -158,6 +187,7 @@ export async function sync(ws) {
   const note = changed.length
     ? `not fast-forwarded: ${changed.length} uncommitted files (${changed.slice(0, 5).join(', ')}); submit or set them aside first`
     : 'could not fast-forward (local commits or conflicting changes); merge origin/main yourself';
+  writeEditorCompileDb(ws);
   return { head: ws.head(), fastForwarded: pulled, symbols: snap.symbols.length, ghidra, note: pulled ? null : note };
 }
 
@@ -400,6 +430,7 @@ export async function toolchainInstall(ws, { log = console.log } = {}) {
   ws.config.runners = { [ws.project.toolchain]: runnerConfig({ toolchain: root, project: ws.project }) };
   ws.config.envDigest = await computeEnvDigest(ws, ws.project.toolchain);
   ws.save();
+  writeEditorCompileDb(ws);
   const pinned = loadToolchainLock(ws.dir)[ws.project.toolchain]?.clSha256;
   return {
     installed: root,
