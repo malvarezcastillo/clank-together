@@ -1118,7 +1118,7 @@ export function createApp(ctx) {
 
   // An admin merges a batch that came back only for lowering matching scores (merge.js).
   router.on('POST', '/api/admin/batches/:id/accept-regressions', async ({ req, params }) => {
-    const user = auth(req, { role: 'admin', session: true });
+    const user = auth(req, { role: 'admin' });
     const body = await readJson(req, 16 * 1024);
     const r = merger.acceptRegressions(user, intParam(params.id), body.comment ? String(body.comment) : null);
     if (runsWorker) setImmediate(() => merger.pump().catch(() => {}));
