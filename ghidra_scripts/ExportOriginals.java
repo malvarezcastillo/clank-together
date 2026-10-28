@@ -41,12 +41,12 @@ public class ExportOriginals extends GhidraScript {
                 String c;
                 DecompileResults r = ifc.decompileFunction(f, timeout, monitor);
                 if (r.decompileCompleted() && r.getDecompiledFunction() != null) {
-                    c = r.getDecompiledFunction().getC();
+                    c = r.getDecompiledFunction().getC().replace("\r\n", "\n");
                 } else {
                     c = null;
                     failed++;
                 }
-                out.write("{\"addr\":\"0x" + Long.toHexString(f.getEntryPoint().getOffset()) + "\",\"asm\":" + json(disassemble(f)) + ",\"c\":" + (c == null ? "null" : json(c)) + "}\n");
+                out.write("{\"addr\":\"0x" + Long.toHexString(f.getEntryPoint().getOffset()) + "\",\"asm\":" + json(disassemble(f).replace("\r\n", "\n")) + ",\"c\":" + (c == null ? "null" : json(c)) + "}\n");
                 if (++n % 1000 == 0) {
                     println("exported " + n + " functions");
                 }
