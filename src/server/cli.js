@@ -420,6 +420,7 @@ function init(dataDir) {
     const git = (...a) => execFileSync('git', a, { cwd: repoDir, stdio: 'pipe' });
     git('init', '-q', '-b', 'main');
     git('config', 'http.receivepack', 'false');
+    git('config', 'core.ignorecase', 'false');
     git('config', 'receive.denyCurrentBranch', 'refuse');
     git('add', '-A');
     git('-c', 'user.name=Clank Together', '-c', 'user.email=bot@clank-together.invalid', 'commit', '-q', '-m', 'Initial project skeleton');

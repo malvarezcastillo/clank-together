@@ -13,7 +13,10 @@ export class Repo {
 
   git(args, opts = {}) {
     try {
-      return execFileSync('git', args, { cwd: this.dir, encoding: opts.encoding === undefined ? 'utf8' : opts.encoding, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], input: opts.input, timeout: opts.timeout, env: opts.env });
+      // The canonical tree lives on a case-sensitive filesystem; a repo created elsewhere (or a
+      // stray config) can carry core.ignorecase=true, which makes `git add Md5.cpp` resolve to an
+      // already tracked MD5.cpp and silently drop the new file from the commit.
+      return execFileSync('git', ['-c', 'core.ignorecase=false', ...args], { cwd: this.dir, encoding: opts.encoding === undefined ? 'utf8' : opts.encoding, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], input: opts.input, timeout: opts.timeout, env: opts.env });
     } catch (e) {
       // git's own explanation, not just "Command failed".
       const why = `${e.stderr ?? ''}${e.stdout ?? ''}`.trim();
@@ -85,6 +88,11 @@ export class Repo {
     } catch {
       return null;
     }
+  }
+
+  /** Every file path tracked at a commit. */
+  trackedPaths(commit) {
+    return this.git(['ls-tree', '-r', '--name-only', '-z', commit]).split('\0').filter(Boolean);
   }
 
   isClean() {
@@ -185,6 +193,7 @@ export class Repo {
       fs.writeFileSync(abs, content);
     }
     this.git(['add', '--', ...Object.keys(files)]);
+    this.assertStaged(files);
     // Nothing to commit (the code is already on main, e.g. a function resubmitted unchanged).
     if (!this.git(['status', '--porcelain', '--', ...Object.keys(files)]).trim()) return this.head();
     const name = process.env.TD_GIT_AUTHOR_NAME;
@@ -237,6 +246,26 @@ export class Repo {
       throw error;
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Every written file must be in the index under exactly its own path and content. A path that
+   * the index resolves to a differently cased entry (or that is ignored) would otherwise vanish
+   * from the commit while the merge reports success.
+   */
+  assertStaged(files) {
+    const paths = Object.keys(files);
+    const staged = new Map();
+    for (const line of this.git(['ls-files', '-s', '-z', '--', ...paths]).split('\0').filter(Boolean)) {
+      const tab = line.indexOf('\t');
+      staged.set(line.slice(tab + 1), line.slice(0, tab).split(' ')[1]);
+    }
+    const expected = this.git(['hash-object', '--stdin-paths'], { input: paths.join('\n') + '\n' }).trim().split('\n');
+    const missing = paths.filter((p, i) => staged.get(p) !== expected[i]);
+    if (missing.length) {
+      this.git(['reset', '-q', '--', ...paths]);
+      throw new Error(`files did not reach the index under their own path (case collision or ignore rule?): ${missing.join(', ')}`);
     }
   }
 

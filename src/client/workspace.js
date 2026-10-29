@@ -106,6 +106,11 @@ export class Workspace {
     }
   }
 
+  /** Every file path HEAD tracks. */
+  trackedPaths() {
+    return this.gitRaw('ls-tree', '-r', '--name-only', '-z', 'HEAD').split('\0').filter(Boolean);
+  }
+
   /** Files changed relative to HEAD (modified, added, untracked). */
   changedFiles() {
     // Untrimmed: each porcelain line starts with a two-column status that may begin with a space.

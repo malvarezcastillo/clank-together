@@ -622,6 +622,7 @@ export class Verifier {
       limits: this.project.lintLimits,
       allowedPragmas: this.project.allowedPragmas,
       baseSize: (f) => this.repo.size('HEAD', f),
+      trackedPaths: this.repo.trackedPaths('HEAD'),
     });
     if (lintErrors.length) return finishAll('rejected', { summary: 'rejected by the static gate', lintErrors });
     if (!this.repo.isAncestor(batch.base_commit)) return finishAll('rejected', { summary: `base commit ${batch.base_commit} is not part of main; sync and resubmit` });

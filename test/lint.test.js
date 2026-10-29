@@ -110,3 +110,15 @@ test('preprocessed output catches asm hidden behind macros, ignoring compiler he
   assert.match(errors[0].message, /inline assembly/);
   assert.match(errors[0].file, /player\.cpp/);
 });
+
+test('paths that differ from main or each other only by letter case are rejected', () => {
+  const opts = { allowedPaths: ['src/**'], trackedPaths: ['src/Utility/MD5.cpp', 'src/Utility/MD5.h'] };
+  const clash = lintSubmission({ 'src/Utility/Md5.cpp': 'int x;\n' }, opts);
+  assert.equal(clash.length, 1);
+  assert.match(clash[0].message, /only by letter case from src\/Utility\/MD5\.cpp/);
+  assert.deepEqual(lintSubmission({ 'src/Utility/MD5.cpp': 'int x;\n' }, opts), [], 'the tracked spelling itself is fine');
+  assert.deepEqual(lintSubmission({ 'src/Utility/Md5State.cpp': 'int x;\n' }, opts), [], 'a distinct name is fine');
+  const twins = lintSubmission({ 'src/a/Foo.cpp': 'int x;\n', 'src/a/foo.cpp': 'int y;\n' }, { allowedPaths: ['src/**'] });
+  assert.equal(twins.length, 1);
+  assert.match(twins[0].message, /in the same submission/);
+});

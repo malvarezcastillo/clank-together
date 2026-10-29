@@ -139,18 +139,24 @@ export function lintSource(file, text, { allowedPragmas = DEFAULT_PRAGMAS, maxIn
 /**
  * Checks a submission's shape and content.
  * @param {Record<string,string>} files   path -> content
- * @param {{allowedPaths: string[], limits?: object, allowedPragmas?: string[], baseSize?: (path: string) => number | null}} opts
+ * @param {{allowedPaths: string[], limits?: object, allowedPragmas?: string[], baseSize?: (path: string) => number | null, trackedPaths?: Iterable<string>}} opts
  *   baseSize: the file's size on main (null when new). The size limits count what a submission
  *   adds: a file main already holds may be larger than maxFileBytes by maxFileGrowth over its size
  *   there, and only the part beyond the main size counts toward maxTotalBytes.
+ *   trackedPaths: every file main holds. A path that differs from one of them (or from another
+ *   file of the submission) only by letter case is rejected: on case-insensitive checkouts the
+ *   two are one file, so the second silently overwrites or never reaches the commit.
  */
-export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragmas, baseSize = () => null } = {}) {
+export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragmas, baseSize = () => null, trackedPaths = [] } = {}) {
   const L = { ...DEFAULT_LIMITS, ...limits };
   const errors = [];
   const entries = Object.entries(files ?? {});
   if (entries.length === 0) errors.push({ file: null, message: 'submission contains no files' });
   if (entries.length > L.maxFiles) errors.push({ file: null, message: `too many files (${entries.length} > ${L.maxFiles})` });
 
+  const byFold = new Map();
+  for (const t of trackedPaths) byFold.set(t.toLowerCase(), t);
+  const submittedFold = new Map();
   let total = 0;
   for (const [p, content] of entries) {
     const n = normalizeRepoPath(p);
@@ -158,6 +164,12 @@ export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragma
       errors.push({ file: p, message: 'invalid path' });
       continue;
     }
+    const fold = n.toLowerCase();
+    const tracked = byFold.get(fold);
+    if (tracked !== undefined && tracked !== n) errors.push({ file: n, message: `path differs only by letter case from ${tracked} on main; use that path or a distinct name` });
+    const twin = submittedFold.get(fold);
+    if (twin !== undefined && twin !== n) errors.push({ file: n, message: `path differs only by letter case from ${twin} in the same submission` });
+    submittedFold.set(fold, n);
     if (!SOURCE_EXT.has(path.posix.extname(n).toLowerCase())) errors.push({ file: n, message: 'only C/C++ source and header files may be submitted' });
     if (!matchesAny(n, allowedPaths)) errors.push({ file: n, message: `path is not allowed for this task (allowed: ${allowedPaths.join(', ')})` });
     if (typeof content !== 'string') {
