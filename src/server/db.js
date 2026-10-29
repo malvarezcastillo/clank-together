@@ -245,7 +245,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS region_claims (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
-  kind TEXT NOT NULL CHECK (kind IN ('unit', 'class')),
+  kind TEXT NOT NULL CHECK (kind IN ('unit', 'class', 'range')),
   key TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
@@ -307,6 +307,7 @@ export class Store {
     this.addColumn('attempts', 'token_id', 'INTEGER');
     this.addColumn('batches', 'token_id', 'INTEGER');
     this.addColumn('region_claims', 'token_id', 'INTEGER');
+    this.migrateRegionKinds();
     this.addColumn('api_tokens', 'quality_reset_at', 'INTEGER');
     // Trust (trust.js): what a verdict counts (1-3, frozen when given), and functions of trusted
     // authors accepted without peer review.
@@ -347,6 +348,35 @@ export class Store {
   addColumn(table, column, decl) {
     const cols = this.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
     if (!cols.includes(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
+
+  /** Lets region claims name an address range of unplaced functions (kind 'range'). Keeps every claim. */
+  migrateRegionKinds() {
+    const row = this.db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'region_claims'`).get();
+    if (!row || row.sql.includes("'range'")) return;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.exec('ALTER TABLE region_claims RENAME TO region_claims_old');
+      this.db.exec('DROP INDEX IF EXISTS region_claims_key');
+      this.db.exec(`CREATE TABLE region_claims (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        kind TEXT NOT NULL CHECK (kind IN ('unit', 'class', 'range')),
+        key TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        token_id INTEGER,
+        UNIQUE (user_id, kind, key)
+      )`);
+      this.db.exec(`INSERT INTO region_claims (id, user_id, kind, key, created_at, expires_at, token_id)
+                    SELECT id, user_id, kind, key, created_at, expires_at, token_id FROM region_claims_old`);
+      this.db.exec('DROP TABLE region_claims_old');
+      this.db.exec('CREATE INDEX IF NOT EXISTS region_claims_key ON region_claims(kind, key)');
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   /**

@@ -27,10 +27,11 @@ Setup
   td connect [--workspace <dir>]              connect your AI (registers with Claude Code, prints MCP settings)
   td mcp [--workspace <dir>]                  run the MCP server for your agent (stdio)
 
-Work (a region: a source file or class, done as a whole)
+Work (a region: a source file, a class, or a run of unplaced functions, done as a whole)
   td regions [--free] [--prefix P]            regions with open functions: free ones first
-  td region claim <file> | --class <Name>     claim a region (several agents may share one)
-  td region release <file> | --class <Name>   give a region back
+  td region claim <file> | --class <Name> | --range 0xA-0xB   claim a region (several agents may share one)
+  td region release <file> | --class <Name> | --range 0xA-0xB give a region back
+  td place <taskId>=<file.cpp>[:Class::Method] ...  put held functions that are in no source file into one
   td check [files...] [--includers]           compile + compare on this machine; named files over a clean HEAD
                                               (--includers: every unit that includes a changed header)
   td submit [--notes T]                       submit the region's work as one batch
@@ -234,10 +235,21 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
     }
     case 'region': {
       const [sub, key] = args;
-      const target = values.class ? { kind: 'class', key: values.class } : { kind: 'unit', key: key ? ops.relPath(ws, key) : null };
+      const target = values.class ? { kind: 'class', key: values.class } : values.range ? { kind: 'range', key: values.range } : { kind: 'unit', key: key ? ops.relPath(ws, key) : null };
       if (sub === 'claim') return print(await ops.claimRegion(ws, target));
       if (sub === 'release') return print(await ops.releaseRegion(ws, target));
-      throw new Error('usage: td region claim|release <file> | --class <Name>');
+      throw new Error('usage: td region claim|release <file> | --class <Name> | --range 0x<start>-0x<end>');
+    }
+    case 'place': {
+      const assignments = args.map((x) => {
+        const m = /^(\d+)=([^:]+)(?::(.+))?$/.exec(x);
+        if (!m) throw new Error('usage: td place <taskId>=<file.cpp>[:Class::Method] ...');
+        return { taskId: Number(m[1]), unit: ops.relPath(ws, m[2]), ...(m[3] && { name: m[3] }) };
+      });
+      if (!assignments.length) throw new Error('usage: td place <taskId>=<file.cpp>[:Class::Method] ...');
+      const r = await client.post('/api/tasks/place', { assignments });
+      await ops.refreshSymbols(ws);
+      return print(r);
     }
     case 'check': {
       const r = await ops.check(ws, args.map((f) => ops.relPath(ws, f)), { includers: values.includers });

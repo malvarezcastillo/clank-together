@@ -1300,6 +1300,42 @@ test('regions: two agents claim one file, the first accepted candidate merges, t
   ctx.verifier.check = realCheck;
 });
 
+test('regions: unplaced functions are claimable as an address range, placed, then released', async () => {
+  const agent = await activeUser('rgrange');
+  const v = ctx.store.currentVersion();
+  const a = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x7a0000, size: 16 }).symbol.id;
+  const b = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x7a0040, size: 16 }).symbol.id;
+  const far = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x7b0000, size: 16 }).symbol.id;
+  ctx.tasks.generate();
+  try {
+    const list = (await call('GET', '/api/regions?limit=1000', null, agent)).body.regions;
+    const run = list.find((r) => r.key === '0x7a0000-0x7a0040');
+    assert.ok(run, JSON.stringify(list.filter((r) => r.kind === 'range')));
+    assert.deepEqual([run.kind, run.open, run.free], ['range', 2, true]);
+    assert.ok(list.some((r) => r.key === '0x7b0000-0x7b0000'), 'a gap wider than one run starts the next one');
+
+    const c = await call('POST', '/api/regions/claim', { kind: 'range', key: '0x7A0000-0x7a0040' }, agent);
+    assert.equal(c.status, 200, JSON.stringify(c.body));
+    assert.equal(c.body.region.key, '0x7a0000-0x7a0040');
+    assert.equal(c.body.leased.length, 2);
+    assert.match(c.body.note, /td_place/);
+    const taskOf = (sym) => c.body.functions.find((x) => x.symbol === sym).taskId;
+    const account = ctx.accounts.byName('rgrange');
+    assert.ok(ctx.regions.covers(account, ctx.tasks.get(taskOf(a))));
+
+    const p = await call('POST', '/api/tasks/place', { assignments: [{ taskId: taskOf(a), unit: 'src/placed.cpp', name: 'Placed::Run' }] }, agent);
+    assert.equal(p.status, 200, JSON.stringify(p.body));
+    assert.ok(ctx.regions.covers(account, ctx.tasks.get(taskOf(a))), 'still covered once placed into a file');
+
+    assert.equal((await call('POST', '/api/regions/claim', { kind: 'range', key: '0x7a0040-0x7a0000' }, agent)).status, 400);
+    const r = await call('POST', '/api/regions/release', { kind: 'range', key: '0x7a0000-0x7a0040' }, agent);
+    assert.deepEqual(r.body, { released: 2 }, 'the placed function is given back too');
+  } finally {
+    ctx.store.run('DELETE FROM region_claims');
+    ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id IN (?, ?, ?)`, a, b, far);
+  }
+});
+
 test('revisions: merged functions of a claimed region are reviewed again; the task stays done whatever the outcome', async () => {
   const author = await activeUser('rvauthor');
   delete ctx.merger.pump;

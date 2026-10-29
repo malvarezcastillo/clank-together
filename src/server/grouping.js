@@ -18,7 +18,7 @@ export function className(name) {
 }
 
 // How far apart two functions may be and still count as one run.
-const RUN_GAP = 0x800;
+export const RUN_GAP = 0x800;
 const SANDWICH_SPAN = 0x10000;
 
 /**

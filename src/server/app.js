@@ -803,7 +803,9 @@ export function createApp(ctx) {
     return guided({
       ...r,
       baseCommit: repo.head(),
-      note: !r.leased.length && r.functions.every((f) => f.state === 'done' || f.state === 'skipped')
+      note: r.region.kind === 'range'
+        ? groupNote(r.leased.length, { kind: 'range' })
+        : !r.leased.length && r.functions.every((f) => f.state === 'done' || f.state === 'skipped')
         ? 'Every function of this region is on main. To improve merged code, edit it, check locally, and submit the rewritten functions by task id (td submit <taskId...> --files ...): each one is a revision, reviewed like new work; main and the task stay as they are if it is sent back.'
         : r.alsoClaimedBy.length
           ? `Also claimed by ${r.alsoClaimedBy.join(', ')}: you may submit any function of it; the first accepted candidate of each function merges. Prefer an unclaimed region (td_regions free) unless you mean to help here.`

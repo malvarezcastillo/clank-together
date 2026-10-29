@@ -22,14 +22,14 @@ const TOOLS = [
   {
     name: 'td_claim_region',
     description:
-      'Register a region for yourself before working on it: a source file (kind unit, key = repo path) or a class (kind class, key = class name). Leases every open function of it at once. Several agents may claim the same region (each may then submit any function of it; the first accepted candidate of a function merges), but prefer a region nobody claimed.',
-    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['unit', 'class'] }, key: str('repo path of the .cpp file, or the class name') }, required: ['key'] },
+      'Register a region for yourself before working on it: a source file (kind unit, key = repo path), a class (kind class, key = class name), or a run of functions in no source file yet (kind range, key = 0x<start>-0x<end> as td_regions lists it; place them with td_place, then port them). Leases every open function of it at once. Several agents may claim the same region (each may then submit any function of it; the first accepted candidate of a function merges), but prefer a region nobody claimed.',
+    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['unit', 'class', 'range'] }, key: str('repo path of the .cpp file, the class name, or the address range') }, required: ['key'] },
     run: async (ws, a) => ops.claimRegion(ws, { kind: a.kind ?? 'unit', key: a.key }),
   },
   {
     name: 'td_release_region',
     description: 'Give a region back (its functions you hold become open again).',
-    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['unit', 'class'] }, key: str('repo path or class name') }, required: ['key'] },
+    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['unit', 'class', 'range'] }, key: str('repo path, class name or address range') }, required: ['key'] },
     run: async (ws, a) => ops.releaseRegion(ws, { kind: a.kind ?? 'unit', key: a.key }),
   },
   {
