@@ -1854,11 +1854,12 @@ test('an admin sets a reviewer weight: it counts at once, also on verdicts alrea
   ctx.peers.submit(trusted, waiting, 'same', why, null);
   ctx.peers.submit(other, waiting, 'same', why, null);
   assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', waiting).state, 'peer_review', 'two to none');
-  const r = ctx.peers.setReviewWeight(trusted.id, 3);
+  assert.throws(() => ctx.peers.setReviewWeight(trusted.id, 3), /weight must be 1, 2 or auto/, 'admin weight is capped at 2');
+  const r = ctx.peers.setReviewWeight(trusted.id, 2);
   assert.deepEqual([r.reweighted, r.approved], [1, 1]);
-  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', waiting).state, 'approved', 'four to none: accepted');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', waiting).state, 'approved', 'three to none: accepted');
   const alone = open();
-  assert.equal(ctx.peers.submit(trusted, alone, 'same', why, null).weight, 3);
+  assert.equal(ctx.peers.submit(trusted, alone, 'same', why, null).weight, 2);
   assert.equal(ctx.store.get('SELECT state FROM attempts WHERE id = ?', alone).state, 'peer_review', 'one reviewer never decides');
   assert.ok(ctx.peers.available(other, 1000).some((o) => o.attempt_id === alone), 'still offered: a second reviewer settles it');
   ctx.peers.submit(other, alone, 'same', why, null);

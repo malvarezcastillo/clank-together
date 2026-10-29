@@ -140,7 +140,7 @@ export class Trust {
       const u = this.store.get('SELECT peer_review_blocked AS blocked, review_weight AS fixed FROM users WHERE id = ?', userId);
       const tier = u?.blocked ? null : p.weights.find((t) => n.different >= t.minDifferent && sameScore >= t.same && differentScore >= t.different);
       // An admin may set the weight for an account they trust (or distrust); it overrides the record.
-      const weight = u?.fixed != null && !u.blocked ? u.fixed : tier?.weight ?? 1;
+      const weight = u?.fixed != null && !u.blocked ? Math.min(u.fixed, 2) : tier?.weight ?? 1;
       return { ...n, sameScore, differentScore, weight, setByAdmin: u?.fixed != null, tiers: p.weights };
     });
   }

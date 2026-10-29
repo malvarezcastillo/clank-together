@@ -328,6 +328,10 @@ export class Store {
     this.db.exec('CREATE INDEX IF NOT EXISTS events_type_at ON events(type, at)'); // merge rates, feed
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS peer_reviews_reviewer ON peer_reviews(reviewer_id, created_at)'); // reviewer trust
+    // Admin-set weight is capped at 2 (peer.js setReviewWeight); bring older settings and their waiting verdicts down.
+    this.db.exec(`UPDATE peer_reviews SET weight = 2 WHERE weight > 2 AND reviewer_id IN (SELECT id FROM users WHERE review_weight > 2)
+                    AND attempt_id IN (SELECT id FROM attempts WHERE state IN ('peer_review', 'in_review'))`);
+    this.db.exec('UPDATE users SET review_weight = 2 WHERE review_weight > 2');
   }
 
   /** Submitted files of an attempt (kept once per batch). */

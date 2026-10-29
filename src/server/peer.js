@@ -284,8 +284,9 @@ export class PeerReviews {
    * (trust.js). A set weight also applies to its verdicts on functions still waiting, which are
    * then decided if they now are; decided functions stay as they were.
    */
-  setReviewWeight(userId, weight) {
-    if (weight !== null && ![1, 2, 3].includes(weight)) throw new HttpError(400, 'weight must be 1, 2, 3 or auto');
+  setReviewWeight(userId, weight, adminId = null) {
+    // Capped at 2: a weight of 3 lets one admin-picked reviewer carry most of a decision.
+    if (weight !== null && ![1, 2].includes(weight)) throw new HttpError(400, 'weight must be 1, 2 or auto');
     this.store.run('UPDATE users SET review_weight = ? WHERE id = ?', weight, userId);
     this.trust?.forget();
     let reweighted = 0;
@@ -295,7 +296,7 @@ export class PeerReviews {
         weight, userId,
       ).changes);
     }
-    this.store.event('review_weight', null, { user: userId, weight, reweighted });
+    this.store.event('review_weight', adminId, { user: userId, weight, reweighted });
     return { weight: weight ?? 'auto', reweighted, ...this.settleAll() };
   }
 

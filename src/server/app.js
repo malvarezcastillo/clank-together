@@ -1275,10 +1275,9 @@ export function createApp(ctx) {
     'submit-paused': (name) => setSubmitMode(name, 'paused'),
     'reset-password': (name, admin) => accounts.resetPassword(name, admin.id),
     // How much the account's peer verdicts weigh: set by an admin, or earned (trust.js).
-    'review-weight-1': (name) => peers.setReviewWeight(accounts.requireUser(name).id, 1),
-    'review-weight-2': (name) => peers.setReviewWeight(accounts.requireUser(name).id, 2),
-    'review-weight-3': (name) => peers.setReviewWeight(accounts.requireUser(name).id, 3),
-    'review-weight-auto': (name) => peers.setReviewWeight(accounts.requireUser(name).id, null),
+    'review-weight-1': (name, admin) => peers.setReviewWeight(accounts.requireUser(name).id, 1, admin.id),
+    'review-weight-2': (name, admin) => peers.setReviewWeight(accounts.requireUser(name).id, 2, admin.id),
+    'review-weight-auto': (name, admin) => peers.setReviewWeight(accounts.requireUser(name).id, null, admin.id),
   };
   const setSubmitMode = (name, mode) => {
     const u = accounts.byName(name);
