@@ -268,3 +268,34 @@ new global storage reproduces the original initializer/destructor behavior.
 Maintenance authors must preserve those semantics; an incomplete object layout
 must not be published as a recovered full size.
 
+### Deleting an orphan header (offline)
+
+`td-server maintenance delete-orphan-header` removes exactly one tracked,
+declaration-only `.h`/`.hpp`/`.inl` under the configured source/header roots.
+It is a local admin command only (no HTTP route) and never writes an empty
+replacement header:
+
+```sh
+# stop and drain the worker first; keep every other Git writer stopped
+td-server maintenance delete-orphan-header Source/UI/Window/WindowAncestry.h \
+  --admin ADMIN --reason "unreferenced declaration-only header" \
+  --expected-head <full HEAD hash> --expected-blob <git rev-parse HEAD:path> \
+  --backup-dir /path/outside/repo --worker-stopped
+# then restart the worker
+```
+
+It refuses unless the worker heartbeat is stale and no batch/attempt is
+verifying or merging, no task is merging and no check job is running. It holds
+an exclusive `orphan-header.lock` in the data directory (a leftover lock after a
+crash must be inspected and removed by hand). The tree must be clean, HEAD and
+the blob must match the expected hashes (re-checked before and during the
+commit, which uses a compare-and-swap ref update), and the path must not be a
+symlink or contain traversal. Any provenance/implementation annotation,
+definition or initializer, compile-unit/function ownership, `unit_deps` row, or
+occurrence of the full path or basename in any other tracked file is refused.
+The exact bytes and a `deletion.json` record are written to a new directory
+under `--backup-dir`; `orphan_header_delete_started`, `_failed` and `_deleted`
+events are audited. If the commit fails, only the removed file and its index
+entry are restored; unrelated edits are never reset. Success is published
+through the normal post-commit path. Do not run any simultaneous Git writer.
+

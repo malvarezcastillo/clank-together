@@ -195,6 +195,51 @@ export class Repo {
     return this.head();
   }
 
+  /** Delete exactly one validated file. A private index and CAS protect unrelated edits/HEAD. */
+  deleteFile(file, bytes, expectedHead, expectedBlob, message, author) {
+    const name = process.env.TD_GIT_AUTHOR_NAME;
+    const email = process.env.TD_GIT_AUTHOR_EMAIL;
+    if (Boolean(name) !== Boolean(email)) throw new Error('set both TD_GIT_AUTHOR_NAME and TD_GIT_AUTHOR_EMAIL');
+    const identity = /^(.+) <([^<>]+)>$/.exec(name ? `${name} <${email}>` : author);
+    if (!identity) throw new Error('invalid Git author identity');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'td-delete-'));
+    const env = { ...process.env, GIT_INDEX_FILE: path.join(tmp, 'index'), GIT_AUTHOR_NAME: identity[1], GIT_AUTHOR_EMAIL: identity[2], GIT_COMMITTER_NAME: name ?? 'Clank Together', GIT_COMMITTER_EMAIL: email ?? 'bot@clank-together.invalid' };
+    const absolute = path.join(this.dir, file);
+    const literal = `:(literal)${file}`;
+    const mode = this.git(['ls-files', '--stage', '--', literal]).split(' ')[0];
+    let removed = false;
+    let staged = false;
+    let committed = false;
+    try {
+      this.git(['read-tree', expectedHead], { env });
+      this.git(['update-index', '--force-remove', '--', file], { env });
+      const tree = this.git(['write-tree'], { env }).trim();
+      const commit = this.git(['commit-tree', tree, '-p', expectedHead, '-F', '-'], { env, input: message }).trim();
+      if (this.head() !== expectedHead) throw new Error('HEAD changed before deletion');
+      if (!this.isClean() || !fs.readFileSync(absolute).equals(bytes)) throw new Error('repository changed before deletion; preserving edits');
+      fs.unlinkSync(absolute);
+      removed = true;
+      this.git(['update-index', '--force-remove', '--', file]);
+      staged = true;
+      // Unlike `git commit`, this cannot accidentally commit on top of a concurrent new HEAD.
+      this.git(['update-ref', '-m', 'maintenance: delete orphan header', 'HEAD', commit, expectedHead]);
+      committed = true;
+      return commit;
+    } catch (error) {
+      if (!committed) {
+        // Only undo our own missing path/index entry; never reset/clean the repository or
+        // overwrite a file/index entry another writer created despite the offline contract.
+        if (removed && !fs.existsSync(absolute)) fs.writeFileSync(absolute, bytes, { flag: 'wx', mode: mode === '100755' ? 0o755 : 0o644 });
+        if (staged && !this.git(['ls-files', '--stage', '--', literal]).trim()) {
+          this.git(['update-index', '--add', '--cacheinfo', `${mode},${expectedBlob},${file}`]);
+        }
+      }
+      throw error;
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
   /** Discards uncommitted changes (after a failed merge attempt). */
   reset() {
     this.git(['reset', '-q', '--hard', 'HEAD']);

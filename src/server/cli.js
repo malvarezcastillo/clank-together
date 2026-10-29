@@ -14,6 +14,7 @@ import { agentGuidance, setAgentGuidance, resetAgentGuidance } from './guidance.
 import { productivity, formatProductivity } from './stats.js';
 import { PEImage } from '../shared/pe.js';
 import { GHIDRA_RELEASE } from '../shared/ghidra.js';
+import { deleteOrphanHeader } from './orphan-header.js';
 
 const TEMPLATE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'template');
 
@@ -51,6 +52,9 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   tasks generate                         create tasks for functions that have none
   batch accept-regressions <id> <admin> [comment]
                                          merge a batch sent back only for lower matching scores
+  maintenance delete-orphan-header <path> --admin NAME --reason TEXT
+       --expected-head HASH --expected-blob HASH --backup-dir DIR --worker-stopped
+                                         delete one unreferenced declaration-only header offline
   toolchain pack [--image I]             package the compiler from the compile image for td toolchain
                                          install (downloads: approved accounts only)
 `;
@@ -115,6 +119,12 @@ async function main() {
       from: { type: 'string' },
       hours: { type: 'string', default: '24' },
       image: { type: 'string' },
+      admin: { type: 'string' },
+      reason: { type: 'string' },
+      'expected-head': { type: 'string' },
+      'expected-blob': { type: 'string' },
+      'backup-dir': { type: 'string' },
+      'worker-stopped': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -345,6 +355,21 @@ async function main() {
   if (cmd === 'tasks' && sub === 'generate') {
     const ctx = openServer(dataDir);
     console.log(`created ${ctx.tasks.generate()} tasks`);
+    return;
+  }
+
+  if (cmd === 'maintenance' && sub === 'delete-orphan-header') {
+    if (rest.length !== 1 || !values.admin) throw new Error('usage: td-server maintenance delete-orphan-header <path> --admin NAME --reason TEXT --expected-head HASH --expected-blob HASH --backup-dir DIR --worker-stopped');
+    const ctx = openServer(dataDir);
+    try {
+      console.log(JSON.stringify(deleteOrphanHeader(ctx, {
+        file: rest[0], admin: values.admin, reason: values.reason,
+        expectedHead: values['expected-head'], expectedBlob: values['expected-blob'],
+        backupDir: values['backup-dir'], workerStopped: values['worker-stopped'],
+      }), null, 2));
+    } finally {
+      ctx.store.db.close();
+    }
     return;
   }
 
