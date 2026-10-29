@@ -888,7 +888,7 @@ export function createApp(ctx) {
       claim: a.kind === 'skip' ? { category: a.skip_category, reason: a.notes, noSourceExpected: true } : undefined,
       peerReviews: peers.verdicts(a.id),
       peerRequired: peers.needed(peers.counts(a.id).different), // "same" verdicts (by weight) that accept it as it stands
-      targetSource: targetSource(result?.feedback?.target?.id, batchResult.mergedFiles ?? store.attemptFiles(a)),
+      targetSource: targetSource(result?.feedback?.target?.id ?? symbol?.id, batchResult.mergedFiles ?? store.attemptFiles(a)),
     };
   });
 

@@ -488,7 +488,7 @@ export class Merger {
       );
       for (const l of losers) {
         const feedback = { summary: `another candidate for ${a.symbol_id} was accepted and merged first (batch ${batchId}, ${commit.slice(0, 10)}); this one is no longer needed` };
-        this.store.run(`UPDATE attempts SET state = 'superseded', finished_at = ?, result_json = json_set(COALESCE(result_json, '{}'), '$.feedback', json(?)) WHERE id = ?`, now(), JSON.stringify(feedback), l.id);
+        this.store.run(`UPDATE attempts SET state = 'superseded', finished_at = ?, result_json = json_set(COALESCE(result_json, '{}'), '$.feedback', json_patch(COALESCE(json_extract(result_json, '$.feedback'), '{}'), json(?))) WHERE id = ?`, now(), JSON.stringify(feedback), l.id);
         this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', l.id);
         if (l.batch_id) batches.add(l.batch_id);
       }
