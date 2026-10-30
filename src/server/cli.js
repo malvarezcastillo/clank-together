@@ -276,7 +276,7 @@ async function main() {
       return;
     }
     if (sub === 'load') {
-      // Bulk import with fixed IDs (e.g. tools/migrate-wowdecomp/migrate.js output). Every version
+      // Bulk import with fixed IDs. Every version
       // named in the file must be registered first (`version add`).
       const snap = JSON.parse(fs.readFileSync(rest[0], 'utf8'));
       for (const v of snap.versions) if (!store.get('SELECT 1 FROM versions WHERE id = ?', v)) throw new Error(`version ${v} is not registered; run \`td-server version add ${v} <exe>\` first`);

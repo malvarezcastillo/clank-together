@@ -1357,8 +1357,8 @@ export function createApp(ctx) {
   return server;
 }
 
-// Public downloads of the td binaries (tools/build-td output copied to <dataDir>/downloads).
-const DOWNLOADS = new Set(['td-windows-x64.exe', 'td-linux-x64', 'SHA256SUMS']);
+// Public downloads: td binaries (tools/build-td output) and Dockerfile.clank, published to <dataDir>/downloads.
+const DOWNLOADS = new Set(['td-windows-x64.exe', 'td-linux-x64', 'td-linux-arm64', 'SHA256SUMS', 'Dockerfile.clank']);
 let downloadsRoot = null;
 // Agents read the guidance in work responses; one whose td is not the current build is told to
 // update there (td from before builds were reported sends none). Read per request, so a new

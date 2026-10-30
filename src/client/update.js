@@ -12,7 +12,7 @@ const CHECK_EVERY_MS = 3600_000;
 const STALL_MS = 60_000;
 const STATE_DIR = path.join(os.homedir(), '.clank');
 const STATE_FILE = path.join(STATE_DIR, 'update.json');
-const ASSET = process.platform === 'win32' ? 'td-windows-x64.exe' : 'td-linux-x64';
+const ASSET = process.platform === 'win32' ? 'td-windows-x64.exe' : `td-linux-${process.arch}`;
 
 function readState() {
   try {

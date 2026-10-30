@@ -19,7 +19,7 @@ git archive --format=tar.gz -o "$tmp/release.tar.gz" HEAD
 scp -q "$tmp/release.tar.gz" "$HOST:/tmp/clank-release.tar.gz"
 
 if [ "${1:-}" = "--td" ]; then
-  scp -q dist/td-windows-x64.exe dist/td-linux-x64 dist/SHA256SUMS "$HOST:/tmp/"
+  scp -q dist/td-windows-x64.exe dist/td-linux-x64 dist/td-linux-arm64 dist/SHA256SUMS "$HOST:/tmp/"
 fi
 
 ssh "$HOST" "set -e
@@ -28,12 +28,12 @@ ssh "$HOST" "set -e
   rm -f /tmp/clank-release.tar.gz
   if [ '${1:-}' = '--td' ]; then
     D=/var/lib/$INSTANCE/downloads
-    for f in td-windows-x64.exe td-linux-x64 SHA256SUMS; do
+    for f in td-windows-x64.exe td-linux-x64 td-linux-arm64 SHA256SUMS; do
       install -o togetherdecomp -g togetherdecomp -m 0644 /tmp/\$f \$D/\$f.new && mv \$D/\$f.new \$D/\$f && rm -f /tmp/\$f
     done
-    chmod 0755 \$D/td-linux-x64
+    chmod 0755 \$D/td-linux-x64 \$D/td-linux-arm64
     # Compressed copies for clients that accept gzip (td self-update, the Linux installer).
-    for f in td-windows-x64.exe td-linux-x64; do gzip -9 -k -f \$D/\$f && chown togetherdecomp:togetherdecomp \$D/\$f.gz; done
+    for f in td-windows-x64.exe td-linux-x64 td-linux-arm64; do gzip -9 -k -f \$D/\$f && chown togetherdecomp:togetherdecomp \$D/\$f.gz; done
     echo 'td binaries published'
   fi
   TD_INSTANCE=$INSTANCE TD_KEEP_WORKER='${TD_KEEP_WORKER:-}' sh \"\$d/deploy/update.sh\" \"\$d\"

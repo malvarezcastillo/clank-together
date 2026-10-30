@@ -409,7 +409,9 @@ export async function toolchainInstall(ws, { log = console.log } = {}) {
     try {
       execFileSync('wine', ['--version'], { stdio: 'ignore' });
     } catch {
-      throw new Error('the compiler is a Windows program: install wine first (e.g. apt install wine64), then run td toolchain install again');
+      throw new Error(process.arch === 'x64'
+        ? 'the compiler is a Windows program: install wine first (e.g. apt install wine64), then run td toolchain install again'
+        : `the compiler is an x86 Windows program: on ${process.arch} it needs x86 wine under emulation (box64 + wine, or an x86-64 container: docker run --platform linux/amd64), then run td toolchain install again`);
     }
   }
   const base = path.join(os.homedir(), '.clank', 'toolchains', meta.sha256.slice(0, 16));

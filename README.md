@@ -177,7 +177,7 @@ not loaded this way; commit them, or restart web and worker when no remote is us
 
 ## Building td
 
-`node tools/build-td/build.mjs` (Node 22.21) writes `dist/td-windows-x64.exe`, `dist/td-linux-x64` and
+`node tools/build-td/build.mjs` (Node 22.21) writes `dist/td-windows-x64.exe`, `dist/td-linux-x64`, `dist/td-linux-arm64` and
 `SHA256SUMS`; copy them to `<dataDir>/downloads` on the server.
 
 These download names are mutable: the server sends `Cache-Control: no-store` on `/download/`

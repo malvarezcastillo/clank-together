@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Builds `td` as standalone executables (Node single executable applications): contributors need
-// no Node.js. Output in dist/: td-windows-x64.exe, td-linux-x64, SHA256SUMS.
+// no Node.js. Output in dist/: td-windows-x64.exe, td-linux-x64, td-linux-arm64, SHA256SUMS.
 //
 //   node tools/build-td/build.mjs
 //
@@ -61,17 +61,17 @@ if (process.platform === 'win32') {
   if (sha256(exe) !== want) throw new Error('Windows runtime checksum mismatch');
   targets.push(exe);
 }
-{
-  const name = `node-${NODE_VERSION}-linux-x64`;
+for (const arch of ['x64', 'arm64']) {
+  const name = `node-${NODE_VERSION}-linux-${arch}`;
   const base = `https://nodejs.org/dist/${NODE_VERSION}`;
   const sums = await (await fetch(`${base}/SHASUMS256.txt`)).text();
   const want = new RegExp(`^([0-9a-f]{64})\\s+${name}\\.tar\\.gz$`, 'm').exec(sums)?.[1];
-  if (!want) throw new Error('no checksum for the Linux runtime');
+  if (!want) throw new Error(`no checksum for the Linux ${arch} runtime`);
   const tgz = path.join(tmp, `${name}.tar.gz`);
   fs.writeFileSync(tgz, Buffer.from(await (await fetch(`${base}/${name}.tar.gz`)).arrayBuffer()));
-  if (sha256(tgz) !== want) throw new Error('Linux runtime checksum mismatch');
+  if (sha256(tgz) !== want) throw new Error(`Linux ${arch} runtime checksum mismatch`);
   execFileSync(process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar', ['-xzf', tgz, '-C', tmp, `${name}/bin/node`], { stdio: 'inherit' });
-  const bin = path.join(DIST, 'td-linux-x64');
+  const bin = path.join(DIST, `td-linux-${arch}`);
   fs.copyFileSync(path.join(tmp, name, 'bin', 'node'), bin);
   targets.push(bin);
 }

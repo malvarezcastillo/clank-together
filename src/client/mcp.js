@@ -40,7 +40,7 @@ const TOOLS = [
   },
   {
     name: 'td_toolchain_install',
-    description: 'Download the compiler from the server and set it up for local checks (once per machine; needs wine on Linux). td_check compiles on this machine only.',
+    description: 'Download the compiler from the server and set it up for local checks (once per machine; needs wine on Linux, x86 wine via box64 on ARM64). td_check compiles on this machine only.',
     inputSchema: { type: 'object', properties: {} },
     run: async (ws) => ops.toolchainInstall(ws, { log: () => {} }),
   },

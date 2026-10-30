@@ -11,7 +11,7 @@ import { gzipSync } from 'node:zlib';
 import { createApp, DEFAULT_CONFIG } from '../src/server/app.js';
 
 const exec = promisify(execFile);
-const ASSET = process.platform === 'win32' ? 'td-windows-x64.exe' : 'td-linux-x64';
+const ASSET = process.platform === 'win32' ? 'td-windows-x64.exe' : `td-linux-${process.arch}`;
 const hash = (data) => crypto.createHash('sha256').update(data).digest('hex');
 const installed = Buffer.from('installed td build');
 const published = Buffer.from('newly published td build');

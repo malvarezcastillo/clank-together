@@ -194,8 +194,10 @@ if (-not $compilerReady -or -not $connectReady) { throw "Installation incomplete
 }
 
 export function installSh(config, project) {
-  const sha = checksums(config)['td-linux-x64'];
+  const sums = checksums(config);
+  const sha = sums['td-linux-x64'];
   if (!sha) return null;
+  const shaArm = sums['td-linux-arm64'] ?? '';
   return `#!/bin/sh
 # Clank Together installer for Linux. Usage (one line):
 #   curl -fsSL ${config.publicUrl}/install.sh | TD_TOKEN=td_... sh
@@ -204,9 +206,11 @@ export function installSh(config, project) {
 set -eu
 SERVER='${config.publicUrl}'
 case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) ;;
-  *) echo "td is available for Linux x86_64 and Windows x64; this is $(uname -s) $(uname -m)" >&2; exit 1 ;;
+  Linux-x86_64) ASSET=td-linux-x64 SHA='${sha}' ;;
+  Linux-aarch64|Linux-arm64) ASSET=td-linux-arm64 SHA='${shaArm}' ;;
+  *) ASSET= SHA= ;;
 esac
+[ -n "$SHA" ] || { echo "td is not available for $(uname -s) $(uname -m)" >&2; exit 1; }
 TOKEN="\${TD_TOKEN:-}"
 if [ -z "$TOKEN" ]; then printf 'API token (log in on %s and create one under Account): ' "$SERVER"; read -r TOKEN < /dev/tty; fi
 DIR="\${TD_DIR:-$HOME/clank/${slug(project.name)}}"
@@ -241,8 +245,8 @@ line "$CYAN" '+--------------------------------------------------+'
 command -v git >/dev/null 2>&1 || { echo 'git is required: install it (e.g. sudo apt install git) and run this line again' >&2; exit 1; }
 
 line "$CYAN" '  [1/4] Download client ...'
-curl -fsSL --compressed "$SERVER/download/td-linux-x64" -o "$BIN/td.part"
-echo "${sha}  $BIN/td.part" | sha256sum -c - >/dev/null || { rm -f "$BIN/td.part"; echo 'td download failed its checksum check' >&2; exit 1; }
+curl -fsSL --compressed "$SERVER/download/$ASSET" -o "$BIN/td.part"
+echo "$SHA  $BIN/td.part" | sha256sum -c - >/dev/null || { rm -f "$BIN/td.part"; echo 'td download failed its checksum check' >&2; exit 1; }
 mv "$BIN/td.part" "$BIN/td"
 chmod +x "$BIN/td"
 line "$GREEN" '  ✅ [1/4] Client downloaded and verified'
@@ -274,7 +278,10 @@ else
   line "$YELLOW" '  ⚠ INSTALLATION INCOMPLETE — workspace and target preserved'
 fi
 printf '  Workspace  %s\\n  Server     %s\\n  Log        %s\\n' "$DIR" "$SERVER" "$LOG"
-if [ "$compiler_ready" = 0 ]; then line "$YELLOW" '  Retry inside your workspace: td toolchain install (Linux requires wine)'; fi
+if [ "$compiler_ready" = 0 ]; then
+  if [ "$ASSET" = td-linux-arm64 ]; then line "$YELLOW" '  Retry inside your workspace: td toolchain install (ARM64 needs x86 wine via box64, or an x86-64 container)'
+  else line "$YELLOW" '  Retry inside your workspace: td toolchain install (Linux requires wine)'; fi
+fi
 if [ "$connect_ready" = 0 ]; then line "$YELLOW" '  Retry inside your workspace: td connect'; fi
 echo
 line "$YELLOW" '  NEXT: PUT YOUR AI TO WORK'
