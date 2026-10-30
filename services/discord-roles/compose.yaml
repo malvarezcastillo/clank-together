@@ -1,0 +1,54 @@
+name: clank-discord-roles
+services:
+  roles:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: clank-discord-roles:local
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL to the public HTTPS origin}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:?Set DISCORD_CLIENT_ID}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:?Set DISCORD_CLIENT_SECRET}
+      DISCORD_REDIRECT_URI: ${DISCORD_REDIRECT_URI:-}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?Set TOKEN_ENCRYPTION_KEY}
+      CLANK_API_URL: ${CLANK_API_URL:-https://rodecomp.online}
+      SOURCE_DB_PATH: /source/td.sqlite
+      STATE_DB_PATH: /state/roles.sqlite
+      SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-60}
+      HOST: 0.0.0.0
+      PORT: 19581
+    ports:
+      - "127.0.0.1:19581:19581"
+    volumes:
+      - state:/state
+      - source:/source:ro
+    networks:
+      - roles
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:19581/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+volumes:
+  state:
+  source:
+    name: rodecomp_data
+    external: true
+networks:
+  roles:
+    driver: bridge

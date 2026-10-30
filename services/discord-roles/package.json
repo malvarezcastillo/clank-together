@@ -1,0 +1,13 @@
+{
+  "name": "clank-discord-linked-roles",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone lifetime-contribution Discord linked roles service",
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "start": "node server.mjs",
+    "setup": "node setup.mjs",
+    "test": "node --test"
+  }
+}
