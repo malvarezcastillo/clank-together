@@ -192,7 +192,8 @@ export class Regions {
       const expires = now() + this.leaseMs;
       this.store.run(
         `INSERT INTO region_claims (user_id, token_id, kind, key, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(user_id, kind, key) DO UPDATE SET expires_at = excluded.expires_at, token_id = excluded.token_id`,
+         ON CONFLICT(user_id, kind, key) DO UPDATE SET expires_at = excluded.expires_at, token_id = excluded.token_id,
+           created_at = CASE WHEN region_claims.expires_at < excluded.created_at THEN excluded.created_at ELSE region_claims.created_at END`,
         user.id, user.tokenId ?? null, kind, key, now(), expires,
       );
       const held = this.tasks.leasesOf(user.id).length;
@@ -204,7 +205,7 @@ export class Regions {
         if (!CLAIMABLE.includes(m.state)) continue;
         const t = this.store.get('SELECT preferred_user, preferred_until FROM tasks WHERE id = ?', m.id);
         if (t.preferred_user && t.preferred_user !== user.id && t.preferred_until > now()) continue;
-        this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, head, now(), m.id);
+        this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_started = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, now(), head, now(), m.id);
         leased.push(m.id);
         room--;
       }
@@ -269,7 +270,8 @@ export class Regions {
   }
 
   heartbeat(user) {
-    return Number(this.store.run('UPDATE region_claims SET expires_at = ? WHERE user_id = ? AND expires_at > ?', now() + this.leaseMs, user.id, now()).changes);
+    const max = (this.config.maxLeaseHours ?? 8) * 3600_000;
+    return Number(this.store.run('UPDATE region_claims SET expires_at = MIN(?, created_at + ?) WHERE user_id = ? AND expires_at > ?', now() + this.leaseMs, max, user.id, now()).changes);
   }
 
   /** Whether `user` holds a live region claim that covers this task's function. */

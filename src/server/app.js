@@ -40,6 +40,9 @@ export const DEFAULT_CONFIG = {
   listen: { host: '127.0.0.1', port: 8080 },
   publicUrl: 'http://127.0.0.1:8080',
   leaseMinutes: 120,
+  maxLeaseHours: 8, // a lease ends this long after it was taken, whatever the heartbeats
+  maxLeasedTasks: 50, // functions one account may hold; the sweeper releases any above it
+  maxTasksPerSubmission: 500,
   maxLeasesPerUser: 3,
   verifyConcurrency: 3,
   remoteChecks: false, // checks compile on the contributor's machine (td toolchain install)

@@ -92,7 +92,7 @@ export class Tasks {
 
   /** How many tasks (functions) one account may hold at once, single claims and batches together. */
   get maxLeased() {
-    return this.config.maxLeasedTasks ?? 500;
+    return this.config.maxLeasedTasks ?? 50;
   }
 
   /**
@@ -114,7 +114,7 @@ export class Tasks {
       const ids = group.ids.includes(seed.id) ? group.ids : [seed.id, ...group.ids].slice(0, room);
       const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
       const head = this.repo.head();
-      for (const id of ids) this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, head, now(), id);
+      for (const id of ids) this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_started = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, now(), head, now(), id);
       this.store.event('claim_batch', user.id, { tasks: ids.length, group: group.kind, key: group.key });
       this.lastGroup = group;
       return ids;
@@ -168,7 +168,7 @@ export class Tasks {
         if (!live) this.store.run(`UPDATE tasks SET state = 'open', updated_at = ? WHERE id = ? AND state IN ('peer_review', 'in_review')`, now(), a.task_id);
       } else {
         const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
-        this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, updated_at = ? WHERE id = ?`, user.id, expires, now(), a.task_id);
+        this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_started = ?, updated_at = ? WHERE id = ?`, user.id, expires, now(), now(), a.task_id);
       }
       settleBatch(this.store, a.batch_id, `the author withdrew attempt ${a.id}`);
       this.store.event('withdrawn', user.id, { attempt: a.id, task: a.task_id });
@@ -243,7 +243,7 @@ export class Tasks {
       if (!rows.length) throw new HttpError(404, unit ? `no claimable tasks in ${unit}` : 'no claimable tasks in that range');
       const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
       const head = this.repo.head();
-      for (const r of rows) this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, head, now(), r.id);
+      for (const r of rows) this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_started = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, now(), head, now(), r.id);
       this.store.event('claim_batch', user.id, { tasks: rows.length, unit, start, end });
       return rows.map((r) => r.id);
     });
@@ -269,7 +269,7 @@ export class Tasks {
         if (!t) throw new HttpError(404, 'no open tasks');
       }
       const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
-      this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, this.repo.head(), now(), t.id);
+      this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_started = ?, lease_base_commit = ?, updated_at = ? WHERE id = ?`, user.id, expires, now(), this.repo.head(), now(), t.id);
       this.store.event('claim', user.id, { task: t.id });
       return t.id;
     });
@@ -298,18 +298,26 @@ export class Tasks {
     throw new HttpError(409, `you do not hold task ${taskId} (${t.symbol_id}) and no region you claimed covers it`);
   }
 
+  /** How long a lease may last from when it was taken (ms); heartbeats stop extending it after that. */
+  get maxLeaseMs() {
+    return (this.config.maxLeaseHours ?? 8) * 3600_000;
+  }
+
   heartbeat(user, taskId) {
     this.requireLease(user, taskId);
     const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
-    this.store.run('UPDATE tasks SET lease_expires = ?, updated_at = ? WHERE id = ?', expires, now(), taskId);
-    return expires;
+    this.store.run('UPDATE tasks SET lease_expires = MIN(?, COALESCE(lease_started, ?) + ?), updated_at = ? WHERE id = ?', expires, now(), this.maxLeaseMs, now(), taskId);
+    return this.get(taskId).lease_expires;
   }
 
-  /** Extends every lease the account holds (an agent working through a batch). */
+  /** Extends every lease the account holds (an agent working through a batch), up to each one's maximum. */
   heartbeatAll(user) {
     const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
-    const r = this.store.run(`UPDATE tasks SET lease_expires = ?, updated_at = ? WHERE lease_user = ? AND state = 'leased'`, expires, now(), user.id);
-    return { leases: Number(r.changes), leaseExpires: expires };
+    const r = this.store.run(
+      `UPDATE tasks SET lease_expires = MIN(?, COALESCE(lease_started, ?) + ?), updated_at = ? WHERE lease_user = ? AND state = 'leased'`,
+      expires, now(), this.maxLeaseMs, now(), user.id,
+    );
+    return { leases: Number(r.changes), leaseExpires: expires, maxLeaseHours: this.maxLeaseMs / 3600_000 };
   }
 
   release(user, taskId) {
@@ -334,7 +342,8 @@ export class Tasks {
   submitBatch(user, { taskIds, baseCommit, files, notes = null, agentMeta = null, envDigest = null, confirm = [] }) {
     const ids = [...new Set((taskIds ?? []).map(Number))];
     if (!ids.length) throw new HttpError(400, 'taskIds must list the tasks this submission covers');
-    if (ids.length > this.maxLeased) throw new HttpError(400, `at most ${this.maxLeased} tasks per submission`);
+    const maxSubmit = this.config.maxTasksPerSubmission ?? 500;
+    if (ids.length > maxSubmit) throw new HttpError(400, `at most ${maxSubmit} tasks per submission`);
     return this.store.tx(() => {
       const own = new Set(ids.filter((id) => this.requireSubmittable(user, id).own));
       // Authors whose recent work keeps breaking or being sent back slow down (quality.js).
@@ -413,7 +422,24 @@ export class Tasks {
       this.reopen(t.id);
       this.store.event('lease_expired', t.lease_user, { task: t.id });
     }
-    return expired.length;
+    return expired.length + this.sweepOverLimit();
+  }
+
+  /** Accounts holding more than maxLeased tasks keep their most recently taken ones; the rest reopen. */
+  sweepOverLimit() {
+    const max = this.maxLeased;
+    const over = this.store.all(
+      `SELECT id, lease_user FROM (
+         SELECT id, lease_user, ROW_NUMBER() OVER (PARTITION BY lease_user ORDER BY COALESCE(lease_started, 0) DESC, id DESC) AS rank
+           FROM tasks WHERE state = 'leased' AND lease_user IS NOT NULL)
+        WHERE rank > ?`,
+      max,
+    );
+    for (const t of over) {
+      this.reopen(t.id);
+      this.store.event('lease_over_limit', t.lease_user, { task: t.id, limit: max });
+    }
+    return over.length;
   }
 
   allowedPaths(symbol) {

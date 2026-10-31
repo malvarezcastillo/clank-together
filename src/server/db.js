@@ -299,6 +299,9 @@ export class Store {
     this.addColumn('versions', 'label', 'TEXT');
     this.addColumn('check_jobs', 'files_hash', 'TEXT'); // a retry of the same check joins the queued one
     this.addColumn('batches', 'cost', 'INTEGER'); // units its verification compiles (queue order)
+    // When the current holder took the task: heartbeats cannot extend a lease past maxLeaseHours from it.
+    this.addColumn('tasks', 'lease_started', 'INTEGER');
+    this.db.exec(`UPDATE tasks SET lease_started = ${Date.now()} WHERE state = 'leased' AND lease_started IS NULL`);
     this.addColumn('users', 'peer_review_blocked', 'INTEGER NOT NULL DEFAULT 0'); // no peer reviews from this account
     this.addColumn('users', 'submit_mode', "TEXT NOT NULL DEFAULT 'auto'"); // auto (quality.js) | trusted | paused
     this.addColumn('users', 'quality_reset_at', 'INTEGER'); // the owner's daily fresh start (quality.js)

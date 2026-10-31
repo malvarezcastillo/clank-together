@@ -872,7 +872,7 @@ export class Verifier {
     this.store.tx(() => {
       this.store.run(`UPDATE attempts SET state = 'withdrawn', finished_at = ?, result_json = ? WHERE id = ?`, now(), JSON.stringify({ feedback: { summary } }), attempt.id);
       if (attempt.competing) return; // the task is its holder's
-      this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, updated_at = ? WHERE id = ?`, attempt.user_id, expires, now(), attempt.task_id);
+      this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_started = ?, updated_at = ? WHERE id = ?`, attempt.user_id, expires, now(), now(), attempt.task_id);
     });
   }
 
