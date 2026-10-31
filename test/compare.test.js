@@ -21,8 +21,8 @@ function symbols(extra = []) {
   );
 }
 
-function run({ objPatch, nameIndex = new Map(), syms = symbols() } = {}) {
-  const f = fixture({ objPatch });
+function run({ objPatch, globalName, nameIndex = new Map(), syms = symbols() } = {}) {
+  const f = fixture({ objPatch, globalName });
   const { annotations } = parseAnnotations(f.source, FILE);
   const result = compareObject({
     obj: new CoffObject(f.obj),
@@ -59,6 +59,16 @@ test('exact match when every referenced symbol is known', () => {
   assert.equal(fn.score, 1);
   assert.equal(fn.symbol, '?Update@Player@@QAEXXZ');
   assert.equal(fn.demangled, 'Player::Update');
+});
+
+test('effectiveHash ignores the per-unit tags MSVC gives anonymous namespaces and lambda closures', () => {
+  // Unknown references hash by name; editing the unit rewrites these hex tags without changing code.
+  const hash = (globalName) => run({ nameIndex: new Map([['?Callee@@YAXXZ', 'fn_00002']]), globalName }).fn.effectiveHash;
+  assert.equal(hash('?v@?A0x0c4fce31@@3HA'), hash('?v@?A0x9d2e7710@@3HA'));
+  assert.equal(hash('??<lambda_invoker_cdecl>@_Closure_wrapper_63e67006_4@@CAXXZ'), hash('??<lambda_invoker_cdecl>@_Closure_wrapper_f1ab2c9b_4@@CAXXZ'));
+  // A different closure of the same unit, or a different name, is a different reference.
+  assert.notEqual(hash('??<lambda_invoker_cdecl>@_Closure_wrapper_63e67006_4@@CAXXZ'), hash('??<lambda_invoker_cdecl>@_Closure_wrapper_63e67006_5@@CAXXZ'));
+  assert.notEqual(hash('?v@?A0x0c4fce31@@3HA'), hash('?w@?A0x0c4fce31@@3HA'));
 });
 
 test('unknown references are resolved through the symbol database addresses', () => {

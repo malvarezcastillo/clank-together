@@ -314,9 +314,10 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
       if (!isSection) inferred.push({ symbol: symName, addr: actual });
     }
     relocResults.push({ offset: r.offset, symbol: symName, id, ok, unresolved: ok && !(target && target.addr != null), actual, reason });
-    // MSVC names an anonymous namespace after the unit's contents (?A0x0c4fce31): editing the file
-    // renames its file-local symbols, which is no change to the code that calls them.
-    const stable = symName.replace(/\?A0x[0-9a-f]{8}@/g, '?A@');
+    // MSVC names an anonymous namespace (?A0x0c4fce31) and a lambda's closure wrapper
+    // (_Closure_wrapper_63e67006_4) after the unit's contents: editing the file renames these
+    // file-local symbols, which is no change to the code that calls them.
+    const stable = symName.replace(/\?A0x[0-9a-f]{8}@/g, '?A@').replace(/_Closure_wrapper_[0-9a-f]{8}_/g, '_Closure_wrapper__');
     effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `?${stable}+${addend}`}`);
   }
 
