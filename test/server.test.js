@@ -1529,7 +1529,7 @@ test('maintenance batches: maintainers only; merge when no compiled code changes
     });
     return { check: { annotationErrors: [], units }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: names };
   };
-  const submit = (token, files, notes = 'move a global') => call('POST', '/api/maintenance', { baseCommit: ctx.repo.head(), files, notes }, token);
+  const submit = (token, files, notes = 'move a global', extra = {}) => call('POST', '/api/maintenance', { baseCommit: ctx.repo.head(), files, notes, ...extra }, token);
   const settle = (id, token) => waitFor(async () => { const st = (await call('GET', `/api/batches/${id}`, null, token)).body; return !['queued', 'verifying'].includes(st.state) && st; });
 
   try {
@@ -1557,6 +1557,18 @@ test('maintenance batches: maintainers only; merge when no compiled code changes
     assert.equal(back.state, 'returned');
     assert.match(back.result.returned, /changes the compiled code of 1 function/);
     assert.equal(ctx.repo.show('HEAD', unit), current);
+
+    // Only an admin may force it; a forced batch merges the changed code and records that it was forced.
+    const changedText = current.replace('return g_renamed;', 'int x = 1; return x;');
+    assert.equal((await submit(maintainer, { [unit]: changedText }, 'force', { force: true })).status, 403);
+    const admin = await activeUser('mtadmin', 'admin');
+    const forced = await submit(admin, { [unit]: changedText }, 'force', { force: true });
+    assert.equal(forced.status, 200, JSON.stringify(forced.body));
+    const forcedDone = await settle(forced.body.batchId, admin);
+    assert.equal(forcedDone.state, 'merged', JSON.stringify(forcedDone));
+    assert.equal(forcedDone.result.forced, true);
+    assert.equal(ctx.repo.show('HEAD', unit), changedText);
+    assert.match(ctx.repo.git(['log', '-1', '--format=%B']), /forced by an admin/);
 
     // Removing a function's annotation is refused before compiling.
     const dropped = await submit(maintainer, { [unit]: 'int mf() { return 1; }\n' });

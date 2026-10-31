@@ -339,7 +339,7 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta, confir
  * A maintenance batch (maintainers): the named files, with no function tasks. The server checks it
  * like any batch and merges it only when no function's compiled code changes.
  */
-export async function submitMaintenance(ws, files, { notes } = {}) {
+export async function submitMaintenance(ws, files, { notes, force = false } = {}) {
   if (!files.length) throw new Error('name the files of the change (--files a.cpp,b.h)');
   const contents = {};
   for (const f of files) contents[f.replace(/\\/g, '/')] = fs.readFileSync(path.join(ws.dir, f), 'utf8');
@@ -349,7 +349,7 @@ export async function submitMaintenance(ws, files, { notes } = {}) {
     e.details = errors;
     throw e;
   }
-  return api(ws).post('/api/maintenance', { baseCommit: ws.head(), files: contents, notes });
+  return api(ws).post('/api/maintenance', { baseCommit: ws.head(), files: contents, notes, ...(force && { force: true }) });
 }
 
 /** Correct symbol metadata and immediately replace the workspace's cached name mappings. */

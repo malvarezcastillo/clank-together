@@ -52,8 +52,9 @@ Work (a region: a source file, a class, or a run of unplaced functions, done as 
   td decompile <symbol> | td disasm <symbol>  query the local Ghidra project
 
 Maintenance (maintainers: structural changes with no function tasks)
-  td maintenance submit --files a.cpp,b.h --notes T   verified like a batch; merges only when no
-                                              function's compiled code changes
+  td maintenance submit --files a.cpp,b.h --notes T [--force]   verified like a batch; merges only when no
+                                              function's compiled code changes (--force, admins: merge
+                                              despite lower scores or changed code; every other gate still runs)
   td maintenance symbol <id> [--size N] [--name N] [--retire] --reason T   correct the symbol database
        [--decorated N | --swap-decorated-with ID]   correct a decorated name or atomically swap two
 
@@ -268,9 +269,9 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
     case 'maintenance': {
       const [sub, id] = args;
       if (sub === 'submit') {
-        if (!values.files) throw new Error('usage: td maintenance submit --files a.cpp,b.h --notes "what and why"');
+        if (!values.files) throw new Error('usage: td maintenance submit --files a.cpp,b.h --notes "what and why" [--force]');
         const files = values.files.split(',').map((f) => ops.relPath(ws, f));
-        return print(await ops.submitMaintenance(ws, files, { notes: values.notes }));
+        return print(await ops.submitMaintenance(ws, files, { notes: values.notes, force: values.force }));
       }
       if (sub === 'symbol') {
         if (!id || !values.reason) throw new Error('usage: td maintenance symbol <id> [--size N] [--name N] [--retire] [--decorated N | --swap-decorated-with ID] --reason "evidence"');

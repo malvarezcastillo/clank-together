@@ -17,17 +17,19 @@ export class Maintenance {
     Object.assign(this, { store, repo, project, verifier, merger, log });
   }
 
-  /** Queues a maintenance batch; it is verified and merged by run(). */
-  submit(user, { baseCommit, files, notes = null }) {
+  /** Queues a maintenance batch; it is verified and merged by run(). An admin may force it past the
+   * score and changed-code gates (every other gate still runs); the merge records that it was forced. */
+  submit(user, { baseCommit, files, notes = null, force = false }) {
     if (!hasRole(user, 'maintainer')) throw new HttpError(403, 'maintenance batches require the maintainer role');
+    if (force && !hasRole(user, 'admin')) throw new HttpError(403, 'only admins can force a maintenance batch');
     if (!Object.keys(files).length) throw new HttpError(400, 'files must not be empty');
     const r = this.store.run(
-      `INSERT INTO batches (user_id, token_id, base_commit, files_json, notes, state, kind, created_at) VALUES (?, ?, ?, ?, ?, 'queued', 'maintenance', ?)`,
-      user.id, user.tokenId ?? null, baseCommit, JSON.stringify(files), notes, now(),
+      `INSERT INTO batches (user_id, token_id, base_commit, files_json, notes, state, kind, created_at, result_json) VALUES (?, ?, ?, ?, ?, 'queued', 'maintenance', ?, ?)`,
+      user.id, user.tokenId ?? null, baseCommit, JSON.stringify(files), notes, now(), force ? JSON.stringify({ forced: true }) : null,
     );
     const batchId = Number(r.lastInsertRowid);
-    this.store.event('maintenance_submit', user.id, { batch: batchId, files: Object.keys(files).length });
-    return { batchId, state: 'queued' };
+    this.store.event('maintenance_submit', user.id, { batch: batchId, files: Object.keys(files).length, ...(force && { forced: true }) });
+    return { batchId, state: 'queued', ...(force && { forced: true }) };
   }
 
   /** Verifies and, when nothing compiled changes, merges one maintenance batch the pump took. */
@@ -93,15 +95,16 @@ export class Maintenance {
     const lint = check.units.flatMap((u) => u.lintErrors);
     if (lint.length) return back('banned constructs found after preprocessing', { lintErrors: lint });
     await this.verifier.refreshBaselines(check, merged.files, `maintenance-${batch.id}`);
+    const forced = JSON.parse(batch.result_json ?? '{}').forced === true;
     const regressions = this.verifier.regressions(check, merged.files);
-    if (regressions.length) return back(`breaks ${regressions.length} function(s) that matched before`, { regressions });
+    if (regressions.length && !forced) return back(`breaks ${regressions.length} function(s) that matched before`, { regressions });
     const changed = await this.changedFunctions(check, merged.files, startHead);
-    if (changed.length) {
+    if (changed.length && !forced) {
       return back(`changes the compiled code of ${changed.length} function(s): that is function work; submit those functions with their tasks`, { changedFunctions: changed.slice(0, 200) });
     }
 
     // Another merge committed while this one compiled: check again on the new main.
-    if (this.repo.head() !== startHead) return { state: 'queued', result: { note: 'main moved while verifying; checking again' } };
+    if (this.repo.head() !== startHead) return { state: 'queued', result: { note: 'main moved while verifying; checking again', ...(forced && { forced: true }) } };
 
     // Commit like any merge; new units join the build list in the same commit.
     const author = this.store.get('SELECT name FROM users WHERE id = ?', batch.user_id).name;
@@ -110,14 +113,15 @@ export class Maintenance {
     const filesToCommit = grown ? { ...merged.files, [listFile]: grown.text } : merged.files;
     const summary = String(batch.notes ?? '').split('\n')[0].slice(0, 120) || `${Object.keys(files).length} file(s)`;
     const message =
-      `Maintenance: ${summary}\n\nBatch #${batch.id} by ${author}: no function's compiled code changes; checked with ${check.units.length} compiled unit(s)` +
+      `Maintenance: ${summary}\n\nBatch #${batch.id} by ${author}: ${forced ? `forced by an admin (${regressions.length} lower score(s), ${changed.length} changed function(s))` : "no function's compiled code changes"}; checked with ${check.units.length} compiled unit(s)` +
       `${changedHeaders.length ? `, including every includer of ${changedHeaders.join(', ')}` : ''}.\n${grown ? `Adds to the build: ${grown.added.join(', ')}\n` : ''}`;
     const commit = this.repo.commitFiles(filesToCommit, message, `${author} <${author.replace(/[^A-Za-z0-9_.-]/g, '_')}@users.clank-together.invalid>`);
     if (grown) this.project.compile.units = grown.units;
     this.store.tx(() => this.merger.applyCheckToDatabase(check, rec, commit, batch.user_id));
+    if (forced) this.store.event('maintenance_forced', batch.user_id, { batch: batch.id, commit, regressions: regressions.map((r) => r.id), changed: changed.map((c) => c.id ?? c) });
     this.merger.afterCommit(commit);
-    this.log.info(`merged maintenance batch ${batch.id} as ${commit.slice(0, 10)}`);
-    return { state: 'merged', commit, result: { units: check.units.length, changedHeaders } };
+    this.log.info(`merged maintenance batch ${batch.id} as ${commit.slice(0, 10)}${forced ? ' (forced)' : ''}`);
+    return { state: 'merged', commit, result: { units: check.units.length, changedHeaders, ...(forced && { forced: true, regressions, changedFunctions: changed.slice(0, 200) }) } };
   }
 
   /**

@@ -547,7 +547,8 @@ export function createApp(ctx) {
     const body = await readJson(req, 8 * 1024 * 1024);
     if (typeof body.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(body.baseCommit)) throw new HttpError(400, 'baseCommit must be a full commit hash');
     if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
-    const r = ctx.maintenance.submit(user, { baseCommit: body.baseCommit, files: lf(body.files), notes: body.notes ? String(body.notes).slice(0, DEFAULT_LIMITS.maxNotesBytes) : null });
+    if (body.force === true && !hasRole(user, 'admin')) throw new HttpError(403, 'only admins can force a maintenance batch past lower scores or changed code');
+    const r = ctx.maintenance.submit(user, { baseCommit: body.baseCommit, files: lf(body.files), notes: body.notes ? String(body.notes).slice(0, DEFAULT_LIMITS.maxNotesBytes) : null, force: body.force === true });
     if (runsWorker) ctx.verifier.pump();
     return guided(r);
   });
