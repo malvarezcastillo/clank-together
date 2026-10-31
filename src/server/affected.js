@@ -69,8 +69,31 @@ function enclosingTypes(lines) {
   return out;
 }
 
-/** Names a header change touches: identifiers on changed lines and the types around them. */
-export function changedNames(before, after) {
+// A complete one-line declaration of an ordinary function (`Ret Name(args) const;`). Adding,
+// removing or re-signaturing one cannot change a class layout, vtable or special-member
+// triviality, so only units naming the function can compile differently (calls, overloads).
+// Virtual/override, inline, templates, friends, operators, constructors and destructors still
+// count as touching their enclosing type.
+const DECL = /^\s*(?:static\s+)?(?:[A-Za-z_][\w:<>,*&\s]*?[\s*&])([A-Za-z_]\w*)\s*\([^(){};]*\)\s*(?:const\s*)?(?:noexcept\s*)?;\s*$/;
+const NOT_PLAIN = /\b(virtual|override|final|inline|__forceinline|__inline|template|friend|operator|explicit|typedef|using|extern|default|delete)\b|[=:]\s*0\s*;|#/;
+export function plainDeclaration(c, type) {
+  if (NOT_PLAIN.test(c)) return null;
+  const m = DECL.exec(c);
+  if (!m || m[1] === type || /\b~/.test(c)) return null;
+  return m[1];
+}
+
+// `struct X;` / `class X;` / `enum class X : int;` at namespace scope only introduces the name X:
+// no layout or code changes except in units that name X. Inside a class it would declare a
+// nested type that can change how later members resolve, so that stays conservative.
+export const FORWARD = /^\s*(?:class|struct|union|enum(?:\s+(?:class|struct))?)\s+(?:__declspec\([^)]*\)\s*)?([A-Za-z_]\w*)\s*(?::\s*[\w:\s]+)?;\s*$/;
+
+/**
+ * Names a header change touches: identifiers on changed lines and the types around them.
+ * `isVirtual(name)` reports a function name declared virtual anywhere: a plain-looking
+ * declaration of it may implicitly override (vtable change), so it counts as touching its type.
+ */
+export function changedNames(before, after, { isVirtual = () => true } = {}) {
   const a = (before ?? '').replace(/\r\n/g, '\n').split('\n');
   const b = (after ?? '').replace(/\r\n/g, '\n').split('\n');
   const inA = new Map();
@@ -87,6 +110,16 @@ export function changedNames(before, after) {
       seen.set(l, (seen.get(l) ?? 0) + 1);
       // A line that is new (or appears more often than before) is a changed line.
       if (seen.get(l) <= (other.get(l) ?? 0) || !c.trim()) return;
+      const fn = plainDeclaration(c, types[i]);
+      if (fn && (!types[i] || !isVirtual(fn))) {
+        names.add(fn);
+        return;
+      }
+      const fwd = !types[i] && FORWARD.exec(c);
+      if (fwd) {
+        names.add(fwd[1]);
+        return;
+      }
       for (const m of c.match(IDENT) ?? []) if (telling(m)) names.add(m);
       if (types[i]) names.add(types[i]);
     });
@@ -119,4 +152,29 @@ export function unitsMentioning(repo, units, names, files = {}, { maxNames = 400
     }
   }
   return [...hits];
+}
+
+
+const virtualCache = new WeakMap();
+/**
+ * Every function name declared `virtual` somewhere on main or in `files` (cached per HEAD). A
+ * plain-looking member declaration with such a name may implicitly override. Null when unknown.
+ */
+export function virtualNames(repo, files = {}) {
+  const head = repo.head();
+  let cached = virtualCache.get(repo);
+  if (cached?.head !== head) {
+    const set = new Set();
+    try {
+      const out = repo.git(['grep', '-h', '-o', '-E', '\\bvirtual\\b[^;{(]*\\b[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\\(', 'HEAD', '--']);
+      for (const line of out.split('\n')) { const m = /([A-Za-z_]\w*)\s*\($/.exec(line); if (m) set.add(m[1]); }
+    } catch (e) {
+      if (e.status !== 1) return null;
+    }
+    cached = { head, set };
+    virtualCache.set(repo, cached);
+  }
+  const set = new Set(cached.set);
+  for (const text of Object.values(files)) for (const m of String(text ?? '').matchAll(/\bvirtual\b[^;{(]*\b([A-Za-z_]\w*)\s*\(/g)) set.add(m[1]);
+  return set;
 }

@@ -470,6 +470,8 @@ test('peer review: a lead of three "same" accepts, three "different" leading by 
 test('a function compiled in several units counts with its best copy', () => {
   const v = ctx.store.currentVersion();
   const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x401700, size: 8, unit: 'src/tpl_a.cpp' }).symbol.id;
+  const tpl = '#include "tpl.h"\n';
+  ctx.repo.commitFiles({ 'src/tpl.h': `// FUNCTION: ${id}\ntemplate <class T> int tpl() { return 1; }\n`, 'src/tpl_a.cpp': tpl, 'src/tpl_b.cpp': tpl }, 'template fixture', 'test <test@example.invalid>');
   const fn = (status, score) => ({ id, status, score, relocations: [], size: { ours: 8, original: 8 } });
   const unit = (file, f) => ({ file, compiled: true, includes: [], bindings: {}, functions: [f] });
   const rec = { conflicts: [], unknown: [], learned: [], learnedAddresses: [] };
@@ -479,6 +481,52 @@ test('a function compiled in several units counts with its best copy', () => {
   // A later check that only compiled tpl_b does not lower the status measured in tpl_a.
   ctx.merger.applyCheckToDatabase({ units: [unit('src/tpl_b.cpp', fn(STATUS.UNRESOLVED, 1))] }, rec, ctx.repo.head(), null);
   assert.equal(ctx.store.get('SELECT status FROM func_status WHERE symbol_id = ?', id).status, STATUS.EXACT);
+});
+
+test('a function main no longer has loses its status and its done task reopens; kept, moved or failed-unit ones stay', () => {
+  const v = ctx.store.currentVersion();
+  const sym = (addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8 }).symbol.id;
+  const [gone, inl, moved, broken, skipped] = [0x401800, 0x401810, 0x401820, 0x401830, 0x401840].map(sym);
+  ctx.repo.commitFiles({
+    'src/rm_a.cpp': '#include "rm.inl"\n',
+    'src/rm.inl': `// FUNCTION: ${inl}\nint inl() { return 1; }\n`,
+    'src/rm_b.cpp': `// FUNCTION: ${moved}\nint moved() { return 2; }\n`,
+    'src/rm_c.cpp': `// FUNCTION: ${broken}\nint broken() { return 3; }\n`,
+    'src/rm_d.cpp': '',
+  }, 'removed-status fixture', 'test <test@example.invalid>');
+  const head = ctx.repo.head();
+  const fn = (id) => ({ id, status: STATUS.MISMATCH, score: 0.5, relocations: [], size: { ours: 8, original: 8 } });
+  const unit = (file, ids, compiled = true) => ({ file, compiled, includes: [], bindings: {}, functions: ids.map(fn) });
+  const rec = { conflicts: [], unknown: [], learned: [], learnedAddresses: [] };
+  ctx.merger.applyCheckToDatabase({ units: [unit('src/rm_a.cpp', [gone, inl, moved, skipped]), unit('src/rm_c.cpp', [broken])] }, rec, head, null);
+  for (const [id, state] of [[gone, 'done'], [inl, 'done'], [moved, 'done'], [broken, 'done'], [skipped, 'skipped']]) {
+    ctx.store.run('INSERT INTO tasks (symbol_id, state, difficulty, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT DO NOTHING', id, state, now());
+    ctx.store.run('UPDATE tasks SET state = ? WHERE symbol_id = ?', state, id);
+  }
+  // rm_a.cpp now emits only the .inl function; `moved` went to rm_b.cpp; rm_c.cpp failed to compile.
+  ctx.merger.applyCheckToDatabase({ units: [unit('src/rm_a.cpp', [inl]), unit('src/rm_c.cpp', [], false)] }, rec, head, null);
+  const status = (id) => ctx.store.get('SELECT file FROM func_status WHERE symbol_id = ?', id)?.file ?? null;
+  const task = (id) => ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', id).state;
+  assert.deepEqual([status(gone), task(gone)], [null, 'open'], 'gone from main: status cleared, done task reopened');
+  assert.deepEqual([status(inl), task(inl)], ['src/rm_a.cpp', 'done'], 'code in an included .inl stays');
+  assert.deepEqual([status(moved), task(moved)], ['src/rm_a.cpp', 'done'], 'still annotated elsewhere on main: kept');
+  assert.deepEqual([status(broken), task(broken)], ['src/rm_c.cpp', 'done'], 'a unit that failed to compile clears nothing');
+  assert.deepEqual([status(skipped), task(skipped)], [null, 'skipped'], 'a skipped task keeps its state');
+  const ours = new Set([gone, inl, moved, broken, skipped]);
+  const ev = ctx.store.all(`SELECT data FROM events WHERE type = 'status_cleared'`).map((e) => JSON.parse(e.data)).filter((e) => ours.has(e.id));
+  assert.deepEqual(ev.map((e) => [e.id, e.reopened, e.commit]).sort(), [[gone, true, head], [skipped, false, head]].sort());
+  // An unreadable commit is an unknown answer, never "nothing annotated".
+  const keep = sym(0x401850);
+  ctx.merger.applyCheckToDatabase({ units: [unit('src/rm_d.cpp', [keep])] }, rec, head, null);
+  ctx.merger.applyCheckToDatabase({ units: [unit('src/rm_d.cpp', [])] }, rec, '0'.repeat(40), null);
+  assert.equal(status(keep), 'src/rm_d.cpp');
+  // A status left at a file main deleted is cleared by any later check; an annotated ID whose
+  // digits extend another (fn_0001 vs fn_00012) does not keep it.
+  const orphan = sym(0x401860);
+  ctx.store.run(`INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at) VALUES (?, 'src/deleted.cpp', 'mismatch', 0.1, ?, ?)`, orphan, head, now());
+  ctx.repo.commitFiles({ 'src/rm_e.cpp': `// FUNCTION: ${orphan}9\nint e() { return 5; }\n` }, 'prefix fixture', 'test <test@example.invalid>');
+  ctx.merger.applyCheckToDatabase({ units: [] }, rec, ctx.repo.head(), null);
+  assert.equal(status(orphan), null);
 });
 
 test('submissions may not add comments or strings that could instruct other agents', async () => {
@@ -516,7 +564,7 @@ test('a header batch is verified on its own units and merged with every includer
   };
   try {
     // Verification compiled the submitted unit only.
-    ctx.verifier.rememberCheck(batch, { check: { annotationErrors: [], units: [unit('src/inc_a.cpp')] }, rec, changedHeaders: ['src/shared.h'] });
+    ctx.verifier.rememberCheck(batch, { check: { annotationErrors: [], units: [unit('src/inc_a.cpp')] }, rec, changedHeaders: ['src/shared.h'], cacheSnapshot: ctx.verifier.checkSnapshot(files) });
     const m = await ctx.verifier.mergeCheck(ctx.store.get('SELECT * FROM batches WHERE id = ?', batch), files);
     assert.deepEqual(calls.at(-1).onlyUnits?.sort(), ['src/inc_b.cpp', 'src/inc_c.cpp'], 'the merge compiles the includers verification skipped');
     assert.deepEqual(m.check.units.map((u) => u.file).sort(), ['src/inc_a.cpp', 'src/inc_b.cpp', 'src/inc_c.cpp']);
@@ -1158,6 +1206,7 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
     rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] },
     changedHeaders: [],
     units: ['src/batch.cpp'],
+    cacheSnapshot: ctx.verifier.checkSnapshot(files),
   });
 
   const claim = await call('POST', '/api/tasks/claim-batch', { unit: 'src/batch.cpp' }, author);

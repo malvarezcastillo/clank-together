@@ -15,6 +15,8 @@ import { productivity, formatProductivity } from './stats.js';
 import { PEImage } from '../shared/pe.js';
 import { GHIDRA_RELEASE } from '../shared/ghidra.js';
 import { deleteOrphanHeader } from './orphan-header.js';
+import { misflaggedLibrary, clearLibrary } from './library.js';
+import { inferUnits } from './grouping.js';
 
 const TEMPLATE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'template');
 
@@ -46,6 +48,10 @@ Usage: td-server <command> [options]   (all commands accept --data <dir>, defaul
   symbols load <symbols.json>            import symbols with fixed IDs and per-version addresses
   symbols units <csv>                    assign functions to translation units (csv: start,end,file)
   symbols library <id...>                mark symbols as library code (no tasks)
+  symbols unlibrary <id...> --reason TEXT
+                                         clear a wrong library flag (creates the task, logged)
+  symbols reclassify [--apply]           list (or with --apply clear) library flags on functions whose
+                                         original calls game code; run after importing originals
   originals import <jsonl> [--version V] assembly + pseudocode of the original (ExportOriginals.java)
   ghidra build | refresh                 the server's Ghidra project (download, pseudocode); refresh also runs after merges
   rebuild                                compile all of main and refresh match status
@@ -125,6 +131,7 @@ async function main() {
       'expected-blob': { type: 'string' },
       'backup-dir': { type: 'string' },
       'worker-stopped': { type: 'boolean', default: false },
+      apply: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -331,6 +338,28 @@ async function main() {
       console.log(`marked ${rest.length} symbols as library code`);
       return;
     }
+    if (sub === 'unlibrary' || sub === 'reclassify') {
+      const ctx = openServer(dataDir);
+      const v = ctx.store.currentVersion();
+      if (!v) throw new Error('no current version');
+      let ids = rest;
+      let reason = values.reason;
+      if (sub === 'reclassify') {
+        const found = misflaggedLibrary(ctx.store, v.id);
+        for (const f of found) console.log(`${f.id}\t${f.name}\tcalls ${f.calls.slice(0, 3).join(',')}${f.calls.length > 3 ? ',...' : ''}`);
+        console.log(`${found.length} library-flagged functions call game code`);
+        if (!values.apply) return console.log('dry run: pass --apply to clear their library flags');
+        ids = found.map((f) => f.id);
+        reason = 'its original calls game code, so the Function ID library match was wrong';
+      } else if (!ids.length || !reason) {
+        throw new Error('usage: td-server symbols unlibrary <id...> --reason TEXT');
+      }
+      const n = clearLibrary(ctx.store, ids, { reason });
+      const tasks = ctx.tasks.generate();
+      const placed = inferUnits(ctx.store);
+      console.log(`cleared ${n} library flags; created ${tasks} tasks; placed ${placed} functions in files`);
+      return;
+    }
   }
 
   if (cmd === 'ghidra' && (sub === 'build' || sub === 'refresh')) {
@@ -349,6 +378,8 @@ async function main() {
     const v = values.version ?? ctx.store.currentVersion()?.id;
     const n = await ctx.originals.import(v, rest[0]);
     console.log(`imported ${n} functions for ${v}`);
+    const misflagged = misflaggedLibrary(ctx.store, v).length;
+    if (misflagged) console.log(`${misflagged} library-flagged functions call game code: review with \`td-server symbols reclassify\``);
     return;
   }
 

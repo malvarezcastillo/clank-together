@@ -65,8 +65,9 @@ function serverFixture(t, repos) {
   const batch = (kind, base = repos.base, files = { 'forbidden.txt': 'invalid\n' }) => {
     const id = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, kind, created_at) VALUES (?, ?, ?, 'queued', ?, ?)`, user, base, JSON.stringify(files), kind, now()).lastInsertRowid);
     if (kind === 'code') {
-      ctx.store.run(`INSERT OR IGNORE INTO symbols (id, kind, unit, created_at) VALUES ('fn_1', 'function', 'src/base.cpp', ?)`, now());
-      const task = Number(ctx.store.run(`INSERT INTO tasks (symbol_id, state, updated_at) VALUES ('fn_1', 'verifying', ?)`, now()).lastInsertRowid);
+      const symbol = `fn_${id}`;
+      ctx.store.run(`INSERT INTO symbols (id, kind, unit, created_at) VALUES (?, 'function', 'src/base.cpp', ?)`, symbol, now());
+      const task = Number(ctx.store.run(`INSERT INTO tasks (symbol_id, state, updated_at) VALUES (?, 'verifying', ?)`, symbol, now()).lastInsertRowid);
       ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, created_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)`, task, user, base, JSON.stringify(files), id, now());
     }
     return id;
@@ -319,4 +320,322 @@ test('missing incoming compile commands block verification without publishing st
   assert.equal(ctx.store.getMeta('repository_project_head'), repaired);
   assert.equal(ctx.verifier.repositoryBlocked, false);
   assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'returned');
+});
+
+test('continuous submissions admit approved merges before synchronized verification cohorts', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  ctx.merger.start();
+  r.cleanup.push(() => ctx.merger.stop());
+  const events = [];
+  const sync = ctx.repo.sync.bind(ctx.repo);
+  ctx.repo.sync = (...args) => { events.push('sync'); return sync(...args); };
+  const releases = [];
+  ctx.verifier.verifyBatch = async (b) => {
+    events.push(`verify:${b.id}`);
+    await new Promise((resolve) => releases.push(resolve));
+    ctx.store.run(`UPDATE batches SET state = 'returned' WHERE id = ?`, b.id);
+  };
+  ctx.merger.merge = async (b) => {
+    events.push(`merge:${b.id}`);
+    ctx.store.run(`UPDATE batches SET state = 'merged' WHERE id = ?`, b.id);
+  };
+  for (let round = 0; round < 3; round++) {
+    const approved = batch('code');
+    ctx.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, approved);
+    ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, approved);
+    const first = batch('code');
+    const second = batch('code');
+    const queued = batch('code');
+    const start = events.length;
+    ctx.verifier.pump();
+    assert.deepEqual(events.slice(start), ['sync', `merge:${approved}`, `verify:${first}`, `verify:${second}`]);
+    assert.equal(ctx.verifier.syncPending, false, 'remaining synchronized work does not demand another fetch');
+    releases.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(events.includes(`verify:${queued}`));
+    const incoming = batch('code');
+    ctx.verifier.pump();
+    assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', incoming).state, 'queued');
+    const syncs = events.filter((event) => event === 'sync').length;
+    releases.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(events.filter((event) => event === 'sync').length, syncs);
+    releases.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(events.slice(-2), ['sync', `verify:${incoming}`]);
+    releases.shift()();
+    await drained(ctx.verifier);
+  }
+});
+
+test('old broad partial batches drain small merges and exclude maintenance without blocking code verification', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  ctx.merger.start();
+  r.cleanup.push(() => ctx.merger.stop());
+  ctx.config.pushRemote = null;
+  const makeApproved = (cost) => {
+    const id = batch('code');
+    ctx.store.run(`UPDATE batches SET state = 'open', cost = ? WHERE id = ?`, cost, id);
+    ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, id);
+    return id;
+  };
+  const small = makeApproved(1);
+  const broad = makeApproved(140);
+  const pending = batch('code');
+  ctx.store.run(`UPDATE attempts SET batch_id = ?, state = 'in_review' WHERE batch_id = ?`, broad, pending);
+  ctx.store.run(`UPDATE batches SET state = 'returned' WHERE id = ?`, pending);
+  const newer = makeApproved(1);
+  const otherSmall = makeApproved(1);
+  const started = [];
+  const releases = new Map();
+  const merge = async (b) => {
+    started.push(b.id);
+    await new Promise((resolve) => releases.set(b.id, resolve));
+    ctx.store.run(`UPDATE batches SET state = 'merged' WHERE id = ?`, b.id);
+  };
+  ctx.merger.merge = merge;
+  ctx.merger.mergeApprovedPart = merge;
+  const first = ctx.merger.pump();
+  assert.deepEqual(started, [small], 'older broad partial prevents admission of newer whole batches');
+  releases.get(small)();
+  await first;
+  const big = ctx.merger.pump();
+  assert.deepEqual(started, [small, broad]);
+  assert.equal(ctx.merger.runningBig, 1);
+  const maintenance = batch('maintenance');
+  const code = batch('code');
+  let releaseCode;
+  ctx.verifier.verifyBatch = async (b) => {
+    await new Promise((resolve) => { releaseCode = resolve; });
+    ctx.store.run(`UPDATE batches SET state = 'returned' WHERE id = ?`, b.id);
+  };
+  let releaseMaintenance;
+  ctx.maintenance.run = async (id) => {
+    await new Promise((resolve) => { releaseMaintenance = resolve; });
+    ctx.store.run(`UPDATE batches SET state = 'merged' WHERE id = ?`, id);
+  };
+  ctx.verifier.pump();
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', code).state, 'verifying');
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', maintenance).state, 'queued');
+  await ctx.merger.pump();
+  assert.deepEqual(started, [small, broad]);
+  releases.get(broad)();
+  await big;
+  const smalls = ctx.merger.pump();
+  assert.deepEqual(started, [small, broad, newer, otherSmall]);
+  assert.equal(ctx.merger.running, 2, 'small merges retain concurrency');
+  releases.get(newer)();
+  releases.get(otherSmall)();
+  await smalls;
+  ctx.verifier.pump();
+  assert.equal(ctx.verifier.runningMaintenance, 1);
+  const waiting = makeApproved(1);
+  await ctx.merger.pump();
+  assert.ok(!started.includes(waiting), 'maintenance excludes merge commits too');
+  ctx.store.run(`UPDATE batches SET state = 'returned' WHERE id = ?`, waiting);
+  releaseMaintenance();
+  releaseCode();
+  await drained(ctx.verifier);
+});
+
+test('main advancing during baseline refresh retries instead of committing unchecked results', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  ctx.config.pushRemote = null;
+  const id = batch('code', r.base, { 'src/base.cpp': 'int changed_value;\n' });
+  ctx.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, id);
+  ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, id);
+  ctx.verifier.globalsGate = () => [];
+  ctx.verifier.mergeCheck = async () => ({ check: { units: [] }, rec: {}, changedHeaders: [] });
+  let release;
+  ctx.verifier.refreshBaselines = async () => new Promise((resolve) => { release = resolve; });
+  ctx.verifier.evaluate = () => assert.fail('stale baseline must not be evaluated');
+  const merging = ctx.merger.merge(ctx.store.get('SELECT * FROM batches WHERE id = ?', id));
+  await new Promise((resolve) => setImmediate(resolve));
+  const advanced = r.commit(r.local, { 'src/unrelated.cpp': 'int unrelated;\n' });
+  release();
+  await merging;
+  assert.equal(r.repo.head(), advanced);
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'open');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE batch_id = ?', id).state, 'approved');
+});
+
+test('a selected merge superseded during compilation is settled without resurrecting its task', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  const id = batch('code', r.base, { 'src/base.cpp': 'int changed_value;\n' });
+  ctx.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, id);
+  ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, id);
+  ctx.verifier.globalsGate = () => [];
+  let release;
+  ctx.verifier.mergeCheck = async () => new Promise((resolve) => { release = resolve; });
+  ctx.verifier.refreshBaselines = () => assert.fail('obsolete selection must not refresh or commit');
+  const merging = ctx.merger.merge(ctx.store.get('SELECT * FROM batches WHERE id = ?', id));
+  ctx.store.run(`UPDATE attempts SET state = 'superseded' WHERE batch_id = ?`, id);
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE id IN (SELECT task_id FROM attempts WHERE batch_id = ?)`, id);
+  release({ check: { units: [] }, rec: {}, changedHeaders: [] });
+  await merging;
+  assert.equal(r.repo.head(), r.base);
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'returned');
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = (SELECT task_id FROM attempts WHERE batch_id = ?)', id).state, 'done');
+});
+
+test('split children retain broad-header classification when their merge retries', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  ctx.config.pushRemote = null;
+  const parent = batch('code');
+  const pending = batch('code');
+  ctx.store.run(`UPDATE batches SET state = 'open', cost = 140 WHERE id = ?`, parent);
+  ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, parent);
+  ctx.store.run(`UPDATE attempts SET batch_id = ?, state = 'in_review' WHERE batch_id = ?`, parent, pending);
+  ctx.store.run(`UPDATE batches SET state = 'returned' WHERE id = ?`, pending);
+  let child;
+  ctx.merger.merge = async (b) => { child = b; };
+  await ctx.merger.mergeApprovedPart(ctx.store.get('SELECT * FROM batches WHERE id = ?', parent));
+  assert.equal(child.cost, 140);
+  const selected = ctx.merger.next();
+  assert.equal(selected.batch.id, child.id);
+  assert.equal(selected.batch.cost, 140);
+  assert.equal(selected.whole, true);
+});
+
+test('submissions arriving during fetch wait for a subsequent synchronization', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  const approved = batch('code');
+  ctx.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, approved);
+  ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, approved);
+  ctx.merger.start();
+  r.cleanup.push(() => ctx.merger.stop());
+  const first = batch('code');
+  const events = [];
+  const releases = [];
+  ctx.merger.merge = async (b) => {
+    events.push(`merge:${b.id}`);
+    ctx.store.run(`UPDATE batches SET state = 'merged' WHERE id = ?`, b.id);
+  };
+  let incoming;
+  let incomingHead;
+  const sync = ctx.repo.sync.bind(ctx.repo);
+  ctx.repo.sync = (...args) => {
+    const result = sync(...args);
+    events.push('sync');
+    if (!incoming) {
+      incomingHead = r.advance({ 'src/during-fetch.cpp': 'int during_fetch;\n' });
+      incoming = batch('code', incomingHead);
+    }
+    return result;
+  };
+  ctx.verifier.verifyBatch = async (b) => {
+    events.push(`verify:${b.id}`);
+    if (b.id === incoming) assert.equal(r.repo.head(), incomingHead);
+    await new Promise((resolve) => releases.push(resolve));
+    ctx.store.run(`UPDATE batches SET state = 'returned' WHERE id = ?`, b.id);
+  };
+  ctx.verifier.pump();
+  assert.deepEqual(events, ['sync', `merge:${approved}`, `verify:${first}`]);
+  assert.equal(ctx.verifier.syncedThrough, first);
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', incoming).state, 'queued');
+  assert.equal(ctx.verifier.syncPending, true);
+  ctx.verifier.pump();
+  assert.equal(events.length, 3, 'another sync must wait until the current verification finishes');
+  releases.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['sync', `merge:${approved}`, `verify:${first}`, 'sync', `verify:${incoming}`]);
+  releases.shift()();
+  await drained(ctx.verifier);
+});
+
+test('verifier priority admission waits until merger startup recovery completes', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  const approved = batch('code');
+  ctx.store.run(`UPDATE batches SET state = 'merging' WHERE id = ?`, approved);
+  ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, approved);
+  let starts = 0;
+  ctx.merger.merge = async (b) => {
+    starts++;
+    assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', b.id).state, 'open');
+    ctx.store.run(`UPDATE batches SET state = 'merged' WHERE id = ?`, b.id);
+  };
+  ctx.verifier.start();
+  assert.equal(starts, 0, 'verifier startup must not race merge recovery');
+  ctx.merger.start();
+  r.cleanup.push(() => ctx.merger.stop());
+  ctx.verifier.pump();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts, 1);
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', approved).state, 'merged');
+  ctx.merger.stop();
+  assert.equal(ctx.merger.started, false);
+});
+
+test('symbol corrections during compilation cannot commit analysis from the old context', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  ctx.config.pushRemote = null;
+  const files = { 'src/base.cpp': 'int changed_value;\n' };
+  const id = batch('code', r.base, files);
+  ctx.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, id);
+  ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, id);
+  ctx.verifier.globalsGate = () => [];
+  let release;
+  ctx.verifier.mergeCheck = async () => {
+    const cacheSnapshot = ctx.verifier.checkSnapshot(files);
+    await new Promise((resolve) => { release = resolve; });
+    return { check: { units: [] }, rec: {}, changedHeaders: [], cacheSnapshot };
+  };
+  ctx.verifier.refreshBaselines = async () => {};
+  ctx.verifier.evaluate = () => assert.fail('old symbol analysis must not be evaluated');
+  const merging = ctx.merger.merge(ctx.store.get('SELECT * FROM batches WHERE id = ?', id));
+  ctx.store.run(`UPDATE symbols SET decorated = '?Corrected@@YAXXZ' WHERE id = 'fn_1'`);
+  release();
+  await merging;
+  assert.equal(r.repo.head(), r.base);
+  assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'open');
+  assert.equal(ctx.store.get('SELECT state FROM attempts WHERE batch_id = ?', id).state, 'approved');
+});
+
+test('older synchronized maintenance drains merge lanes before newer approved code', async (t) => {
+  const r = repositories(t);
+  const { ctx, batch } = serverFixture(t, r);
+  const old = batch('code');
+  const maintenance = batch('maintenance');
+  const newer = batch('code');
+  for (const id of [old, newer]) {
+    ctx.store.run(`UPDATE batches SET state = 'open', cost = 1 WHERE id = ?`, id);
+    ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, id);
+  }
+  ctx.verifier.syncRepository();
+  ctx.merger.start();
+  r.cleanup.push(() => ctx.merger.stop());
+  const started = [];
+  let releaseOld;
+  ctx.merger.merge = async (b) => {
+    started.push(b.id);
+    if (b.id === old) await new Promise((resolve) => { releaseOld = resolve; });
+    ctx.store.run(`UPDATE batches SET state = 'merged' WHERE id = ?`, b.id);
+  };
+  const first = ctx.merger.pump();
+  assert.deepEqual(started, [old]);
+  await ctx.merger.pump();
+  assert.deepEqual(started, [old], 'timer-driven admission also respects maintenance age');
+  releaseOld();
+  await first;
+  let releaseMaintenance;
+  ctx.maintenance.run = async (id) => {
+    assert.equal(id, maintenance);
+    await new Promise((resolve) => { releaseMaintenance = resolve; });
+    ctx.store.run(`UPDATE batches SET state = 'merged' WHERE id = ?`, id);
+  };
+  ctx.verifier.pump();
+  assert.equal(ctx.verifier.runningMaintenance, 1);
+  assert.deepEqual(started, [old]);
+  releaseMaintenance();
+  await drained(ctx.verifier);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, [old, newer]);
 });

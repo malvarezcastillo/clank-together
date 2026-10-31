@@ -5,6 +5,59 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
+import { plainDeclaration, FORWARD } from './affected.js';
+
+const MARK = 31; // conflict-marker width that ordinary source never contains
+const HEADER = /\.(h|hh|hpp|hxx|inl)$/i;
+
+// A header line that adding next to another side's additions cannot change layout or codegen of:
+// blank, comment, plain non-virtual function declaration or forward declaration.
+function harmlessHeaderLine(line) {
+  const t = line.trim();
+  return !t || t.startsWith('//') || !!plainDeclaration(t, null) || FORWARD.test(t);
+}
+
+/**
+ * `git merge-file --diff3` output where every conflict is two independent insertions at the same
+ * place (empty base): both kept, main's first. Null when any hunk edits shared lines, or, for a
+ * header, when an added line could affect a layout (fields, virtuals, bodies, nested types...).
+ * The result still goes through the normal compile, regression and ownership checks.
+ */
+export function unionAdditions(conflicted, file) {
+  const lt = '<'.repeat(MARK), bar = '|'.repeat(MARK), eq = '='.repeat(MARK), gt = '>'.repeat(MARK);
+  const out = [];
+  let state = null; // null | 'ours' | 'base' | 'theirs'
+  let ours = [], base = [], theirs = [];
+  for (const line of conflicted.split('\n')) {
+    if (state === null && line.startsWith(lt)) { state = 'ours'; ours = []; base = []; theirs = []; continue; }
+    if (state === 'ours' && line.startsWith(bar)) { state = 'base'; continue; }
+    if (state === 'base' && line === eq) { state = 'theirs'; continue; }
+    if (state === 'theirs' && line.startsWith(gt)) {
+      if (base.some((l) => l.trim())) return null;
+      if (HEADER.test(file) && ![...ours, ...theirs].every(harmlessHeaderLine)) return null;
+      // Both sides often add the same lines (one agent resubmitting work main already has).
+      // Header additions here are single-line declarations: keep main's copy once. In source,
+      // a shared top-level line (definition head, annotation) means the same definition twice;
+      // dropping lines inside bodies is unsafe, so that stays a conflict.
+      const have = new Set(ours.map((l) => l.trim()).filter(Boolean));
+      if (HEADER.test(file)) {
+        out.push(...ours, ...theirs.filter((l) => !l.trim() || !have.has(l.trim())));
+      } else {
+        const top = (l) => /^[^\s{}#]/.test(l);
+        const ourTop = new Set(ours.filter(top).map((l) => l.trim()));
+        if (theirs.some((l) => top(l) && ourTop.has(l.trim()))) return null;
+        out.push(...ours, ...theirs);
+      }
+      state = null;
+      continue;
+    }
+    if (state === 'ours') ours.push(line);
+    else if (state === 'base') base.push(line);
+    else if (state === 'theirs') theirs.push(line);
+    else out.push(line);
+  }
+  return state === null ? out.join('\n') : null;
+}
 
 export class Repo {
   constructor(dir) {
@@ -159,7 +212,15 @@ export class Repo {
         try {
           out[file] = execFileSync('git', ['merge-file', '-p', h, b, t], { encoding: 'utf8' });
         } catch {
-          conflicts.push(file);
+          let marked = null;
+          try {
+            execFileSync('git', ['merge-file', '-p', '--diff3', `--marker-size=${MARK}`, h, b, t], { encoding: 'utf8' });
+          } catch (e) {
+            if (e.status > 0) marked = e.stdout;
+          }
+          const union = marked === null ? null : unionAdditions(marked, file);
+          if (union === null) conflicts.push(file);
+          else out[file] = union;
         }
       }
     } finally {

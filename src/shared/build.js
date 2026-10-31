@@ -52,6 +52,12 @@ function fillEnv(env, roots) {
 
 const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
+// Automatic batches get 30 seconds per work wave, with the caller's timeout as
+// a floor and a 20-minute scaling cap. Explicit longer maintenance deadlines win.
+export function dockerDeadlineMs({ timeoutMs = 120_000, unitCount, jobs = 1, scaleTimeout = false }) {
+  return scaleTimeout ? Math.max(timeoutMs, Math.min(1_200_000, Math.ceil(unitCount / Math.max(1, jobs)) * 30_000)) : timeoutMs;
+}
+
 /**
  * @param {object} p
  * @param {string} p.jobDir       prepared by prepareJobDir
@@ -61,7 +67,7 @@ const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
  * @returns {Promise<Array<{file, ok, obj, cod, pre, log}>>}
  */
 // preprocess(file): whether to also write the /P output (needed only to lint submitted code).
-export async function compileUnits({ jobDir, units, project, runners, timeoutMs = 120_000, preprocess = () => true }) {
+export async function compileUnits({ jobDir, units, project, runners, timeoutMs = 120_000, scaleTimeout = false, preprocess = () => true }) {
   const byToolchain = new Map();
   for (const file of units) {
     const { cflags, toolchain, env } = unitSettings(project, file);
@@ -72,18 +78,23 @@ export async function compileUnits({ jobDir, units, project, runners, timeoutMs 
   for (const [toolchain, list] of byToolchain) {
     const runner = runners?.[toolchain];
     if (!runner) throw new Error(`no runner configured for toolchain "${toolchain}"`);
-    if (runner.type === 'docker') results.push(...(await runDocker({ jobDir, list, project, runner, timeoutMs })));
+    if (runner.type === 'docker') results.push(...(await runDocker({ jobDir, list, project, runner, timeoutMs: dockerDeadlineMs({ timeoutMs, unitCount: list.length, jobs: runner.jobs, scaleTimeout }) })));
     else if (runner.type === 'native' || runner.type === 'wine') results.push(...(await runLocal({ jobDir, list, project, runner, timeoutMs })));
     else throw new Error(`unknown runner type "${runner.type}"`);
   }
   return results;
 }
 
-function collect(jobDir, file, log) {
+function clearOutputs(jobDir, file) {
+  const base = path.join(jobDir, 'out', outputBase(file));
+  for (const suffix of ['.obj', '.cod', '.i', '.status', '.log']) fs.rmSync(base + suffix, { force: true });
+}
+
+function collect(jobDir, file, log, { completed, timedOut, wantPre }) {
   const base = path.join(jobDir, 'out', outputBase(file));
   const exists = (p) => (fs.existsSync(p) ? p : null);
-  const obj = exists(base + '.obj');
-  return { file, ok: !!obj, obj, cod: exists(base + '.cod'), pre: exists(base + '.i'), log, includes: projectIncludes(log, jobDir) };
+  const ok = completed && !timedOut && !!exists(base + '.obj') && (!wantPre || !!exists(base + '.i'));
+  return { file, ok, timedOut, obj: ok ? exists(base + '.obj') : null, cod: ok ? exists(base + '.cod') : null, pre: ok && wantPre ? exists(base + '.i') : null, log, includes: projectIncludes(log, jobDir) };
 }
 
 /**
@@ -112,10 +123,14 @@ async function runDocker({ jobDir, list, project, runner, timeoutMs }) {
     const { compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots });
     const log = `/job/${out}.log`;
     const exports = Object.entries(fillEnv(env, roots)).map(([k, v]) => `export ${k}=${shQuote(v)}`);
-    const unit = ['. /opt/td/env.sh', ...exports, `echo '== ${file}' > ${shQuote(log)}`, `td_cl ${compile.map(shQuote).join(' ')} >> ${shQuote(log)} 2>&1`, ...(pre ? [`td_cl ${preprocess.map(shQuote).join(' ')} >> ${shQuote(log)} 2>&1`] : [])];
+    const status = shQuote(`/job/${out}.status`);
+    const invoke = (args) => `td_cl ${args.map(shQuote).join(' ')} >> ${shQuote(log)} 2>&1 || { echo failed > ${status}; exit 1; }`;
+    clearOutputs(jobDir, file);
+    const unit = ['. /opt/td/env.sh', ...exports, `echo '== ${file}' > ${shQuote(log)}`, invoke(compile), ...(pre ? [invoke(preprocess)] : []), `echo complete > ${status}`];
     fs.writeFileSync(path.join(jobDir, out + '.sh'), unit.join('\n') + '\n');
   }
-  const lines = ['#!/bin/sh', 'set -u', '. /opt/td/env.sh', `ls /job/out/*.sh | xargs -P ${jobs} -n 1 sh`];
+  const scripts = list.map(({ file }) => shQuote(`/job/out/${outputBase(file)}.sh`));
+  const lines = ['#!/bin/sh', 'set -u', '. /opt/td/env.sh', `printf '%s\\0' ${scripts.join(' ')} | xargs -0 -P ${jobs} -n 1 sh`];
   fs.writeFileSync(path.join(jobDir, 'build.sh'), lines.join('\n') + '\n');
   // With userns-remap the container user maps to an unprivileged host UID, so it
   // needs write access to the job dir. The jobs parent dir stays private (0700).
@@ -148,11 +163,16 @@ async function runDocker({ jobDir, list, project, runner, timeoutMs }) {
     'sh', '/job/build.sh',
   ];
   const docker = runner.docker ?? 'docker';
-  const r = await run(docker, args, { timeoutMs, onTimeout: () => spawn(docker, ['kill', name]) });
-  return list.map(({ file }) => {
-    const logFile = path.join(jobDir, 'out', outputBase(file) + '.log');
-    const log = (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '') + (r.timedOut ? '\n[build timed out]' : '');
-    return collect(jobDir, file, log);
+  const r = await run(docker, args, { timeoutMs, onTimeout: async () => {
+    const killed = await run(docker, ['kill', name]);
+    if (killed.code !== 0) throw new Error(`could not cancel compiler container ${name}: ${killed.output}`);
+  } });
+  return list.map(({ file, pre }) => {
+    const base = path.join(jobDir, 'out', outputBase(file));
+    const status = fs.existsSync(base + '.status') ? fs.readFileSync(base + '.status', 'utf8').trim() : '';
+    const timedOut = r.timedOut && status !== 'complete' && status !== 'failed';
+    const log = (fs.existsSync(base + '.log') ? fs.readFileSync(base + '.log', 'utf8') : '') + (timedOut ? '\n[build timed out]' : '');
+    return collect(jobDir, file, log, { completed: status === 'complete', timedOut, wantPre: pre });
   });
 }
 
@@ -173,9 +193,11 @@ async function runLocal({ jobDir, list, project, runner, timeoutMs }) {
       const out = `out/${outputBase(file)}`;
       const { compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots });
       const [cmd, pre] = runner.type === 'wine' ? [runner.wine ?? 'wine', [runner.clPath]] : [runner.clPath, []];
+      clearOutputs(jobDir, file);
       const a = await run(cmd, [...pre, ...compile], { timeoutMs, env, cwd: absJob });
-      const b = wantPre ? await run(cmd, [...pre, ...preprocess], { timeoutMs, env, cwd: absJob }) : { output: '', timedOut: false };
-      results[i] = collect(jobDir, file, `== ${file}\n${a.output}${b.output}${a.timedOut || b.timedOut ? '\n[build timed out]' : ''}`);
+      const b = wantPre && a.code === 0 && !a.timedOut ? await run(cmd, [...pre, ...preprocess], { timeoutMs, env, cwd: absJob }) : { code: 0, output: '', timedOut: false };
+      const timedOut = a.timedOut || b.timedOut;
+      results[i] = collect(jobDir, file, `== ${file}\n${a.output}${b.output}${timedOut ? '\n[build timed out]' : ''}`, { completed: a.code === 0 && b.code === 0, timedOut, wantPre });
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, runner.jobs ?? 1) }, worker));
@@ -183,10 +205,11 @@ async function runLocal({ jobDir, list, project, runner, timeoutMs }) {
 }
 
 export function run(cmd, args, { timeoutMs = 120_000, env, cwd, onTimeout } = {}) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { env, cwd, windowsHide: true });
     let output = '';
     let timedOut = false;
+    let cancellation = Promise.resolve();
     const cap = (d) => {
       if (output.length < 200_000) output += d.toString();
     };
@@ -194,16 +217,23 @@ export function run(cmd, args, { timeoutMs = 120_000, env, cwd, onTimeout } = {}
     child.stderr.on('data', cap);
     const t = setTimeout(() => {
       timedOut = true;
-      onTimeout?.();
-      child.kill('SIGKILL');
+      cancellation = Promise.resolve().then(() => onTimeout?.());
+      // Attach a handler immediately; close still awaits and propagates failure.
+      cancellation.catch(() => child.kill('SIGKILL'));
+      if (!onTimeout) child.kill('SIGKILL');
     }, timeoutMs);
     child.on('error', (e) => {
       clearTimeout(t);
       resolve({ code: -1, output: output + `\n${e.message}`, timedOut });
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       clearTimeout(t);
-      resolve({ code, output, timedOut });
+      try {
+        await cancellation;
+        resolve({ code, output, timedOut });
+      } catch (e) {
+        reject(e);
+      }
     });
   });
 }

@@ -10,7 +10,7 @@ import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { lintSubmission } from '../shared/lint.js';
 import { isUnit, addUnitsToCompileCommands } from '../shared/project.js';
-import { bestResults } from './verify.js';
+import { bestResults, BuildRetryError, deferBuild, clearBuildRetry } from './verify.js';
 
 export class Maintenance {
   constructor({ store, repo, project, verifier, merger, log = console }) {
@@ -34,6 +34,7 @@ export class Maintenance {
   async run(batchId) {
     const batch = this.store.get(`SELECT * FROM batches WHERE id = ? AND kind = 'maintenance'`, batchId);
     if (!batch || batch.state !== 'verifying') return;
+    clearBuildRetry(this.store, batch.id);
     try {
       const outcome = await this.verifyAndMerge(batch);
       if (outcome.state === 'queued') {
@@ -43,6 +44,10 @@ export class Maintenance {
       this.store.run(`UPDATE batches SET state = ?, finished_at = ?, result_json = ?, merged_commit = ? WHERE id = ?`, outcome.state, now(), JSON.stringify(outcome.result), outcome.commit ?? null, batch.id);
       return outcome;
     } catch (e) {
+      if (e instanceof BuildRetryError) {
+        deferBuild(this.store, batch.id, e);
+        return { state: 'queued', result: { buildRetry: e.diagnostic } };
+      }
       this.log.error(`maintenance batch ${batch.id}: ${e.stack}`);
       this.store.run(`UPDATE batches SET state = 'returned', finished_at = ?, result_json = ? WHERE id = ?`, now(), JSON.stringify({ returned: 'internal error; a maintainer has been notified' }), batch.id);
       return { state: 'returned' };
@@ -79,6 +84,7 @@ export class Maintenance {
 
     // Every unit the change can affect: the submitted ones, and every includer of a changed header.
     const { check, rec, changedHeaders } = await this.verifier.check(merged.files, `maintenance-${batch.id}`, { dependents: true });
+    if (check.units.some((u) => u.timedOut)) throw new BuildRetryError(check, 'maintenance');
     const failed = check.units.filter((u) => !u.compiled);
     if (failed.length) return back('compilation failed', { compileErrors: failed.map((u) => ({ file: u.file, log: u.log })) });
     const fileSet = new Set(Object.keys(merged.files));
@@ -123,6 +129,7 @@ export class Maintenance {
   async changedFunctions(check, files, head) {
     const touched = check.units.map((u) => u.file).filter((f) => this.repo.show(head, f) !== null);
     const before = touched.length ? (await this.verifier.check({}, `maintenance-base-${head.slice(0, 10)}`, { onlyUnits: touched, lint: false })).check : { units: [] };
+    if (before.units.some((u) => !u.compiled || u.timedOut)) throw new BuildRetryError(before, 'maintenance-baseline');
     const was = new Map([...bestResults(before)].map(([id, b]) => [id, b.f]));
     const out = [];
     for (const [id, { f, unit }] of bestResults(check)) {

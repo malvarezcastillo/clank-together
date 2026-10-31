@@ -3,13 +3,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { lintAnnotations } from '../shared/annotations.js';
 import { lintSubmission } from '../shared/lint.js';
 import { freeTextErrorsAcross, executionCharset } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal } from '../shared/compare.js';
-import { listSources, isUnit, unitSettings, loadProject, loadToolchainLock } from '../shared/project.js';
-import { changedNames, unitsMentioning } from './affected.js';
+import { listSources, isUnit, unitSettings, loadProject, loadToolchainLock, scanAnnotations } from '../shared/project.js';
+import { changedNames, unitsMentioning, virtualNames } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
 import { sourceIncluders } from './includers.js';
 import { globalViolations } from './globals.js';
@@ -21,6 +23,36 @@ import { analyzeInWorkers } from './analyze.js';
 
 // A batch whose verification compiles more units than this is big (it changes a widely used header).
 export const BIG_BATCH = 20;
+
+export const BUILD_READY = "COALESCE(json_extract(result_json, '$.buildRetry.retryAt'), 0) <= ?";
+
+export class BuildRetryError extends Error {
+  constructor(check, stage) {
+    const failed = check.units.filter((u) => !u.compiled || u.timedOut);
+    const kind = failed.some((u) => u.timedOut) ? 'timeout' : 'baseline_failed';
+    super(`${stage}: ${kind}`);
+    this.diagnostic = { kind, stage, retryAt: now() + 60_000, files: failed.map((u) => u.file),
+      errors: failed.map((u) => ({ file: u.file, log: u.log })) };
+  }
+}
+
+export function clearBuildRetry(store, batchId) {
+  store.run(`UPDATE batches SET result_json = json_remove(COALESCE(result_json, '{}'), '$.buildRetry') WHERE id = ?`, batchId);
+}
+
+export function deferBuild(store, batchId, error, { merge = false } = {}) {
+  store.tx(() => {
+    const from = merge ? 'merging' : 'verifying';
+    const to = merge ? 'open' : 'queued';
+    if (store.get('SELECT state FROM batches WHERE id = ?', batchId)?.state !== from) return;
+    store.run(`UPDATE batches SET state = ?, result_json = json_set(COALESCE(result_json, '{}'), '$.buildRetry', json(?)) WHERE id = ?`, to, JSON.stringify(error.diagnostic), batchId);
+    if (merge) {
+      store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE state = 'merging' AND id IN (SELECT task_id FROM attempts WHERE batch_id = ? AND state = 'approved')`, now(), batchId);
+    } else {
+      store.run(`UPDATE attempts SET state = 'queued' WHERE batch_id = ? AND state = 'verifying'`, batchId);
+    }
+  });
+}
 
 export const RANK = { [STATUS.EXACT]: 3, [STATUS.UNRESOLVED]: 2, [STATUS.MISMATCH]: 1, [STATUS.MISSING]: 0, [STATUS.NO_ADDRESS]: 0 };
 
@@ -51,6 +83,9 @@ export class Verifier {
     this.peers = peers;
     this.log = log;
     this.running = 0;
+    this.runningMaintenance = 0;
+    this.syncedThrough = 0;
+    this.needsSync = !!config.pushRemote;
     this.jobsDir = path.join(config.dataDir, 'jobs');
   }
 
@@ -80,10 +115,9 @@ export class Verifier {
     this.stopped = true; // finishing verifications must not start new ones
   }
 
-  // A queued batch drains the existing cohort, including merge and remote-check lanes. Git
-  // and project reload are synchronous, so no job can start between the idle check and FF.
+  // New submissions drain active lanes once; queued members of the synchronized cohort do not.
   get syncPending() {
-    return !!this.config.pushRemote && (this.needsSync || !!this.store.get(`SELECT 1 FROM batches WHERE state = 'queued' AND kind IN ('code', 'maintenance') LIMIT 1`));
+    return !!this.config.pushRemote && (this.needsSync || !!this.store.get(`SELECT 1 FROM batches WHERE state = 'queued' AND kind IN ('code', 'maintenance') AND id > ? LIMIT 1`, this.syncedThrough));
   }
 
   get repositoryBlocked() {
@@ -126,22 +160,28 @@ export class Verifier {
       return;
     }
     if (this.running || this.merger?.busy || this.checks?.running) throw new Error('repository sync requires idle verification, merge and remote-check lanes');
+    // The web process can enqueue work while fetch blocks this process. Only work present
+    // before fetch belongs to this synchronization; later submissions may name a newer base.
+    const syncedThrough = this.store.get(`SELECT COALESCE(MAX(id), 0) AS id FROM batches WHERE state = 'queued' AND kind IN ('code', 'maintenance')`).id;
     const result = this.repo.sync(this.config.pushRemote);
     this.refreshProject();
     this.store.setMeta('repository_project_head', result.head);
     this.syncError = null;
     this.needsSync = false;
-    this.store.run(`UPDATE batches SET result_json = json_remove(result_json, '$.repositorySync') WHERE state = 'queued' AND json_extract(result_json, '$.repositorySync') IS NOT NULL`);
+    this.syncedThrough = syncedThrough;
+    this.store.run(`UPDATE batches SET result_json = json_remove(result_json, '$.repositorySync') WHERE state = 'queued' AND id <= ? AND json_extract(result_json, '$.repositorySync') IS NOT NULL`, syncedThrough);
     if (result.state === 'fast-forward') this.log.info(`repository fast-forwarded from ${result.before} to ${result.head} (${result.remote} ${result.branch})`);
     return result;
   }
 
   pump() {
     if (this.stopped) return;
+    let synchronized = false;
     if (this.repositoryBlocked) {
       if (this.running || this.merger?.busy || this.checks?.running) return;
       try {
         this.syncRepository();
+        synchronized = true;
       } catch (e) {
         if (this.syncError !== e.message) this.log.error(e.message);
         this.syncError = e.message;
@@ -151,6 +191,8 @@ export class Verifier {
         return;
       }
     }
+    // Admit ready commits before filling verification slots, including immediately after sync.
+    if (this.merger?.started) this.merger.pump({ synchronized }).catch((e) => this.log.error(`merge pump: ${e.stack}`));
     const max = this.config.verifyConcurrency ?? 3;
     while (this.running < max) {
       // Verification compiles only the submitted units, so every batch is small here; the units
@@ -160,10 +202,17 @@ export class Verifier {
         // fast contributor with several batches waiting does not hold every slot.
         const row = this.store.get(
           `SELECT b.* FROM batches b WHERE b.state = 'queued'
+            AND COALESCE(json_extract(b.result_json, '$.buildRetry.retryAt'), 0) <= ?
+            AND (b.kind != 'maintenance' OR ?)
+            AND (? OR b.kind NOT IN ('code', 'maintenance') OR b.id <= ?)
             ORDER BY (SELECT COUNT(*) FROM batches v WHERE v.user_id = b.user_id AND v.state = 'verifying'), b.id LIMIT 1`,
+          now(),
+          !this.runningMaintenance && !this.merger?.busy ? 1 : 0,
+          this.config.pushRemote ? 0 : 1, this.syncedThrough,
         );
         if (row && row.kind === 'maintenance' && !this.maintenance) return null;
         if (row) {
+          clearBuildRetry(this.store, row.id);
           this.store.run(`UPDATE batches SET state = 'verifying' WHERE id = ?`, row.id);
           this.store.run(`UPDATE attempts SET state = 'verifying' WHERE batch_id = ? AND state = 'queued'`, row.id);
         }
@@ -171,6 +220,7 @@ export class Verifier {
       });
       if (!b) return;
       this.running++;
+      if (b.kind === 'maintenance') this.runningMaintenance++;
       // A maintenance batch verifies and merges in one step (maintenance.js).
       const job = b.kind === 'maintenance' ? this.maintenance.run(b.id) : this.verifyBatch(b);
       job
@@ -183,6 +233,7 @@ export class Verifier {
         })
         .finally(() => {
           this.running--;
+          if (b.kind === 'maintenance') this.runningMaintenance--;
           this.pump();
         });
     }
@@ -209,7 +260,7 @@ export class Verifier {
   // onlyUnits: compile exactly these units (a merge recompiling what changed since verification).
   // targets: the functions being judged; the units that emit them are compiled too (a header's inline
   // function exists only in units that use it; a Win32/ copy is compiled out of the x64 build).
-  async check(files, jobName, { allUnits = false, timeoutMs = null, dependents = true, lint = true, onlyUnits = null, targets = null } = {}) {
+  async check(files, jobName, { allUnits = false, timeoutMs = null, dependents = true, lint = true, onlyUnits = null, targets = null, cachedUnits = [], unitOrder = null } = {}) {
     const changedHeaders = Object.keys(files).filter((f) => !isUnit(f));
     const submittedUnits = Object.keys(files).filter(isUnit);
     const units = new Set(onlyUnits ?? submittedUnits);
@@ -268,9 +319,12 @@ export class Verifier {
     const v = this.store.currentVersion();
     const symbols = this.store.symbolMap(v.id);
     const nameIndex = this.store.nameIndex();
+    const scan = scanAnnotations(this.repo.dir, this.project, files);
+    const cacheSnapshot = this.checkSnapshot(files, { version: v, symbols, nameIndex, scan });
     const jobDir = path.join(this.jobsDir, jobName);
     try {
       const check = await checkUnits({
+        scan,
         repoDir: this.repo.dir,
         jobDir,
         project: this.project,
@@ -281,13 +335,18 @@ export class Verifier {
         pe: this.getPe(),
         runners: this.config.runners,
         timeoutMs: timeoutMs ?? this.config.buildTimeoutMs ?? 300_000,
+        scaleTimeout: timeoutMs === null,
         // The macro-proof lint needs the /P pass: for submitted units; for every unit when a header
         // changed (a macro there expands everywhere); never for a rebuild of trusted main.
         lintUnits,
+        cachedUnits, unitOrder: unitOrder ?? [...units],
         analyze: (args) => analyzeInWorkers({ symbols, nameIndex, ...args, peFile: v.file }),
       });
+      // Reconciliation mutates statuses; retries must start with compiler analysis, not a prior
+      // batch-wide upgrade whose supporting unit may have changed.
+      for (const u of check.units) for (const f of u.functions) f.comparisonStatus = f.status;
       const rec = reconcile(check, symbols);
-      return { check, rec, symbols, changedHeaders, units: [...units] };
+      return { check, rec, symbols, changedHeaders, units: [...units], cacheSnapshot };
     } finally {
       if (!this.config.keepJobDirs) fs.rmSync(jobDir, { recursive: true, force: true });
     }
@@ -369,53 +428,121 @@ export class Verifier {
     return globalViolations(files, { before: (f) => this.repo.show(baseCommit, f), repository: this.globalSources });
   }
 
-  // What a merge needs from the verification's check (without listings and byte diffs).
-  rememberCheck(batchId, { check, rec, changedHeaders }) {
-    const compact = {
-      annotationErrors: check.annotationErrors,
-      units: check.units.map((u) => ({ ...u, functions: u.functions.map(({ asm, diffRegions, ...f }) => f) })),
+  /** Capture before compilation: comparison inputs are as important as source dependencies. */
+  checkSnapshot(files, { version = this.store.currentVersion(), symbols = this.store.symbolMap(version.id), nameIndex = this.store.nameIndex(), scan = scanAnnotations(this.repo.dir, this.project, files) } = {}) {
+    const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const paths = new Set(this.repo.git(['ls-tree', '-r', '--name-only', 'HEAD']).trim().split('\n').filter(Boolean));
+    for (const [file, text] of Object.entries(files)) {
+      if (text === null) paths.delete(file);
+      else paths.add(file);
+    }
+    // Comparison resolves annotated IDs and decorated names only. Newly registered unnamed
+    // symbols affect reconciliation (rerun against current metadata), not compiler analysis.
+    const referenced = new Set(scan.annotations.map((a) => a.id).filter(Boolean));
+    for (const id of nameIndex.values()) referenced.add(id);
+    return {
+      format: 2, head: this.repo.head(), overrides: { ...files },
+      context: hash({ project: this.project, toolchain: this.config.toolchainLock,
+        env: this.config.envDigest, runners: this.config.runners, version,
+        symbols: [...symbols].filter(([id]) => referenced.has(id)), names: [...nameIndex],
+        globals: scan.annotations.filter((a) => a.kind === 'GLOBAL'), paths: [...paths].sort() }),
+      // Partial analysis cannot rediscover GLOBAL bindings emitted by a reused unit.
+      globalBindings: scan.annotations.some((a) => a.kind === 'GLOBAL'),
+      annotationErrors: [...scan.errors, ...lintAnnotations(scan.annotations, symbols)],
     };
-    this.store.run('INSERT OR REPLACE INTO batch_checks (batch_id, head, check_json) VALUES (?, ?, ?)', batchId, this.repo.head(), JSON.stringify({ check: compact, rec, changedHeaders }));
   }
 
-  /**
-   * The check a merge needs, reusing the verification's compile of every unit whose source and
-   * included headers are unchanged since: only the other units are compiled again (often none, or
-   * just the one file a split took functions out of). `fromBatch` is the verified batch (a split
-   * part points at the batch it came from).
-   */
+  // Store evidence only, never evaluation, ownership, regression or review approvals.
+  rememberCheck(batchId, { check, rec, changedHeaders, cacheSnapshot }) {
+    if (!cacheSnapshot || cacheSnapshot.format !== 2) return;
+    const compact = {
+      annotationErrors: check.annotationErrors,
+      analysisNames: check.analysisNames,
+      units: check.units.map((u) => ({ ...u, functions: u.functions.map(({ asm, diffRegions, ...f }) => f) })),
+    };
+    this.store.run('INSERT OR REPLACE INTO batch_checks (batch_id, head, check_json) VALUES (?, ?, ?)', batchId, cacheSnapshot.head,
+      JSON.stringify({ check: compact, rec, changedHeaders, cacheSnapshot }));
+  }
+
+  /** Prefer a child's expanded retry evidence; a parent's verification is only a fallback. */
   async mergeCheck(batch, files, fromBatch = batch) {
-    const row = this.store.get('SELECT head, check_json FROM batch_checks WHERE batch_id = ?', fromBatch.id);
-    const fresh = () => this.check(files, `merge-${batch.id}`, { lint: false });
-    if (!row) return fresh();
-    const verified = fromBatch.result_json ? JSON.parse(fromBatch.result_json).mergedFiles ?? {} : {};
-    const saved = JSON.parse(row.check_json);
-    // Files whose content differs from what was verified: changed on main, or by this merge.
-    const changed = new Set(row.head === this.repo.head() ? [] : this.repo.git(['diff', '--name-only', row.head, 'HEAD']).split('\n').filter(Boolean));
-    for (const f of new Set([...Object.keys(files), ...Object.keys(verified)])) if (files[f] !== verified[f]) changed.add(f);
-    const stale = saved.check.units.filter((u) => changed.has(u.file) || (u.includes ?? []).some((h) => changed.has(h)) || !u.compiled);
-    // A unit the merged files add that verification did not compile.
-    const known = new Set(saved.check.units.map((u) => u.file));
-    for (const f of Object.keys(files)) if (isUnit(f) && !known.has(f)) stale.push({ file: f });
-    // Verification compiled only the submitted units. Before a header change reaches main, the
-    // includers it can affect are compiled and checked for regressions: the ones that mention a
-    // name it touched (affected.js); every includer when the change is too broad to narrow down.
-    const head = this.repo.head();
+    const snapshot = this.checkSnapshot(files);
+    let saved = null;
+    for (const id of new Set([batch.id, fromBatch.id])) {
+      const row = this.store.get('SELECT head, check_json FROM batch_checks WHERE batch_id = ?', id);
+      if (!row) continue;
+      try {
+        const candidate = JSON.parse(row.check_json);
+        const s = candidate.cacheSnapshot;
+        if (s?.format === 2 && s.head === row.head && s.context === snapshot.context && s.overrides && candidate.check?.units) {
+          saved = candidate;
+          break;
+        }
+      } catch { /* Unknown/legacy provenance is a cache miss. */ }
+    }
+    const required = new Set((saved?.check.units ?? []).map((u) => u.file));
+    for (const file of Object.keys(files).filter(isUnit)) required.add(file);
+    // Verification may have compiled a template/inline emitter outside the submitted units.
+    // Its old results are not reusable without provenance, but its coverage is still required.
+    const verifiedUnits = JSON.parse(fromBatch.result_json ?? '{}').check;
+    for (const u of Array.isArray(verifiedUnits) ? verifiedUnits : []) if (isUnit(u.file)) required.add(u.file);
+    // Keep the existing coverage policy: narrow known header edits, never unknown headers.
+    const virtuals = Object.keys(files).some((f) => !isUnit(f)) ? virtualNames(this.repo, files) : null;
     for (const h of Object.keys(files).filter((f) => !isUnit(f))) {
-      const before = this.repo.show(head, h);
+      const before = this.repo.show(snapshot.head, h);
       if (before === files[h]) continue;
       const deps = this.includersOf([h], files);
-      const narrowed = before === null ? null : unitsMentioning(this.repo, deps, changedNames(before, files[h]), files);
-      const pick = narrowed && narrowed.length <= 300 ? narrowed : deps;
-      if (pick !== deps) this.log.info(`batch ${batch.id}: ${h} changed; compiling ${pick.length} of its ${deps.length} includers (the ones that mention what changed)`);
-      for (const u of pick) if (!known.has(u) && !stale.some((x) => x.file === u)) stale.push({ file: u });
+      const names = changedNames(before, files[h], { isVirtual: (n) => !virtuals || virtuals.has(n) });
+      const narrowed = before === null || files[h] === null ? null : unitsMentioning(this.repo, deps, names, files);
+      for (const u of narrowed && narrowed.length <= 300 ? narrowed : deps) required.add(u);
     }
-    if (!stale.length) return { ...saved, reused: saved.check.units.length, compiled: 0 };
-    const part = await this.check(files, `merge-${batch.id}`, { lint: false, onlyUnits: stale.map((u) => u.file) });
-    const staleFiles = new Set(stale.map((u) => u.file));
-    const check = { annotationErrors: part.check.annotationErrors, units: [...saved.check.units.filter((u) => !staleFiles.has(u.file)), ...part.check.units] };
-    const symbols = this.store.symbolMap(this.store.currentVersion().id);
-    return { check, rec: reconcile(check, symbols), changedHeaders: saved.changedHeaders, reused: check.units.length - part.check.units.length, compiled: part.check.units.length };
+    const changed = new Set();
+    if (saved) {
+      const old = saved.cacheSnapshot;
+      try {
+        if (old.head !== snapshot.head) {
+          for (const f of this.repo.git(['diff', '--name-only', old.head, snapshot.head]).split('\n').filter(Boolean)) changed.add(f);
+        }
+        for (const f of new Set([...Object.keys(old.overrides), ...Object.keys(files)])) {
+          if (old.overrides[f] !== files[f]) changed.add(f);
+        }
+      } catch { saved = null; }
+    }
+    const known = new Map((saved?.check.units ?? []).map((u) => [u.file, u]));
+    let stale = [...required].filter((file) => {
+      const u = known.get(file);
+      return !u?.compiled || u.errors?.length || !Array.isArray(u.includes) || changed.has(file) || u.includes.some((h) => changed.has(h));
+    });
+    let result;
+    if (!saved || stale.length) {
+      let part = await this.check(files, `merge-${batch.id}`, { lint: false, onlyUnits: stale,
+        cachedUnits: saved?.check.units ?? [], unitOrder: [...required] });
+      let compiled = part.check.units.length;
+      // New global bindings can change comparison of otherwise unchanged objects. Recheck the
+      // whole required set rather than combining results analyzed against different name maps.
+      if (saved && snapshot.globalBindings && part.check.units.every((u) => u.compiled && !u.timedOut) && JSON.stringify(part.check.analysisNames) !== JSON.stringify(saved.check.analysisNames)) {
+        // Coverage was selected before the first await. A second build on newer main would
+        // falsely certify that snapshot without discovering its newly added includers.
+        if (this.repo.head() !== snapshot.head) return { ...part, retryRequired: true, reused: 0, compiled };
+        stale = [...required];
+        part = await this.check(files, `merge-${batch.id}`, { lint: false, onlyUnits: stale });
+        compiled += part.check.units.length;
+      }
+      const replaced = new Set(stale);
+      const reused = saved ? saved.check.units.filter((u) => !replaced.has(u.file)) : [];
+      const byFile = new Map([...reused, ...part.check.units].map((u) => [u.file, u]));
+      const order = part.check.analysisOrder ?? [...required];
+      const check = { annotationErrors: part.check.annotationErrors, analysisNames: part.check.analysisNames, units: order.filter((file) => byFile.has(file)).map((file) => byFile.get(file)) };
+      for (const u of check.units) for (const f of u.functions) if (f.comparisonStatus) { f.status = f.comparisonStatus; delete f.conflictedReferences; }
+      result = { ...part, check, rec: reconcile(check, this.store.symbolMap(this.store.currentVersion().id)), reused: reused.length, compiled };
+    } else {
+      const check = { ...saved.check, annotationErrors: snapshot.annotationErrors };
+      for (const u of check.units) for (const f of u.functions) if (f.comparisonStatus) { f.status = f.comparisonStatus; delete f.conflictedReferences; }
+      result = { check, rec: reconcile(check, this.store.symbolMap(this.store.currentVersion().id)),
+        changedHeaders: Object.keys(files).filter((f) => !isUnit(f)), cacheSnapshot: snapshot, reused: saved.check.units.length, compiled: 0 };
+    }
+    this.rememberCheck(batch.id, result);
+    return result;
   }
 
   /**
@@ -426,6 +553,7 @@ export class Verifier {
    * submission is compared with what main actually builds.
    */
   async refreshBaselines(check, files, jobName) {
+    if (check.units.some((u) => !u.compiled || u.timedOut)) return 0;
     const found = this.regressions(check, files);
     if (!found.length) return 0;
     const head = this.repo.head();
@@ -433,6 +561,7 @@ export class Verifier {
     const units = [...new Set(found.map((r) => r.file))].filter((u) => isUnit(u) && this.baselineAt.get(u) !== head);
     if (!units.length) return 0;
     const { check: main } = await this.check({}, `baseline-${jobName}`, { onlyUnits: units, lint: false });
+    if (main.units.some((u) => !u.compiled || u.timedOut)) throw new BuildRetryError(main, 'baseline');
     if (this.repo.head() !== head) return 0; // main moved meanwhile: the next check measures again
     const compiled = new Set(main.units.filter((u) => u.compiled).map((u) => u.file));
     const ids = new Set(found.map((r) => r.id));
@@ -650,8 +779,16 @@ export class Verifier {
     // Stages 1-3: one compile for the whole batch, then every function on its own.
     // Verify fast: the submitted units (enough to judge and route every submitted function). The
     // units that only include a changed header are compiled when the batch merges.
-    const { check, rec, changedHeaders } = await this.check(merged.files, `batch-${batch.id}`, { dependents: false, targets: attempts.map((a) => a.symbol_id) });
-    await this.refreshBaselines(check, merged.files, `batch-${batch.id}`);
+    const { check, rec, changedHeaders, cacheSnapshot } = await this.check(merged.files, `batch-${batch.id}`, { dependents: false, targets: attempts.map((a) => a.symbol_id) });
+    try {
+      if (check.units.some((u) => u.timedOut)) throw new BuildRetryError(check, 'verification');
+      if (check.units.every((u) => u.compiled)) await this.refreshBaselines(check, merged.files, `batch-${batch.id}`);
+    } catch (e) {
+      if (!(e instanceof BuildRetryError)) throw e;
+      deferBuild(this.store, batch.id, e);
+      return;
+    }
+    clearBuildRetry(this.store, batch.id);
     const targets = new Set(attempts.map((a) => a.symbol_id));
     const outside = this.changedOutside(check, merged.files, targets, batch.user_id);
     let failed = 0;
@@ -706,10 +843,10 @@ export class Verifier {
       this.finish(a, ev.state, ev.score, ev.feedback);
     }
     this.store.run(
-      `UPDATE batches SET state = 'open', finished_at = ?, result_json = ? WHERE id = ?`,
+      `UPDATE batches SET state = 'open', finished_at = ?, result_json = json_patch(COALESCE(result_json, '{}'), ?) WHERE id = ?`,
       now(), JSON.stringify({ mergedFiles: merged.files, check: summarizeCheck(check), changedHeaders, outside }), batch.id,
     );
-    this.rememberCheck(batch.id, { check, rec, changedHeaders });
+    this.rememberCheck(batch.id, { check, rec, changedHeaders, cacheSnapshot });
     // Failing functions went back one by one (finish); the rest of the batch carries on and its
     // approved part merges without them. Only a batch with nothing left on its way is over.
     if (failed || withdrawn) settleBatch(this.store, batch.id, `${failed} of ${attempts.length} functions need work${withdrawn ? `, ${withdrawn} were not written` : ''}; see each function's feedback`);
@@ -764,11 +901,11 @@ export class Verifier {
     for (const w of annWarnings) feedback.warnings.push(`${w.file}:${w.line} ${w.message}`);
     const failed = check.units.filter((u) => !u.compiled);
     const target = check.units.flatMap((u) => u.functions.map((f) => ({ ...f, file: u.file }))).find((f) => f.id === targetId);
-    const regressions = allowRegressions ? [] : this.regressions(check, files);
+    const regressions = failed.length || allowRegressions ? [] : this.regressions(check, files);
 
     feedback.target = target ?? null;
     feedback.annotationErrors = annErrors;
-    feedback.compileErrors = failed.map((u) => ({ file: u.file, log: u.log }));
+    feedback.compileErrors = failed.map((u) => ({ file: u.file, log: u.log, timedOut: !!u.timedOut }));
     feedback.regressions = regressions;
     // Only the submitted function's own references can bounce it; other ambiguities are warnings.
     const targetSyms = new Set((target?.relocations ?? []).map((r) => r.symbol));
@@ -857,5 +994,5 @@ export class Verifier {
 }
 
 function summarizeCheck(check) {
-  return check.units.map((u) => ({ file: u.file, compiled: u.compiled, functions: u.functions.map((f) => ({ id: f.id, status: f.status, score: f.score, symbol: f.symbol, demangled: f.demangled })), bindings: u.bindings }));
+  return check.units.map((u) => ({ file: u.file, compiled: u.compiled, timedOut: !!u.timedOut, functions: u.functions.map((f) => ({ id: f.id, status: f.status, score: f.score, symbol: f.symbol, demangled: f.demangled })), bindings: u.bindings }));
 }

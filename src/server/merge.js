@@ -4,14 +4,14 @@ import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
+import { reconcile } from '../shared/reconcile.js';
 import { returnBatch, batchAttempts, settleBatch, LIVE_STATES } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
-import { addUnitsToCompileCommands } from '../shared/project.js';
-import { RANK, bestResults, BIG_BATCH } from './verify.js';
+import { addUnitsToCompileCommands, isUnit } from '../shared/project.js';
+import { RANK, bestResults, BIG_BATCH, BUILD_READY, BuildRetryError, deferBuild, clearBuildRetry } from './verify.js';
 
-// Merges run in two lanes: one big merge (a header batch that must recompile many units) at a
-// time, while the other lane keeps small ones going. They compile side by side; the commit is the
-// part after the compile, which runs without yielding, so commits never interleave.
+// Small merges may compile together. Broad-header merges drain both lanes before starting,
+// and maintenance commits share the same exclusion boundary.
 const MERGE_SLOTS = 2;
 
 export class Merger {
@@ -19,6 +19,7 @@ export class Merger {
     Object.assign(this, { store, config, repo, project, tasks, verifier, getPe, peers, log });
     this.running = 0;
     this.runningBig = 0;
+    this.started = false;
     this.active = new Set(); // batch ids being merged (a split parent stays 'open' meanwhile)
   }
 
@@ -30,11 +31,13 @@ export class Merger {
     this.stopped = false;
     this.store.run(`UPDATE batches SET state = 'open' WHERE state = 'merging'`);
     this.store.run(`UPDATE tasks SET state = 'approved' WHERE state = 'merging'`);
+    this.started = true;
     this.timer = setInterval(() => { try { this.pump(); } catch (e) { console.error(`merge pump: ${e.message}`); } }, 3000);
   }
 
   stop() {
     clearInterval(this.timer);
+    this.started = false;
     this.stopped = true;
   }
 
@@ -132,11 +135,6 @@ export class Merger {
   }
 
   /**
-   * Merges the oldest open batch whose attempts are all approved. Failing that, splits off the
-   * approved part of a batch whose other functions still wait for review, so finished work
-   * doesn't wait for the slowest function of its batch.
-   */
-  /**
    * Accepted "no decompile" claims need no merge: the function is skipped (no task, not counted in
    * progress). Kept for later review when a peer objected, like code.
    */
@@ -193,17 +191,26 @@ export class Merger {
   }
 
   /** Starts merges while a lane is free; resolves when the merges it started are done. */
-  async pump() {
+  async pump({ synchronized = false } = {}) {
     if (!this.stopped) {
       this.finishSkips();
       this.returnUnmergeable();
       this.settleInactive();
     }
     const started = [];
-    while (!this.stopped && !this.verifier.repositoryBlocked && this.running < MERGE_SLOTS) {
-      const pick = this.next(this.runningBig > 0);
+    // A successful idle sync grants one bounded merge cohort even if the web process queued
+    // more submissions during fetch. Those newer submissions still need their own next sync.
+    const admitted = () => !this.verifier.repositoryBlocked || (synchronized && !this.verifier.needsSync && !this.verifier.syncError);
+    while (!this.stopped && admitted() && !this.verifier.runningMaintenance && !this.runningBig && this.running < MERGE_SLOTS) {
+      const pick = this.next();
       if (!pick) break;
+      // Maintenance also commits to main. Drain for an older synchronized maintenance batch
+      // instead of letting a continuous stream of approved code keep it queued forever.
+      const maintenance = this.store.get(`SELECT id FROM batches WHERE state = 'queued' AND kind = 'maintenance' AND ${BUILD_READY} AND (? = 0 OR id <= ?) ORDER BY id LIMIT 1`, now(), this.config.pushRemote ? 1 : 0, this.verifier.syncedThrough ?? 0);
+      if (maintenance && maintenance.id < pick.batch.id) break;
       const big = (pick.batch.cost ?? 0) > BIG_BATCH;
+      // Do not keep admitting newer small work ahead of an older broad-header merge.
+      if (big && this.running) break;
       this.running++;
       if (big) this.runningBig++;
       this.active.add(pick.batch.id);
@@ -227,25 +234,34 @@ export class Merger {
     await Promise.all(started);
   }
 
-  // The oldest batch ready to merge as a whole, else one whose approved part can merge.
-  next(smallOnly) {
+  // Compare the oldest whole and partial candidates instead of giving whole batches priority.
+  next() {
     const skip = [...this.active];
-    const notActive = skip.length ? `AND b.id NOT IN (${skip.map(Number).join(',')})` : '';
-    const size = smallOnly ? `AND COALESCE(b.cost, 0) <= ${BIG_BATCH}` : '';
+    const notActive = (skip.length ? `AND b.id NOT IN (${skip.map(Number).join(',')})` : '') +
+      ` AND COALESCE(json_extract(b.result_json, '$.buildRetry.retryAt'), 0) <= ${now()}
+        AND NOT EXISTS (SELECT 1 FROM batches child WHERE json_extract(child.result_json, '$.splitFrom') = b.id AND child.state IN ('open', 'merging'))`;
     const whole = this.store.get(
-      `SELECT b.* FROM batches b WHERE b.state = 'open' ${notActive} ${size}
+      `SELECT b.* FROM batches b WHERE b.state = 'open' ${notActive}
           AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id)
           AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state != 'approved')
         ORDER BY b.id LIMIT 1`,
     );
-    if (whole) return { batch: whole, whole: true };
     const partial = this.store.get(
-      `SELECT b.* FROM batches b WHERE b.state = 'open' ${notActive} ${size} AND json_extract(COALESCE(b.result_json, '{}'), '$.noSplit') IS NULL
+      `SELECT b.* FROM batches b WHERE b.state = 'open' ${notActive} AND json_extract(COALESCE(b.result_json, '{}'), '$.noSplit') IS NULL
           AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state = 'approved')
           AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN ('queued', 'verifying', 'merging'))
         ORDER BY b.id LIMIT 1`,
     );
-    return partial ? { batch: partial, whole: false } : null;
+    const pick = whole && (!partial || whole.id <= partial.id) ? { batch: whole, whole: true }
+      : partial ? { batch: partial, whole: false } : null;
+    if (pick && (pick.batch.cost ?? 0) <= BIG_BATCH) {
+      const files = JSON.parse(pick.batch.files_json);
+      const paths = Object.keys(files);
+      const headers = paths.filter((file) => !isUnit(file));
+      const units = new Set([...paths.filter(isUnit), ...(headers.length ? this.verifier.includersOf(headers, files) : [])]);
+      pick.batch.cost = Math.max(pick.batch.cost ?? 0, units.size);
+    }
+    return pick;
   }
 
   /**
@@ -261,9 +277,9 @@ export class Merger {
     if (!files) return this.noSplit(parent, 'the approved and pending functions share code that cannot be separated');
     const child = this.store.tx(() => {
       const r = this.store.run(
-        `INSERT INTO batches (user_id, base_commit, files_json, notes, agent_meta, env_digest, state, result_json, created_at, finished_at)
-         SELECT user_id, base_commit, ?, notes, agent_meta, env_digest, 'open', json_set(COALESCE(result_json, '{}'), '$.splitFrom', id), created_at, finished_at FROM batches WHERE id = ?`,
-        JSON.stringify(files), parent.id,
+        `INSERT INTO batches (user_id, base_commit, files_json, notes, agent_meta, env_digest, state, result_json, created_at, finished_at, cost)
+         SELECT user_id, base_commit, ?, notes, agent_meta, env_digest, 'open', json_set(COALESCE(result_json, '{}'), '$.splitFrom', id), created_at, finished_at, ? FROM batches WHERE id = ?`,
+        JSON.stringify(files), parent.cost ?? 0, parent.id,
       );
       const id = Number(r.lastInsertRowid);
       for (const a of approved) this.store.run('UPDATE attempts SET batch_id = ? WHERE id = ?', id, a.id);
@@ -334,6 +350,12 @@ export class Merger {
   }
 
   async merge(batch, split = null) {
+    clearBuildRetry(this.store, batch.id);
+    if (!split) {
+      const parentId = JSON.parse(batch.result_json ?? '{}').splitFrom;
+      const parent = parentId && this.store.get('SELECT * FROM batches WHERE id = ?', parentId);
+      if (parent) split = { parent, parentFiles: JSON.parse(parent.files_json), splitFiles: JSON.parse(batch.files_json) };
+    }
     this.store.run(`UPDATE batches SET state = 'merging' WHERE id = ?`, batch.id);
     const attempts = batchAttempts(this.store, batch.id);
     for (const a of attempts) this.store.run(`UPDATE tasks SET state = 'merging', updated_at = ? WHERE id = ?`, now(), a.task_id);
@@ -359,21 +381,62 @@ export class Merger {
     // The code already passed the lint; units unchanged since verification keep its compile.
     const parentId = batch.result_json ? JSON.parse(batch.result_json).splitFrom : null;
     const verifiedBatch = (parentId && this.store.get('SELECT * FROM batches WHERE id = ?', parentId)) || batch;
-    const { check, rec, changedHeaders, reused = 0, compiled } = await this.verifier.mergeCheck(batch, merged.files, verifiedBatch);
-    if (reused) this.log.info(`batch ${batch.id}: merge reuses ${reused} compiled unit(s) from verification, compiles ${compiled}`);
+    const { check, changedHeaders, cacheSnapshot, retryRequired, reused = 0, compiled } = await this.verifier.mergeCheck(batch, merged.files, verifiedBatch);
+    const stillEligible = () => this.store.get('SELECT state FROM batches WHERE id = ?', batch.id)?.state === 'merging'
+      && attempts.every((a) => this.store.get('SELECT state FROM attempts WHERE id = ?', a.id)?.state === 'approved');
+    const obsolete = () => {
+      this.store.run(`UPDATE batches SET state = 'open' WHERE id = ? AND state = 'merging'`, batch.id);
+      for (const a of attempts) {
+        if (this.store.get('SELECT state FROM attempts WHERE id = ?', a.id)?.state === 'approved') {
+          this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ? AND state = 'merging'`, now(), a.task_id);
+        }
+      }
+      settleBatch(this.store, batch.id, 'its selected functions are no longer eligible to merge');
+    };
+    const retry = (reason = 'main changed while checking') => {
+      if (!stillEligible()) return;
+      this.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, batch.id);
+      for (const a of attempts) this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), a.task_id);
+      this.log.info(`batch ${batch.id}: ${reason}; merging again`);
+    };
+    if (!stillEligible()) return obsolete();
+    const attempted = compiled ?? check.units.length - reused;
+    const completed = Math.max(0, check.units.filter((u) => u.compiled && !u.timedOut).length - reused);
+    this.log.info(`batch ${batch.id}: merge check reused ${reused} unit(s), attempted ${attempted}, completed ${completed}`);
+    if (check.units.some((u) => u.timedOut)) {
+      deferBuild(this.store, batch.id, new BuildRetryError(check, 'merge'), { merge: true });
+      return;
+    }
+    if (retryRequired) return retry('main changed before dependency coverage could be rechecked');
     // Another merge may have committed while this one compiled. If it touched anything this check
     // compiled against, the result is stale: back in line, and the next try recompiles that part.
     if (this.repo.head() !== startHead) {
       const changed = new Set(this.repo.git(['diff', '--name-only', startHead, 'HEAD']).split('\n').filter(Boolean));
       const touched = Object.keys(merged.files).some((f) => changed.has(f)) || check.units.some((u) => changed.has(u.file) || (u.includes ?? []).some((h) => changed.has(h)));
       if (touched) {
-        this.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, batch.id);
-        for (const a of attempts) this.store.run(`UPDATE tasks SET state = 'approved', updated_at = ? WHERE id = ?`, now(), a.task_id);
-        this.log.info(`batch ${batch.id}: main changed files it depends on while it compiled; merging again`);
-        return;
+        return retry();
       }
     }
-    await this.verifier.refreshBaselines(check, merged.files, `merge-${batch.id}`);
+    const baselineHead = this.repo.head();
+    try {
+      if (check.units.every((u) => u.compiled)) await this.verifier.refreshBaselines(check, merged.files, `merge-${batch.id}`);
+    } catch (e) {
+      if (!(e instanceof BuildRetryError)) throw e;
+      if (!stillEligible()) return obsolete();
+      deferBuild(this.store, batch.id, e, { merge: true });
+      return;
+    }
+    if (!stillEligible()) return obsolete();
+    // refreshBaselines can yield and deliberately discards its result when main advances.
+    // Never evaluate or commit against that discarded baseline, even for disjoint commits.
+    if (this.repo.head() !== baselineHead) return retry();
+    // Symbol corrections and target changes need not advance Git. Never commit cached analysis
+    // against comparison inputs that changed while compilation or baseline checks were awaiting.
+    if (cacheSnapshot && cacheSnapshot.context !== this.verifier.checkSnapshot(merged.files).context) return retry('comparison inputs changed while checking');
+    // Unnamed symbols can be registered while compiling without changing compiler analysis.
+    // Reconcile their current addresses before any regression/evaluation/commit decision.
+    for (const u of check.units) for (const f of u.functions) if (f.comparisonStatus) { f.status = f.comparisonStatus; delete f.conflictedReferences; }
+    const rec = reconcile(check, this.store.symbolMap(this.store.currentVersion().id));
     const targets = new Set(attempts.map((a) => a.symbol_id));
     // The batch a split part came from holds the other functions of these files (still in review,
     // their source put back as on main); shared changes in the file may change their compiled code.
@@ -565,6 +628,7 @@ export class Merger {
         this.store.run(`UPDATE tasks SET state = 'done', updated_at = ? WHERE symbol_id = ? AND state IN ('open', 'needs_cleanup', 'hard')`, now(), f.id);
       }
     }
+    this.clearRemovedStatuses(check, commit, userId);
     for (const l of rec.learned) this.store.run('UPDATE symbols SET decorated = ? WHERE id = ? AND decorated IS NULL', l.decorated, l.id);
     // Addresses in the current version found through matching code that references the symbol.
     for (const l of rec.learnedAddresses ?? []) {
@@ -579,5 +643,60 @@ export class Merger {
       const { symbol } = this.store.ensureSymbol({ kind, versionId: v.id, addr: u.addr, userId });
       this.store.run('UPDATE symbols SET decorated = ? WHERE id = ? AND decorated IS NULL', u.decorated, symbol.id);
     }
+  }
+
+  /**
+   * A function main no longer has keeps no status. Candidates are functions recorded at a unit this
+   * check compiled cleanly that the unit no longer emits, or at a file `commit` no longer has; one
+   * goes only when no file at `commit` annotates it any more (an inline header copy now emitted
+   * elsewhere, or code in an included .inl, stays). Its done task reopens: the work is no longer on
+   * main. Skipped, held or waiting tasks keep their state.
+   */
+  clearRemovedStatuses(check, commit, userId) {
+    const emitted = new Set(bestResults(check).keys());
+    const candidates = new Set();
+    for (const u of check.units) {
+      if (!u.compiled || u.timedOut) continue;
+      for (const r of this.store.all('SELECT symbol_id FROM func_status WHERE file = ?', u.file)) {
+        if (!emitted.has(r.symbol_id)) candidates.add(r.symbol_id);
+      }
+    }
+    let tracked;
+    try {
+      tracked = new Set(this.repo.trackedPaths(commit));
+    } catch (e) {
+      this.log.error?.(`clearing removed statuses at ${commit.slice(0, 10)}: ${e.message}`);
+      return [];
+    }
+    for (const r of this.store.all('SELECT symbol_id, file FROM func_status')) {
+      if (!tracked.has(r.file)) candidates.add(r.symbol_id);
+    }
+    if (!candidates.size) return [];
+    const args = ['grep', '-h', '-o', '-E'];
+    // No \b: not every regex library git links supports it, and a pattern that never matches would
+    // read as "annotated nowhere".
+    for (const id of candidates) args.push('-e', `(FUNCTION|STUB): ${id}([^0-9]|$)`);
+    let annotated = '';
+    try {
+      annotated = this.repo.git([...args, commit, '--']);
+    } catch (e) {
+      // Exit 1 with no output is "no match"; anything else is a failure, and an unknown answer
+      // must never read as "nothing annotated": keep every status.
+      if (e.status !== 1 || `${e.stderr ?? ''}`.trim()) {
+        this.log.error?.(`clearing removed statuses at ${commit.slice(0, 10)}: ${e.message}`);
+        return [];
+      }
+    }
+    const still = new Set(annotated.match(/fn_\d+/g) ?? []);
+    const cleared = [];
+    for (const id of candidates) {
+      if (still.has(id)) continue;
+      const old = this.store.get('SELECT file, status, score, confirmed FROM func_status WHERE symbol_id = ?', id);
+      this.store.run('DELETE FROM func_status WHERE symbol_id = ?', id);
+      const reopened = Number(this.store.run(`UPDATE tasks SET state = 'open', updated_at = ? WHERE symbol_id = ? AND state = 'done'`, now(), id).changes) > 0;
+      this.store.event('status_cleared', userId, { id, commit, old, reopened });
+      cleared.push(id);
+    }
+    return cleared;
   }
 }

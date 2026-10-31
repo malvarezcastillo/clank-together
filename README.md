@@ -56,6 +56,39 @@ open ─claim→ leased ─submit→ verifying ─┬→ rejected (static gate /
 After `maxCleanupCycles` failed attempts a task becomes `hard`. The author of the last
 attempt gets first pick on the follow-up for 6 hours.
 
+### Merge scheduling and retry cache
+
+Approved whole and partial batches compete by age. Small merges can compile in two lanes;
+a merge affecting more than 20 units drains those lanes and runs without another merge or
+maintenance commit invalidating its build. Ordinary verification can still run alongside it.
+Maintenance receives an age-ordered commit turn rather than waiting for the code queue to empty.
+
+With `pushRemote`, synchronization still requires idle verification, merge and remote-check
+lanes. A successful fetch admits the queued submissions captured before it started and gives
+ready merges a turn. Submissions arriving during the fetch wait for the next synchronization.
+
+`batch_checks` retains expanded merge results, not only the initial verification. Each entry
+records the compile-start commit, submitted overrides and comparison context. A retry recompiles
+changed source/dependency units and failed units; split children retain their own evidence.
+Build configuration, toolchain, target, annotated/decorated symbol metadata, global annotations or
+tracked-path changes invalidate reuse conservatively. Old entries without provenance are cold misses.
+Unrelated unnamed registrations preserve compilation reuse; their addresses are reconciled before commit.
+Cached results never replace current ownership, review, reconciliation or regression checks.
+Cold merges compile the affected-unit selection (plus verification's emitter units), not every
+includer. Container timeouts defer the batch (`buildRetry`, 60 s) instead of returning it; failed
+or incomplete builds skip baseline compilation. Docker deadlines scale with work waves (cap 20 min).
+A header change that only adds/changes a plain (non-virtual, non-inline) function declaration
+selects only units naming that function, not every unit naming its class; likewise a
+namespace-scope forward declaration (`struct X;`) selects only units naming X.
+Conflicts where both sides only inserted lines at the same place keep both (main first) in
+`.cpp`; in headers only when the inserted lines are plain or forward declarations. The merged
+result is compiled and checked as usual.
+Every check recorded on main (merge, maintenance, `rebuild`) also drops the status of functions main
+no longer has: recorded at a unit that compiled cleanly but no longer emits them, or at a file main
+deleted, and annotated nowhere at that commit. A done task among them reopens; others keep their
+state (`status_cleared` events). A git error keeps every status.
+Worker logs report units reused/compiled; see `docs/productivity.md` for measured behavior.
+
 ## Layout
 
 | Path | |
@@ -83,6 +116,12 @@ td-server symbols units units.csv               # optional: start,end,src/file.c
 td-server user add alice --role reviewer
 # build the compiler image (see toolchain/msvc2010/Dockerfile), pin clSha256 in data/toolchain.lock.json
 ```
+
+Ghidra's Function ID marks functions as library code by code shape alone, so small game functions
+get CRT/STL names and no task. After `td-server originals import`, run `td-server symbols reclassify`
+(add `--apply`): runtime code does not call the game, so flagged functions whose original calls game
+code lose the flag and their false name and get tasks. `symbols unlibrary <id...> --reason TEXT`
+clears one by hand.
 
 New target version later: `td-server version add 1.1 game11.exe`, then
 `td-server version map 1.1 mapping.csv --from 1.0` (old_addr,new_addr from Ghidra Version

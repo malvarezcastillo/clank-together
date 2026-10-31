@@ -9,7 +9,7 @@ import { compareObject } from './compare.js';
 import { lintAnnotations, hex } from './annotations.js';
 import { lintPreprocessed } from './lint.js';
 import { compileUnits, prepareJobDir } from './build.js';
-import { scanAnnotations } from './project.js';
+import { scanAnnotations, unitSettings } from './project.js';
 
 /**
  * @param {object} p
@@ -26,19 +26,31 @@ import { scanAnnotations } from './project.js';
 // lintUnits: units whose preprocessed output is scanned (default: all compiled units).
 // analyze: replaces the in-process analysis of the compiler output (the server runs it in worker
 // threads, so a check of many units doesn't block it).
-export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, lintUnits = null, analyze = null }) {
-  const scan = scanAnnotations(repoDir, project, overrides);
+export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, cachedUnits = [], unitOrder = null, scan = scanAnnotations(repoDir, project, overrides) }) {
   const annotationErrors = [...scan.errors, ...lintAnnotations(scan.annotations, symbols)];
 
   prepareJobDir({ repoDir, jobDir, project, overrides });
-  const compiled = await compileUnits({ jobDir, units, project, runners, timeoutMs, preprocess: (f) => !lintUnits || lintUnits.has(f) });
+  const compiled = await compileUnits({ jobDir, units, project, runners, timeoutMs, scaleTimeout, preprocess: (f) => !lintUnits || lintUnits.has(f) });
 
   const roots = { sourceDirs: project.sourceDirs, includeDirs: project.includeDirs };
-  const names = withGlobalBindings(compiled, scan.annotations, nameIndex);
+  const evidence = new Map(cachedUnits.map((u) => [u.file, u.globalBindings ?? []]));
+  for (const c of compiled) evidence.set(c.file, [...withGlobalBindings([c], scan.annotations, new Map())]);
+  // compileUnits groups by toolchain. Preserve that first-binding-wins order for fresh and
+  // partial checks, including when a newly required unit joins an earlier toolchain group.
+  const groups = new Map();
+  for (const file of unitOrder ?? compiled.map((c) => c.file)) {
+    const { toolchain } = unitSettings(project, file);
+    if (!groups.has(toolchain)) groups.set(toolchain, []);
+    groups.get(toolchain).push(file);
+  }
+  const analysisOrder = [...groups.values()].flat();
+  const names = new Map(nameIndex);
+  for (const file of analysisOrder) for (const [name, id] of evidence.get(file) ?? []) if (!names.has(name)) names.set(name, id);
   const results = analyze
     ? await analyze({ compiled, annotations: scan.annotations, roots, nameIndex: names })
     : analyzeCompiled({ compiled, annotations: scan.annotations, roots, symbols, nameIndex: names, pe });
-  return { annotationErrors, units: results, annotations: scan.annotations };
+  for (const u of results) u.globalBindings = evidence.get(u.file) ?? [];
+  return { annotationErrors, units: results, annotations: scan.annotations, analysisNames: [...names], analysisOrder };
 }
 
 /**
@@ -74,7 +86,7 @@ export function analyzeCompiled({ compiled, annotations, roots, symbols, nameInd
 
   const results = [];
   for (const c of compiled) {
-    const unit = { file: c.file, compiled: c.ok, log: trimLog(c.log), includes: c.includes ?? [], lintErrors: [], functions: [], inferred: [], bindings: {}, unannotated: [], errors: [] };
+    const unit = { file: c.file, compiled: c.ok, timedOut: c.timedOut ?? false, log: trimLog(c.log), includes: c.includes ?? [], lintErrors: [], functions: [], inferred: [], bindings: {}, unannotated: [], errors: [] };
     if (c.pre) unit.lintErrors = lintPreprocessed(fs.readFileSync(c.pre, 'latin1'), isProjectFile);
     if (c.ok) {
       try {
@@ -115,6 +127,7 @@ export function summarizeCheck(result, rec, files = null) {
     units: result.units.map((u) => ({
       file: u.file,
       compiled: u.compiled,
+      timedOut: u.timedOut ?? false,
       log: u.compiled ? undefined : u.log,
       lintErrors: u.lintErrors,
       errors: u.errors,
