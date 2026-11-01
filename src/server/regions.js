@@ -269,9 +269,12 @@ export class Regions {
     return this.store.all('SELECT kind, key, token_id, created_at, expires_at FROM region_claims WHERE user_id = ? AND expires_at > ? ORDER BY created_at', user.id, now());
   }
 
+  get maxLeaseMs() {
+    return (this.config.maxLeaseHours ?? 2) * 3600_000;
+  }
+
   heartbeat(user) {
-    const max = (this.config.maxLeaseHours ?? 8) * 3600_000;
-    return Number(this.store.run('UPDATE region_claims SET expires_at = MIN(?, created_at + ?) WHERE user_id = ? AND expires_at > ?', now() + this.leaseMs, max, user.id, now()).changes);
+    return Number(this.store.run('UPDATE region_claims SET expires_at = MIN(?, created_at + ?) WHERE user_id = ? AND expires_at > ?', now() + this.leaseMs, this.maxLeaseMs, user.id, now()).changes);
   }
 
   /** Whether `user` holds a live region claim that covers this task's function. */
@@ -303,6 +306,6 @@ export class Regions {
   }
 
   sweepExpired() {
-    return Number(this.store.run('DELETE FROM region_claims WHERE expires_at < ?', now()).changes);
+    return Number(this.store.run('DELETE FROM region_claims WHERE expires_at < ? OR created_at + ? < ?', now(), this.maxLeaseMs, now()).changes);
   }
 }

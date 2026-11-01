@@ -300,7 +300,7 @@ export class Tasks {
 
   /** How long a lease may last from when it was taken (ms); heartbeats stop extending it after that. */
   get maxLeaseMs() {
-    return (this.config.maxLeaseHours ?? 8) * 3600_000;
+    return (this.config.maxLeaseHours ?? 2) * 3600_000;
   }
 
   heartbeat(user, taskId) {
@@ -417,7 +417,10 @@ export class Tasks {
   }
 
   sweepExpired() {
-    const expired = this.store.all(`SELECT id, lease_user FROM tasks WHERE state = 'leased' AND lease_expires < ?`, now());
+    const expired = this.store.all(
+      `SELECT id, lease_user FROM tasks WHERE state = 'leased' AND (lease_expires < ? OR COALESCE(lease_started, 0) + ? < ?)`,
+      now(), this.maxLeaseMs, now(),
+    );
     for (const t of expired) {
       this.reopen(t.id);
       this.store.event('lease_expired', t.lease_user, { task: t.id });

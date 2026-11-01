@@ -244,6 +244,18 @@ test('expired leases return to the pool', async () => {
   assert.notEqual(ctx.tasks.get(c.task.id).state, 'leased');
 });
 
+test('a lease taken longer ago than maxLeaseHours is released even while heartbeats keep it alive', async () => {
+  const token = await activeUser('dora');
+  const c = (await leaseTask(token)).body;
+  for (const o of c.alsoClaimed ?? []) await call('POST', `/api/tasks/${o.task}/release`, {}, token);
+  const cap = ctx.tasks.maxLeaseMs;
+  ctx.store.run('UPDATE tasks SET lease_started = ?, lease_expires = ? WHERE id = ?', now() - cap + 60_000, now() + 3600_000, c.task.id);
+  assert.equal(ctx.tasks.sweepExpired(), 0, 'still inside the window');
+  ctx.store.run('UPDATE tasks SET lease_started = ? WHERE id = ?', now() - cap - 60_000, c.task.id);
+  assert.equal(ctx.tasks.sweepExpired(), 1);
+  assert.notEqual(ctx.tasks.get(c.task.id).state, 'leased');
+});
+
 test('registration needs admin approval before anything works', async () => {
   const reg = await request('POST', '/api/register', { name: 'erin', password: PASSWORD });
   assert.equal(reg.status, 200);

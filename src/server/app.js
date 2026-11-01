@@ -40,7 +40,7 @@ export const DEFAULT_CONFIG = {
   listen: { host: '127.0.0.1', port: 8080 },
   publicUrl: 'http://127.0.0.1:8080',
   leaseMinutes: 120,
-  maxLeaseHours: 8, // a lease ends this long after it was taken, whatever the heartbeats
+  maxLeaseHours: 2, // a lease ends this long after it was taken, whatever the heartbeats; the sweeper releases older ones
   maxLeasedTasks: 50, // functions one account may hold; the sweeper releases any above it
   maxTasksPerSubmission: 500,
   maxLeasesPerUser: 3,
