@@ -30,7 +30,7 @@ services:
     ports:
       - "127.0.0.1:19580:8080"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy:/etc/caddy:ro
     depends_on:
       - web
       - forgejo
