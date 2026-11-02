@@ -1265,7 +1265,8 @@ async function openBatch(id) {
   const fnRows = b.functions.map((f) => {
     const link = el('a', `${f.symbol} ${f.name ?? ''}`);
     link.href = `#/review/${f.attemptId}`;
-    return [link, f.state.replace('_', ' '), f.score === null ? '' : `${(f.score * 100).toFixed(1)}%`, f.summary ?? ''];
+    const result = f.retired ? `${f.summary ? `${f.summary} · ` : ''}then ${f.retired.because}` : f.summary ?? '';
+    return [link, f.state.replace('_', ' '), f.score === null ? '' : `${(f.score * 100).toFixed(1)}%`, result];
   });
   parts.push(fnRows.length ? table(['Function', 'State', 'Bytes', 'Result'], fnRows) : el('p', 'No function tasks (a maintenance batch).', 'muted'));
   if (b.kind === 'maintenance' && b.result) {

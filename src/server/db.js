@@ -336,6 +336,31 @@ export class Store {
     this.db.exec(`UPDATE peer_reviews SET weight = 2 WHERE weight > 2 AND reviewer_id IN (SELECT id FROM users WHERE review_weight > 2)
                     AND attempt_id IN (SELECT id FROM attempts WHERE state IN ('peer_review', 'in_review'))`);
     this.db.exec('UPDATE users SET review_weight = 2 WHERE review_weight > 2');
+    this.retireFinishedSentBack();
+  }
+
+  /**
+   * Once: attempts sent back before the merge path retired them (batches.js retireSentBack) still
+   * said needs_cleanup or returned after their function was finished by another attempt.
+   */
+  retireFinishedSentBack() {
+    if (this.getMeta('migration_retire_finished_sent_back')) return;
+    const why = 'its function was finished by another attempt; this one is no longer needed';
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db
+        .prepare(
+          `UPDATE attempts SET state = 'superseded', finished_at = COALESCE(finished_at, ?),
+                  result_json = json_set(COALESCE(result_json, '{}'), '$.retired', state, '$.retiredBecause', ?)
+            WHERE state IN ('needs_cleanup', 'returned') AND task_id IN (SELECT id FROM tasks WHERE state IN ('done', 'skipped'))`,
+        )
+        .run(Date.now(), why);
+      this.setMeta('migration_retire_finished_sent_back', Date.now());
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   /** Submitted files of an attempt (kept once per batch). */

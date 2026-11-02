@@ -5,7 +5,7 @@ import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
 import { reconcile } from '../shared/reconcile.js';
-import { returnBatch, batchAttempts, settleBatch, LIVE_STATES } from './batches.js';
+import { returnBatch, batchAttempts, settleBatch, retireSentBack, LIVE_STATES } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
 import { addUnitsToCompileCommands, isUnit } from '../shared/project.js';
 import { RANK, bestResults, BIG_BATCH, BUILD_READY, BuildRetryError, deferBuild, clearBuildRetry } from './verify.js';
@@ -145,6 +145,7 @@ export class Merger {
       for (const a of done) {
         this.store.run(`UPDATE attempts SET state = 'merged' WHERE id = ?`, a.id);
         this.store.run(`UPDATE tasks SET state = 'skipped', lease_user = NULL, updated_at = ? WHERE id = ?`, now(), a.task_id);
+        retireSentBack(this.store, a.task_id, `${a.symbol_id} was accepted as needing no decompilation; this attempt is no longer needed`);
         this.store.run('UPDATE symbols SET skip_reason = ? WHERE id = ?', a.skip_category, a.symbol_id);
         const objections = this.store.get(`SELECT COUNT(*) AS n FROM peer_reviews WHERE attempt_id = ? AND verdict = 'different'`, a.id).n;
         if (objections) this.store.run('INSERT INTO later_review (symbol_id, attempt_id, merged_commit, objections, created_at) VALUES (?, ?, NULL, ?, ?)', a.symbol_id, a.id, objections, now());
@@ -502,6 +503,7 @@ export class Merger {
       for (const a of attempts) {
         this.store.run(`UPDATE attempts SET state = 'merged', merged_commit = ? WHERE id = ?`, commit, a.id);
         this.store.run(`UPDATE tasks SET state = 'done', lease_user = NULL, updated_at = ? WHERE id = ?`, now(), a.task_id);
+        retireSentBack(this.store, a.task_id, `${a.symbol_id} was merged by batch ${batch.id} (${commit.slice(0, 10)}); this attempt is no longer needed`);
       }
       this.store.run(`UPDATE batches SET state = 'merged', merged_commit = ? WHERE id = ?`, commit, batch.id);
       this.store.run('DELETE FROM batch_checks WHERE batch_id = ?', batch.id);
@@ -625,7 +627,9 @@ export class Merger {
       if (f.demangled) this.store.run('UPDATE symbols SET name = ? WHERE id = ? AND name IS NULL', f.demangled, f.id);
       this.store.run('UPDATE symbols SET unit = ? WHERE id = ? AND unit IS NULL', unit, f.id);
       if (f.status === STATUS.EXACT || f.status === STATUS.UNRESOLVED) {
+        const finished = this.store.all(`SELECT id FROM tasks WHERE symbol_id = ? AND state IN ('open', 'needs_cleanup', 'hard')`, f.id);
         this.store.run(`UPDATE tasks SET state = 'done', updated_at = ? WHERE symbol_id = ? AND state IN ('open', 'needs_cleanup', 'hard')`, now(), f.id);
+        for (const t of finished) retireSentBack(this.store, t.id, `${f.id} matches on main as of ${commit.slice(0, 10)}; this attempt is no longer needed`);
       }
     }
     this.clearRemovedStatuses(check, commit, userId);

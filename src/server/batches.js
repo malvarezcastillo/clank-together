@@ -44,6 +44,25 @@ export function settleBatch(store, batchId, reason) {
   if (r.changes) dropMergeData(store, batchId);
 }
 
+/**
+ * Older attempts that were sent back stop asking for work once their function is finished
+ * (merged, matched on main or accepted as needing no source): they become superseded, keeping their
+ * feedback, reasons and peer verdicts. `$.retired` keeps the state they came back in (quality and
+ * statistics still count them as such) and `$.retiredBecause` says what finished the function.
+ */
+export function retireSentBack(store, taskId, why) {
+  store.run(
+    `UPDATE attempts SET state = 'superseded', finished_at = COALESCE(finished_at, ?),
+            result_json = json_set(COALESCE(result_json, '{}'), '$.retired', state, '$.retiredBecause', ?)
+      WHERE task_id = ? AND state IN ('needs_cleanup', 'returned')
+        AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = attempts.task_id AND t.state IN ('done', 'skipped'))`,
+    now(), why, taskId,
+  );
+}
+
+/** SQL for attempt `alias`: superseded only because its function was later finished by another attempt. */
+export const RETIRED = (alias) => `json_extract(${alias}.result_json, '$.retired') IS NOT NULL`;
+
 /** Attempts of a batch with their task's symbol. */
 export function batchAttempts(store, batchId) {
   return store.all(

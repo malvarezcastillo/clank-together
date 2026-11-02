@@ -18,6 +18,7 @@
 import { now } from './db.js';
 import { HttpError } from './http.js';
 import { untrusted } from './tasks.js';
+import { RETIRED } from './batches.js';
 
 const WINDOW_MS = 24 * 3600_000;
 const RESET_EVERY_MS = 24 * 3600_000;
@@ -74,7 +75,8 @@ export class Quality {
                   AND (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') >= 3) AS peerRejected,
               SUM((SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id) >= 3) AS peerDecided
          FROM attempts a
-        WHERE a.user_id = ? AND ${byToken(tokenId)} AND a.created_at >= ? AND a.created_at < ? AND a.kind = 'code' AND a.state NOT IN ('withdrawn', 'superseded', 'queued', 'verifying')`,
+        WHERE a.user_id = ? AND ${byToken(tokenId)} AND a.created_at >= ? AND a.created_at < ? AND a.kind = 'code'
+          AND (a.state NOT IN ('withdrawn', 'superseded', 'queued', 'verifying') OR (a.state = 'superseded' AND ${RETIRED('a')}))`,
       ...BROKEN,
       userId,
       ...tokenArgs(tokenId),

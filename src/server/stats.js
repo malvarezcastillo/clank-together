@@ -14,13 +14,14 @@ export function productivity(store, hours = 24) {
     since,
   ).n;
   const reasons = {};
-  for (const r of store.all(`SELECT json_extract(result_json, '$.feedback.summary') AS s FROM attempts WHERE kind = 'code' AND created_at > ? AND state IN ('needs_cleanup', 'returned', 'rejected')`, since)) {
+  const sentBack = `(state IN ('needs_cleanup', 'returned', 'rejected') OR (state = 'superseded' AND json_extract(result_json, '$.retired') IS NOT NULL))`;
+  for (const r of store.all(`SELECT json_extract(result_json, '$.feedback.summary') AS s FROM attempts WHERE kind = 'code' AND created_at > ? AND ${sentBack}`, since)) {
     const k = String(r.s ?? 'unknown').replace(/fn_\d+/g, 'fn_#').replace(/\d+(\.\d+)?%?/g, '#').replace(/(fn_#(, )?)+/g, 'fn_# ').slice(0, 70);
     reasons[k] = (reasons[k] ?? 0) + 1;
   }
   const verdicts = q('SELECT COUNT(*) AS n FROM peer_reviews WHERE created_at > ?', since).n;
   const decided = q(
-    `SELECT COUNT(DISTINCT a.id) AS n FROM attempts a WHERE a.state IN ('in_review', 'approved', 'merged', 'needs_cleanup')
+    `SELECT COUNT(DISTINCT a.id) AS n FROM attempts a WHERE (a.state IN ('in_review', 'approved', 'merged', 'needs_cleanup') OR (a.state = 'superseded' AND json_extract(a.result_json, '$.retired') = 'needs_cleanup'))
         AND EXISTS (SELECT 1 FROM peer_reviews p WHERE p.attempt_id = a.id AND p.created_at > ?)`,
     since,
   ).n;

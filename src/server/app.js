@@ -650,8 +650,12 @@ export function createApp(ctx) {
       changedHeaders: result.changedHeaders ?? [],
       changedOutside: result.outside ?? [],
       functions: attempts.map((a) => {
-        const fb = a.result_json ? JSON.parse(a.result_json).feedback : null;
-        return { attemptId: a.id, taskId: a.task_id, symbol: a.symbol_id, name: a.name, state: a.state, score: a.score, summary: fb?.summary ?? null, status: fb?.target?.status ?? null };
+        const res = a.result_json ? JSON.parse(a.result_json) : {};
+        const fb = res.feedback ?? null;
+        return {
+          attemptId: a.id, taskId: a.task_id, symbol: a.symbol_id, name: a.name, state: a.state, score: a.score, summary: fb?.summary ?? null, status: fb?.target?.status ?? null,
+          ...(res.retiredBecause && { retired: { was: res.retired, because: res.retiredBecause } }),
+        };
       }),
     });
   });
