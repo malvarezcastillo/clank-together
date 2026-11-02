@@ -28,7 +28,8 @@ import { Live } from './live.js';
 import { Quality, LIMITS } from './quality.js';
 import { Trust } from './trust.js';
 import { PEImage } from '../shared/pe.js';
-import { compileProgress, pipeline } from './compile-progress.js';
+import { compileProgress } from './compile-progress.js';
+import { snapshot as boardSnapshot } from './board.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
 import { hex } from '../shared/annotations.js';
@@ -275,12 +276,12 @@ export function createApp(ctx) {
     auth(req);
     return cached('compile-progress', 3_000, () => ({ jobs: compileProgress(jobsDir) }));
   });
-  const pipelineData = () => cached('pipeline', 2_000, () => ({
-    builds: pipeline(compileProgress(jobsDir), (id) =>
-      store.get('SELECT b.kind, b.state, u.name AS author FROM batches b JOIN users u ON u.id = b.user_id WHERE b.id = ?', id)),
-    waiting: store.get(`SELECT COUNT(*) AS n FROM batches WHERE state = 'queued'`).n,
-  }));
-  router.on('GET', '/api/pipeline', () => pipelineData());
+  // The way to main (board.js): one snapshot per tick, shared by every viewer. Signed-in viewers only.
+  const boardData = () => cached('board', 2_000, () => boardSnapshot(store, { builds: compileProgress(jobsDir) }));
+  router.on('GET', '/api/board', ({ req }) => {
+    auth(req);
+    return boardData();
+  });
 
   router.on('GET', '/api/progress', () => progressData());
   const progressData = () => cached('progress', 20_000, () => {
@@ -1368,7 +1369,7 @@ export function createApp(ctx) {
     feed: feedSince,
     progress: progressData,
     map: mapData,
-    pipeline: pipelineData,
+    board: boardData,
     userFromCookie: (req) => {
       const c = sessionCookie(req);
       return c ? accounts.userBySession(c) : null;

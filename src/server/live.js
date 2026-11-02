@@ -8,19 +8,20 @@
 // anything; it only listens.
 
 import crypto from 'node:crypto';
+import { diff } from './board.js';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_CLIENTS = 1000;
 const MAX_PER_IP = 8;
 
 export class Live {
-  constructor({ store, credits, feed, progress, map, pipeline, userFromCookie, allowedOrigins, clientIp, log = console }) {
-    Object.assign(this, { store, credits, feed, progress, map, pipeline, userFromCookie, allowedOrigins, clientIp, log });
+  constructor({ store, credits, feed, progress, map, board, userFromCookie, allowedOrigins, clientIp, log = console }) {
+    Object.assign(this, { store, credits, feed, progress, map, board, userFromCookie, allowedOrigins, clientIp, log });
     this.clients = new Set();
     this.lastEvent = store.get('SELECT COALESCE(MAX(id), 0) AS n FROM events').n;
     this.lastMap = null;
     this.lastProgress = null;
-    this.lastPipeline = null;
+    this.lastBoard = null;
   }
 
   attach(server) {
@@ -160,14 +161,18 @@ export class Live {
       }
       this.lastMap = m.states;
     }
-    // Builds advance without events (one unit at a time), so the pipeline is compared every tick.
-    if (this.pipeline) {
-      const pl = JSON.stringify(this.pipeline());
-      if (pl !== this.lastPipeline) {
-        this.lastPipeline = pl;
-        this.broadcast({ type: 'pipeline', data: JSON.parse(pl) });
+    // Functions move without events (a build advances one unit at a time), so the board is compared
+    // every tick and only what changed goes out: to signed-in viewers only, computed only for them.
+    const signedIn = [...this.clients].filter((c) => c.user);
+    if (this.board && signedIn.length) {
+      const now = this.board();
+      const change = diff(this.lastBoard, now);
+      this.lastBoard = now;
+      if (change) {
+        const payload = Buffer.from(JSON.stringify({ type: 'board', change }));
+        for (const c of signedIn) this.frame(c, 0x1, payload);
       }
-    }
+    } else this.lastBoard = null;
     // Balances move with merges, reviews and games; each viewer only sees their own.
     for (const c of this.clients) if (c.user) this.sendBalance(c);
   }

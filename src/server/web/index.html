@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>Clank Together</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=discord-icon-20261027">
+  <link rel="stylesheet" href="/style.css?v=way2-20261102">
 </head>
 <body>
   <header class="topbar">
@@ -31,6 +31,7 @@
         <a href="#/guide" data-route="guide">Get started</a>
         <a href="#/review" data-route="review" data-role="reviewer" hidden>Review</a>
         <a href="#/batches" data-route="batches" data-role="contributor" hidden>Batches</a>
+        <a href="#/pipeline" data-route="pipeline" data-role="contributor" hidden>Pipeline</a>
         <a href="#/arcade" data-route="arcade" data-role="contributor" hidden>Arcade</a>
         <a href="#/admin" data-route="admin" data-role="admin" hidden>Admin</a>
         <a href="#/account" data-route="account" data-role="contributor" id="account-link" hidden>Account<span class="nav-dot" id="account-dot" hidden></span></a>
@@ -74,12 +75,6 @@
           <ol id="feed-list" class="feed" aria-live="polite"></ol>
         </section>
       </div>
-
-      <section id="pipeline" class="plate">
-        <h2>Compilation pipeline <span class="live-dot" aria-hidden="true"></span></h2>
-        <p class="hint">Batches the server is building right now, unit by unit.</p>
-        <div id="pipeline-body" class="muted" aria-live="polite">Loading…</div>
-      </section>
 
       <section id="map" class="plate">
         <div class="plate-head">
@@ -325,6 +320,23 @@
       </div>
     </div>
 
+    <!-- Pipeline -->
+    <div class="view" data-view="pipeline" hidden>
+      <section class="plate">
+        <div class="plate-head">
+          <h2>The way to main <span class="live-dot" aria-hidden="true"></span></h2>
+          <div class="way-tools">
+            <input id="way-search" type="search" placeholder="Filter: function, folder, author, #batch…" aria-label="Filter functions">
+          </div>
+        </div>
+        <p class="hint">Every unfinished function, in the stage it is in now. They move left to right and disappear once merged into main. Hover a dot for details, click it to open its batch.</p>
+        <div id="way-summary" class="way-summary" aria-live="polite"></div>
+        <div id="way" class="way"><p class="muted">Loading…</p></div>
+        <div id="way-blocked" class="way-blocked"></div>
+        <div id="way-tip" class="map-tip" hidden></div>
+      </section>
+    </div>
+
     <!-- Batches -->
     <div class="view" data-view="batches" hidden>
       <section class="plate">
@@ -447,6 +459,6 @@
     <div class="hazard thin" aria-hidden="true"></div>
     <p>Clank Together · source is open: <code id="clone-cmd">git clone https://clank.rodecomp.online/git/clank/game-decomp.git</code></p>
   </footer>
-  <script src="/app.js?v=pipeline-poll-20261102"></script>
+  <script src="/app.js?v=way2-20261102"></script>
 </body>
 </html>

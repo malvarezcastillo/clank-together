@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { compileProgress, describeJob, pipeline } from '../src/server/compile-progress.js';
+import { compileProgress, describeJob } from '../src/server/compile-progress.js';
 import { Verifier } from '../src/server/verify.js';
 
 function tempDir(t) {
@@ -47,25 +47,6 @@ test('job folder names map to the lane that builds them', () => {
   assert.deepEqual(describeJob('baseline-merge-12'), { lane: 'baseline', batch: 12 });
   assert.deepEqual(describeJob('check-3-99'), { lane: 'check', batch: null });
   assert.deepEqual(describeJob('something'), { lane: 'other', batch: null });
-});
-
-test('the public pipeline shows running builds oldest first, without stale folders or private checks', () => {
-  const job = (name, startedAt, active, extra = {}) => ({ job: name, ...describeJob(name), done: 1, total: 4, percent: 25, startedAt, updatedAt: startedAt, active, ...extra });
-  const batches = { 7: { kind: 'code', state: 'merging', author: 'dori' }, 9: { kind: 'maintenance', state: 'verifying', author: 'ragnarok-clanker' } };
-  assert.deepEqual(
-    pipeline([
-      job('maintenance-9', '2026-11-02T12:05:00.000Z', true),
-      job('merge-7', '2026-11-02T12:00:00.000Z', true),
-      job('baseline-batch-1', '2026-10-31T00:00:00.000Z', false),
-      job('check-3-99', '2026-11-02T12:01:00.000Z', true),
-      job('maintenance-base-abc', '2026-11-02T12:06:00.000Z', true),
-    ], (id) => batches[id]),
-    [
-      { job: 'merge-7', lane: 'merge', batch: 7, author: 'dori', kind: 'code', state: 'merging', done: 1, total: 4, percent: 25, startedAt: '2026-11-02T12:00:00.000Z' },
-      { job: 'maintenance-9', lane: 'maintenance', batch: 9, author: 'ragnarok-clanker', kind: 'maintenance', state: 'verifying', done: 1, total: 4, percent: 25, startedAt: '2026-11-02T12:05:00.000Z' },
-      { job: 'maintenance-base-abc', lane: 'maintenance-base', batch: null, author: null, kind: null, state: null, done: 1, total: 4, percent: 25, startedAt: '2026-11-02T12:06:00.000Z' },
-    ],
-  );
 });
 
 test('a starting worker removes job folders an interrupted run left behind, unless they are kept', (t) => {

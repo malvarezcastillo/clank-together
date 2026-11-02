@@ -151,7 +151,7 @@ const TASK_STATES = {
 
 // --- router
 
-const VIEWS = { home: null, guide: null, login: null, account: 'contributor', review: 'reviewer', batches: 'contributor', arcade: 'contributor', admin: 'admin' };
+const VIEWS = { home: null, guide: null, login: null, account: 'contributor', review: 'reviewer', batches: 'contributor', pipeline: 'contributor', arcade: 'contributor', admin: 'admin' };
 let currentView = null;
 
 function route() {
@@ -164,7 +164,7 @@ function route() {
   const first = currentView !== view;
   currentView = view;
   if (first) window.scrollTo({ top: 0 });
-  const load = { home: loadHome, review: loadReview, batches: loadBatches, arcade: loadArcade, admin: loadAdmin, account: loadAccount }[view];
+  const load = { home: loadHome, review: loadReview, batches: loadBatches, pipeline: loadWay, arcade: loadArcade, admin: loadAdmin, account: loadAccount }[view];
   if (load) load().catch((e) => toast(e.message));
   // Deep links: #/review/<attemptId>, #/batches/<batchId>
   const parts = location.hash.replace(/^#\/?/, '').split('/');
@@ -257,7 +257,7 @@ const handlers = {
   hello: () => {},
   feed: (m) => addFeed(m.items, true),
   progress: (m) => renderProgress(m.data),
-  pipeline: (m) => renderPipeline(m.data),
+  board: (m) => applyWay(m.change),
   map: (m) => applyMapChanges(m.changes),
   'map-reload': () => loadMap(),
   credits: (m) => setCredits(m.balance),
@@ -303,74 +303,195 @@ setInterval(() => {
   if (me) api('/api/credits/me').then((w) => setCredits(w.balance)).catch(() => {});
 }, 30_000);
 
-// Builds move every few seconds; without the socket the pipeline needs its own faster poll.
+// The pipeline board moves every few seconds; without the socket it needs its own poll.
 setInterval(() => {
-  if (socketUp || document.visibilityState !== 'visible' || currentView !== 'home') return;
-  loadPipeline().catch(() => {});
+  if (socketUp || document.visibilityState !== 'visible' || currentView !== 'pipeline') return;
+  loadWay().catch(() => {});
 }, 5_000);
 
 // --- home
 
 async function loadHome() {
-  await Promise.all([loadProgress(), loadPipeline(), loadFeed(), loadMap(), loadCrew(), loadBoard()]);
+  await Promise.all([loadProgress(), loadFeed(), loadMap(), loadCrew(), loadBoard()]);
 }
 
 async function loadProgress() {
   renderProgress(await api('/api/progress'));
 }
 
-async function loadPipeline() {
-  renderPipeline(await api('/api/pipeline'));
+// --- pipeline: the way to main (server: board.js)
+
+const WAY_STAGES = [
+  ['open', 'Open', 'Nobody holds it yet.'],
+  ['leased', 'Leased', 'An agent is porting it.'],
+  ['queued', 'Queued', 'Submitted; waiting for a verification lane.'],
+  ['compiling', 'Compiling', 'The server is building its batch.'],
+  ['review', 'Review', 'Compiled, not byte-identical: peers compare it with the original.'],
+  ['merging', 'Merging', 'Approved; in or waiting for the merge lane.'],
+];
+const WAY_BACK = ['back', 'Back to author', 'Sent back: it did not compile, broke something, or reviewers found a difference.'];
+const DOT_LIMIT = 150;
+const BLOCKERS = {
+  reserved: (b) => `reserved for its author until ${new Date(b.until).toLocaleTimeString()}`,
+  hard: () => 'failed too often; left for a stronger agent',
+  retry: (b) => `build retried at ${new Date(b.until).toLocaleTimeString()}`,
+  maintenance: (b) => `waits for maintenance batch #${b.batch}`,
+};
+let way = null;
+let wayFilter = '';
+
+async function loadWay() {
+  way = await api('/api/board');
+  way.byTask = new Map(way.functions.map((f) => [f.task, f]));
+  renderWay();
 }
 
-const LANE_LABELS = {
-  verify: 'verifying',
-  merge: 'merging',
-  maintenance: 'maintenance',
-  'maintenance-base': 'main, for comparison',
-  baseline: 'refreshing main scores',
-  other: 'build',
-};
+function applyWay(change) {
+  if (!way || currentView !== 'pipeline') return;
+  for (const t of change.remove) way.byTask.delete(t);
+  for (const f of change.upsert) way.byTask.set(f.task, f);
+  Object.assign(way, { at: change.at, counts: change.counts, folders: change.folders, overflow: change.overflow, builds: change.builds });
+  renderWay(new Set(change.remove));
+}
 
-function renderPipeline(p) {
-  const body = $('pipeline-body');
-  body.replaceChildren();
-  body.className = '';
-  if (!p.builds.length) {
-    body.append(el('p', p.waiting ? `Nothing compiling; ${fmt(p.waiting)} batch(es) waiting their turn.` : 'Nothing compiling right now. The compilers are idle.', 'muted'));
+function wayMatches(f) {
+  if (!wayFilter) return true;
+  const q = wayFilter.toLowerCase();
+  return [f.symbol, f.name, f.folder, f.who, f.batch ? `#${f.batch}` : ''].some((v) => v && String(v).toLowerCase().includes(q));
+}
+
+const wayAge = (since) => Math.min(1, Math.max(0, (Date.now() - since) / (6 * 3600_000)));
+
+function wayDot(f) {
+  const d = el('button', null, `way-dot ${f.stage}${f.blocker ? ' blocked' : ''}`);
+  d.type = 'button';
+  d.dataset.task = f.task;
+  d.style.setProperty('--age', wayAge(f.since).toFixed(2));
+  if (f.build) d.style.setProperty('--build', `${Math.round((f.build.done / f.build.total) * 100)}%`);
+  d.setAttribute('aria-label', `${f.name ?? f.symbol}, ${f.stage}${f.who ? `, ${f.who}` : ''}`);
+  return d;
+}
+
+function wayTip(f) {
+  const lines = [[f.name ?? f.symbol, 'tip-title'], [`${f.symbol} · ${f.folder}`]];
+  const stage = [...WAY_STAGES, WAY_BACK].find(([k]) => k === f.stage)?.[1] ?? f.stage;
+  lines.push([`${stage} for ${ago(f.since).replace(' ago', '')}${f.who ? ` · ${f.who}` : ''}${f.batch ? ` · batch #${f.batch}` : ''}`]);
+  if (f.build) lines.push([`compiled ${f.build.done} of ${f.build.total} units`]);
+  if (f.votes) lines.push([`votes: ${f.votes.same} same · ${f.votes.different} different`]);
+  if (f.why) lines.push([`came back: ${f.why}`, 'warn']);
+  if (f.cycles) lines.push([`${f.cycles} time(s) back so far`]);
+  if (f.blocker) lines.push([`⛔ ${BLOCKERS[f.blocker.kind]?.(f.blocker) ?? f.blocker.kind}`, 'warn']);
+  return lines.map(([t, c]) => el('div', t, c));
+}
+
+// A column shows its functions one dot each while they fit, else one chip per batch (or holder),
+// else counts per folder; open functions are always counted per folder.
+function wayColumn([key, label, hint], fns, removed) {
+  const col = el('section', null, `way-col ${key}`);
+  const head = el('header', null, 'way-head');
+  head.title = hint;
+  head.append(el('span', label, 'way-label'), el('span', fmt(way.counts[key] ?? 0), 'way-n'));
+  col.append(head);
+  const body = el('div', null, 'way-body');
+  const shown = fns.filter(wayMatches);
+  if (key === 'open' || way.overflow.includes(key)) {
+    const folders = Object.entries(way.folders[key] ?? {}).filter(([f]) => !wayFilter || f.toLowerCase().includes(wayFilter.toLowerCase())).sort((a, b) => b[1] - a[1]);
+    for (const [folder, n] of folders.slice(0, 12)) body.append(wayChip(folder, n, (way.counts[key] || 1)));
+    if (folders.length > 12) body.append(el('div', `+ ${folders.length - 12} more folders`, 'muted way-more'));
+  } else if (shown.length <= DOT_LIMIT) {
+    const dots = el('div', null, 'way-dots');
+    for (const f of shown) dots.append(wayDot(f));
+    body.append(dots);
+  } else {
+    const groups = new Map();
+    for (const f of shown) {
+      const k = key === 'leased' || key === 'back' ? f.who ?? '(nobody)' : f.batch ? `#${f.batch}` : '(no batch)';
+      groups.set(k, (groups.get(k) ?? 0) + 1);
+    }
+    for (const [k, n] of [...groups].sort((a, b) => b[1] - a[1]).slice(0, 20)) body.append(wayChip(k, n, shown.length));
+  }
+  if (!body.children.length) body.append(el('div', wayFilter ? 'no match' : '—', 'muted way-empty'));
+  col.append(body);
+  return col;
+}
+
+function wayChip(label, n, of) {
+  const c = el('div', null, 'way-chip');
+  c.style.setProperty('--share', `${Math.max(4, Math.round((n / of) * 100))}%`);
+  c.append(el('span', label, 'way-chip-l'), el('span', fmt(n), 'way-chip-n'));
+  return c;
+}
+
+// Dots keep their place between renders: each moved dot slides from where it was (FLIP), a new
+// one pops in, and a function that left the board (merged) fades out where it last was.
+function renderWay(removed = new Set()) {
+  const host = $('way');
+  const before = new Map([...host.querySelectorAll('.way-dot')].map((d) => [Number(d.dataset.task), d.getBoundingClientRect()]));
+  const fns = [...way.byTask.values()].sort((a, b) => a.since - b.since || a.task - b.task);
+  const byStage = (k) => fns.filter((f) => f.stage === k);
+
+  const flow = el('div', null, 'way-flow');
+  for (const s of WAY_STAGES) flow.append(wayColumn(s, byStage(s[0]), removed));
+  const back = wayColumn(WAY_BACK, byStage('back'), removed);
+  back.classList.add('way-back');
+  host.replaceChildren(flow, back);
+
+  const total = WAY_STAGES.reduce((n, [k]) => n + (way.counts[k] ?? 0), 0) + (way.counts.back ?? 0);
+  const building = way.builds.length ? ` · ${way.builds.map((b) => `${b.batch ? `#${b.batch} ` : ''}${b.lane} ${b.done}/${b.total}`).join(', ')}` : ' · compilers idle';
+  $('way-summary').textContent = `${fmt(total)} functions on their way${building}`;
+
+  const blocked = fns.filter((f) => f.blocker && wayMatches(f));
+  const reasons = new Map();
+  for (const f of blocked) {
+    const k = f.blocker.kind === 'reserved' ? 'reserved' : BLOCKERS[f.blocker.kind]?.(f.blocker) ?? f.blocker.kind;
+    reasons.set(k, (reasons.get(k) ?? 0) + 1);
+  }
+  $('way-blocked').replaceChildren(...[...reasons].map(([k, n]) => el('span', `⛔ ${n} ${k === 'reserved' ? 'reserved for their authors' : k}`, 'way-reason')));
+
+  if (reducedMotion()) return;
+  for (const d of host.querySelectorAll('.way-dot')) {
+    const was = before.get(Number(d.dataset.task));
+    const now = d.getBoundingClientRect();
+    if (was) {
+      const dx = was.left - now.left;
+      const dy = was.top - now.top;
+      if (dx || dy) d.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 700, easing: 'cubic-bezier(.2,.8,.2,1)' });
+    } else if (before.size) d.animate([{ opacity: 0, transform: 'scale(2)' }, { opacity: 1, transform: 'none' }], { duration: 500 });
+  }
+  for (const t of removed) {
+    const was = before.get(t);
+    if (!was) continue;
+    const ghost = el('span', null, 'way-dot merging way-ghost');
+    ghost.style.left = `${was.left + scrollX}px`;
+    ghost.style.top = `${was.top + scrollY}px`;
+    document.body.append(ghost);
+    ghost.animate([{ transform: 'none', opacity: 1 }, { transform: 'translateY(-24px) scale(1.6)', opacity: 0 }], { duration: 900, easing: 'ease-out' }).finished.then(() => ghost.remove());
+  }
+}
+
+$('way').addEventListener('mousemove', (e) => {
+  const d = e.target.closest?.('.way-dot');
+  const tip = $('way-tip');
+  const f = d && way?.byTask.get(Number(d.dataset.task));
+  if (!f) {
+    tip.hidden = true;
     return;
   }
-  const bars = el('div', null, 'progress-bars');
-  for (const b of p.builds) {
-    const row = el('div', null, 'pbar');
-    row.append(el('div', `${b.percent.toFixed(1)}%`, 'readout'));
-    const right = el('div', null, 'pbar-body');
-    const label = el('div', null, 'pbar-label');
-    if (b.batch !== null) {
-      const link = el('a', `#${b.batch}`);
-      link.href = `#/batches/${b.batch}`;
-      label.append(link, ` ${b.author ?? ''} · `);
-    }
-    label.append(LANE_LABELS[b.lane] ?? b.lane);
-    right.append(label);
-    const meter = el('div', null, 'meter');
-    meter.setAttribute('role', 'progressbar');
-    meter.setAttribute('aria-label', b.job);
-    meter.setAttribute('aria-valuemin', '0');
-    meter.setAttribute('aria-valuemax', '100');
-    meter.setAttribute('aria-valuenow', b.percent.toFixed(1));
-    const fill = el('div', null, 'fill');
-    fill.style.setProperty('width', `${Math.min(100, lastBars[`pipe:${b.job}`] ?? 0)}%`);
-    lastBars[`pipe:${b.job}`] = b.percent;
-    meter.append(fill);
-    setTimeout(() => fill.style.setProperty('width', `${Math.min(100, b.percent)}%`), 30);
-    right.append(meter, el('div', `${fmt(b.done)} of ${fmt(b.total)} units compiled · started ${ago(Date.parse(b.startedAt))}`, 'pbar-detail'));
-    row.append(right);
-    bars.append(row);
-  }
-  body.append(bars);
-  if (p.waiting) body.append(el('p', `${fmt(p.waiting)} more batch(es) waiting.`, 'muted'));
-}
+  tip.replaceChildren(...wayTip(f));
+  tip.hidden = false;
+  const r = $('way').closest('.plate').getBoundingClientRect();
+  tip.style.left = `${Math.min(e.clientX - r.left + 14, r.width - 300)}px`;
+  tip.style.top = `${e.clientY - r.top + 14}px`;
+});
+$('way').addEventListener('mouseleave', () => ($('way-tip').hidden = true));
+$('way').addEventListener('click', (e) => {
+  const f = way?.byTask.get(Number(e.target.closest?.('.way-dot')?.dataset.task));
+  if (f?.batch) location.hash = `#/batches/${f.batch}`;
+});
+$('way-search').addEventListener('input', (e) => {
+  wayFilter = e.target.value.trim();
+  if (way) renderWay();
+});
 
 const lastBars = {}; // bars move from the previous reading, not from zero, when they refresh
 let lastStats = {};

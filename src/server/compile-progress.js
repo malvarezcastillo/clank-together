@@ -76,28 +76,3 @@ export function compileProgress(jobsDir, { now = Date.now(), activeMs = ACTIVE_M
   }
   return out.sort((a, b) => a.job.localeCompare(b.job));
 }
-
-/**
- * The public view of the build pipeline: running builds only, with the batch they belong to.
- * Contributors' remote checks are private and left out.
- */
-export function pipeline(jobs, batchInfo) {
-  return jobs
-    .filter((j) => j.active && j.lane !== 'check')
-    .map((j) => {
-      const b = j.batch === null ? null : batchInfo(j.batch);
-      return {
-        job: j.job,
-        lane: j.lane,
-        batch: j.batch,
-        author: b?.author ?? null,
-        kind: b?.kind ?? null,
-        state: b?.state ?? null,
-        done: j.done,
-        total: j.total,
-        percent: j.percent,
-        startedAt: j.startedAt,
-      };
-    })
-    .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
-}
