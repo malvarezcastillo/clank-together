@@ -437,8 +437,8 @@ function renderWay(removed = new Set()) {
   host.replaceChildren(flow, back);
 
   const total = WAY_STAGES.reduce((n, [k]) => n + (way.counts[k] ?? 0), 0) + (way.counts.back ?? 0);
-  const building = way.builds.length ? ` · ${way.builds.map((b) => `${b.batch ? `#${b.batch} ` : ''}${b.lane} ${b.done}/${b.total}`).join(', ')}` : ' · compilers idle';
-  $('way-summary').textContent = `${fmt(total)} functions on their way${building}`;
+  $('way-summary').textContent = `${fmt(total)} functions on their way${way.builds.length ? '' : ' · compilers idle'}`;
+  renderWayBuilds();
 
   const blocked = fns.filter((f) => f.blocker && wayMatches(f));
   const reasons = new Map();
@@ -467,6 +467,41 @@ function renderWay(removed = new Set()) {
     document.body.append(ghost);
     ghost.animate([{ transform: 'none', opacity: 1 }, { transform: 'translateY(-24px) scale(1.6)', opacity: 0 }], { duration: 900, easing: 'ease-out' }).finished.then(() => ghost.remove());
   }
+}
+
+const BUILD_LANES = { verify: 'verifying', merge: 'merging', maintenance: 'maintenance', 'maintenance-base': 'main, for comparison', baseline: 'refreshing main scores', other: 'build' };
+
+// One bar per build the server is running, moving from its previous reading.
+function renderWayBuilds() {
+  const host = $('way-builds');
+  host.replaceChildren(...way.builds.map((b) => {
+    const pct = b.total ? (b.done / b.total) * 100 : 0;
+    const row = el('div', null, 'pbar');
+    row.append(el('div', `${pct.toFixed(1)}%`, 'readout'));
+    const right = el('div', null, 'pbar-body');
+    const label = el('div', null, 'pbar-label');
+    if (b.batch !== null) {
+      const link = el('a', `#${b.batch}`);
+      link.href = `#/batches/${b.batch}`;
+      label.append(link, ` ${b.author ?? ''} · `);
+    }
+    label.append(BUILD_LANES[b.lane] ?? b.lane);
+    const meter = el('div', null, 'meter');
+    meter.setAttribute('role', 'progressbar');
+    meter.setAttribute('aria-label', b.job);
+    meter.setAttribute('aria-valuemin', '0');
+    meter.setAttribute('aria-valuemax', '100');
+    meter.setAttribute('aria-valuenow', pct.toFixed(1));
+    const fill = el('div', null, 'fill');
+    const key = `way:${b.job}`;
+    fill.style.setProperty('width', `${Math.min(100, lastBars[key] ?? 0)}%`);
+    lastBars[key] = pct;
+    meter.append(fill);
+    setTimeout(() => fill.style.setProperty('width', `${Math.min(100, pct)}%`), 30);
+    right.append(label, meter, el('div', `${fmt(b.done)} of ${fmt(b.total)} units compiled${b.startedAt ? ` · started ${ago(Date.parse(b.startedAt))}` : ''}`, 'pbar-detail'));
+    row.append(right);
+    return row;
+  }));
 }
 
 $('way').addEventListener('mousemove', (e) => {

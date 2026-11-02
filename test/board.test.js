@@ -49,7 +49,7 @@ test('each unfinished function sits in its stage; finished ones are not on the b
   attempt(done, ann, batch(ann, 'merged'), 'merged');
   task('skipped');
 
-  const b = snapshot(s, { builds: [{ job: `batch-${building}`, lane: 'verify', batch: building, done: 3, total: 4, active: true }, { job: 'batch-1', lane: 'verify', batch: 1, done: 9, total: 9, active: false }] });
+  const b = snapshot(s, { builds: [{ job: `batch-${building}`, lane: 'verify', batch: building, done: 3, total: 4, startedAt: '2026-11-02T12:00:00.000Z', active: true }, { job: 'batch-1', lane: 'verify', batch: 1, done: 9, total: 9, active: false }] });
   const at = Object.fromEntries(b.functions.map((f) => [f.task, f]));
   assert.deepEqual(b.counts, { open: 1, leased: 1, queued: 1, compiling: 1, review: 1, merging: 1, back: 1 });
   assert.equal(at[open], undefined, 'open functions are counted per folder, not listed');
@@ -64,7 +64,7 @@ test('each unfinished function sits in its stage; finished ones are not on the b
   assert.equal(at[merging].stage, 'merging');
   assert.equal(at[back].why, 'compilation failed');
   assert.equal(at[back].blocker.kind, 'reserved');
-  assert.deepEqual(b.builds, [{ job: `batch-${building}`, lane: 'verify', batch: building, done: 3, total: 4 }], 'a stale job folder is not a running build');
+  assert.deepEqual(b.builds, [{ job: `batch-${building}`, lane: 'verify', batch: building, done: 3, total: 4, startedAt: '2026-11-02T12:00:00.000Z', author: 'ann' }], 'a stale job folder is not a running build');
 });
 
 test('a running maintenance batch holds the queue; a build retry says until when', (t) => {

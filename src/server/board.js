@@ -118,7 +118,10 @@ export function snapshot(store, { builds = [], now = Date.now(), cap = ROW_CAP }
     folders,
     overflow,
     functions,
-    builds: builds.map((b) => ({ job: b.job, lane: b.lane, batch: b.batch, done: b.done, total: b.total })),
+    builds: builds.map((b) => ({
+      job: b.job, lane: b.lane, batch: b.batch, done: b.done, total: b.total, startedAt: b.startedAt,
+      author: b.batch === null ? null : store.get('SELECT u.name FROM batches x JOIN users u ON u.id = x.user_id WHERE x.id = ?', b.batch)?.name ?? null,
+    })),
   };
 }
 

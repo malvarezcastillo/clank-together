@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Store, now } from '../src/server/db.js';
 import { AUTHOR_HOLD_MS, returnBatch } from '../src/server/batches.js';
 
-test('a function sent back is held for its author 20 minutes; older, longer holds are cut to that on start', (t) => {
+test('a function sent back is held for its author 20 minutes; older, longer holds end 20 minutes after their send-back', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'td-hold-'));
   const file = path.join(dir, 'td.sqlite');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -28,16 +28,18 @@ test('a function sent back is held for its author 20 minutes; older, longer hold
   assert.equal(held.preferred_user, user);
   assert.ok(held.preferred_until >= before + AUTHOR_HOLD_MS && held.preferred_until <= now() + AUTHOR_HOLD_MS);
 
-  const legacy = task(0x401040, 'needs_cleanup', now() + 6 * 3600_000);
+  const legacy = task(0x401040, 'needs_cleanup', now() + 5 * 3600_000);
+  s.run('UPDATE tasks SET updated_at = ? WHERE id = ?', now() - 3600_000, legacy);
+  const recent = task(0x4010c0, 'needs_cleanup', now() + 6 * 3600_000);
   const short = task(0x401080, 'needs_cleanup', now() + 5 * 60_000);
   const shortUntil = s.get('SELECT preferred_until FROM tasks WHERE id = ?', short).preferred_until;
   s.db.close();
   s = new Store(file);
   try {
-    const capped = s.get('SELECT preferred_until FROM tasks WHERE id = ?', legacy).preferred_until;
-    assert.ok(capped <= now() + AUTHOR_HOLD_MS, 'a 6-hour hold from before is cut to 20 minutes');
-    assert.ok(capped > now() + AUTHOR_HOLD_MS - 60_000);
-    assert.equal(s.get('SELECT preferred_until FROM tasks WHERE id = ?', short).preferred_until, shortUntil, 'a shorter hold is kept as it is');
+    const until = (id) => s.get('SELECT preferred_until FROM tasks WHERE id = ?', id).preferred_until;
+    assert.ok(until(legacy) < now(), 'sent back an hour ago: no longer reserved');
+    assert.ok(until(recent) <= now() + AUTHOR_HOLD_MS && until(recent) > now() + AUTHOR_HOLD_MS - 60_000, 'sent back just now: 20 minutes left');
+    assert.equal(until(short), shortUntil, 'a shorter hold is kept as it is');
   } finally {
     s.db.close();
   }
