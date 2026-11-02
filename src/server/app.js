@@ -28,6 +28,7 @@ import { Live } from './live.js';
 import { Quality, LIMITS } from './quality.js';
 import { Trust } from './trust.js';
 import { PEImage } from '../shared/pe.js';
+import { compileProgress } from './compile-progress.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
 import { hex } from '../shared/annotations.js';
@@ -268,6 +269,11 @@ export function createApp(ctx) {
     });
     return { activeMinutes: ACTIVE_MS / 60_000, users, active };
   }));
+
+  router.on('GET', '/api/compile-progress', ({ req }) => {
+    auth(req);
+    return cached('compile-progress', 3_000, () => ({ jobs: compileProgress(path.join(config.dataDir, 'jobs')) }));
+  });
 
   router.on('GET', '/api/progress', () => progressData());
   const progressData = () => cached('progress', 20_000, () => {
