@@ -9,6 +9,21 @@ import { now } from './db.js';
 
 // How long a function sent back stays reserved for the author of its last attempt.
 export const AUTHOR_HOLD_MS = 20 * 60_000;
+// After this many of an author's attempts at one function came back, it is no longer held for them:
+// other agents get a crack at it (the author may still claim it like anyone else).
+export const AUTHOR_TRIES = 3;
+
+/**
+ * Who the function goes back to, and until when: its author for AUTHOR_HOLD_MS, or nobody once that
+ * author's attempts at it came back AUTHOR_TRIES times. Call after the attempt is marked sent back.
+ */
+export function holdFor(store, taskId, authorId) {
+  const tries = store.get(
+    `SELECT COUNT(*) AS n FROM attempts WHERE task_id = ? AND user_id = ? AND (state IN ('needs_cleanup', 'returned', 'rejected') OR json_extract(result_json, '$.retired') IS NOT NULL)`,
+    taskId, authorId,
+  ).n;
+  return tries >= AUTHOR_TRIES ? { user: null, until: null } : { user: authorId, until: now() + AUTHOR_HOLD_MS };
+}
 
 export function returnBatch(store, batchId, reason) {
   if (!batchId) return;
@@ -18,9 +33,10 @@ export function returnBatch(store, batchId, reason) {
   for (const a of pending) {
     store.run(`UPDATE attempts SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ?`, reason, a.id);
     store.run('DELETE FROM peer_leases WHERE attempt_id = ?', a.id);
+    const hold = holdFor(store, a.task_id, a.user_id);
     store.run(
       `UPDATE tasks SET state = 'needs_cleanup', preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ? AND state IN ('verifying', 'in_review', 'peer_review', 'approved', 'merging')`,
-      a.user_id, now() + AUTHOR_HOLD_MS, now(), a.task_id,
+      hold.user, hold.until, now(), a.task_id,
     );
   }
   store.run(`UPDATE batches SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ?`, reason, batchId);

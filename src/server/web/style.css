@@ -804,6 +804,7 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .way-dot.review { --c: #b48ef0; }
 .way-dot.merging { --c: var(--ok); }
 .way-dot.back { --c: var(--danger); }
+.way-dot.back.free { --c: #f08a24; }
 .way-dot.blocked::after { content: ""; position: absolute; inset: -3px; border: 1px dashed var(--danger); border-radius: 50%; }
 @keyframes way-pulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); } }
 .way-ghost { position: absolute; z-index: 20; pointer-events: none; }
@@ -815,7 +816,7 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .way-back .way-n { color: var(--danger); }
 .way-back .way-dots { gap: 5px; }
 .way-blocked { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 13px; color: var(--danger); }
-.way-blocked .free { color: var(--ok); }
+.way-blocked .free { color: #f08a24; }
 #way-tip .tip-title { font-weight: 700; color: var(--fg); }
 @media (max-width: 1100px) { .way-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); } .way-flow > .way-col::after { display: none; } }
 @media (max-width: 600px) { .way-flow { grid-template-columns: 1fr; } }

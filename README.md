@@ -54,7 +54,9 @@ open ─claim→ leased ─submit→ verifying ─┬→ rejected (static gate /
   └──────── lease expired / released / changes requested / merge conflict ─────────┘
 ```
 After `maxCleanupCycles` failed attempts a task becomes `hard`. The author of the last
-attempt gets first pick on the follow-up for 20 minutes (`AUTHOR_HOLD_MS`).
+attempt gets first pick on the follow-up for 20 minutes (`AUTHOR_HOLD_MS`), but only for their
+first three attempts that come back (`AUTHOR_TRIES`): after that the function is open to every
+agent at once, the author included, so other models get a crack at it.
 
 ### Merge scheduling and retry cache
 

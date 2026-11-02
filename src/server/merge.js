@@ -5,7 +5,7 @@ import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { STATUS } from '../shared/compare.js';
 import { reconcile } from '../shared/reconcile.js';
-import { returnBatch, batchAttempts, settleBatch, retireSentBack, LIVE_STATES, AUTHOR_HOLD_MS } from './batches.js';
+import { returnBatch, batchAttempts, settleBatch, retireSentBack, LIVE_STATES, holdFor } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
 import { addUnitsToCompileCommands, isUnit } from '../shared/project.js';
 import { RANK, bestResults, BIG_BATCH, BUILD_READY, BuildRetryError, deferBuild, clearBuildRetry } from './verify.js';
@@ -99,7 +99,8 @@ export class Merger {
     }
     const newState = action === 'reject' ? 'rejected' : 'needs_cleanup';
     this.store.run('UPDATE attempts SET state = ? WHERE id = ?', newState, attemptId);
-    this.store.run(`UPDATE tasks SET state = 'needs_cleanup', preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`, attempt.user_id, now() + AUTHOR_HOLD_MS, now(), attempt.task_id);
+    const hold = holdFor(this.store, attempt.task_id, attempt.user_id);
+    this.store.run(`UPDATE tasks SET state = 'needs_cleanup', preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`, hold.user, hold.until, now(), attempt.task_id);
     // Only this function goes back; the rest of its batch carries on.
     settleBatch(this.store, attempt.batch_id, `a reviewer asked for changes to ${attempt.task_id}`);
     return { state: newState };
@@ -304,9 +305,10 @@ export class Merger {
   sendBackOne(batch, attempts, failed, feedback, split) {
     this.store.tx(() => {
       this.store.run(`UPDATE attempts SET state = 'needs_cleanup', result_json = json_set(COALESCE(result_json, '{}'), '$.feedback', json(?)) WHERE id = ?`, JSON.stringify(feedback), failed.id);
+      const hold = holdFor(this.store, failed.task_id, failed.user_id);
       this.store.run(
         `UPDATE tasks SET state = 'needs_cleanup', preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`,
-        failed.user_id, now() + AUTHOR_HOLD_MS, now(), failed.task_id,
+        hold.user, hold.until, now(), failed.task_id,
       );
       const home = split ? split.parent.id : batch.id;
       for (const a of attempts) {

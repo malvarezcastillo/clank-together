@@ -363,7 +363,8 @@ function wayMatches(f) {
 const wayAge = (since) => Math.min(1, Math.max(0, (Date.now() - since) / (6 * 3600_000)));
 
 function wayDot(f) {
-  const d = el('button', null, `way-dot ${f.stage}${f.blocker ? ' blocked' : ''}`);
+  const free = f.stage === 'back' && !f.blocker;
+  const d = el('button', null, `way-dot ${f.stage}${f.blocker ? ' blocked' : ''}${free ? ' free' : ''}`);
   d.type = 'button';
   d.dataset.task = f.task;
   d.style.setProperty('--age', wayAge(f.since).toFixed(2));

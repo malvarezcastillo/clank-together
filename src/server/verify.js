@@ -18,7 +18,7 @@ import { globalViolations } from './globals.js';
 import { functionRegions } from './split.js';
 import { className } from './grouping.js';
 import { now } from './db.js';
-import { returnBatch, batchAttempts, settleBatch, AUTHOR_HOLD_MS } from './batches.js';
+import { returnBatch, batchAttempts, settleBatch, holdFor, AUTHOR_HOLD_MS } from './batches.js';
 import { analyzeInWorkers } from './analyze.js';
 
 // A batch whose verification compiles more units than this is big (it changes a widely used header).
@@ -1001,14 +1001,15 @@ export class Verifier {
       const cycles = task.cleanup_cycles + (onTheWay ? 0 : 1);
       if (taskState === 'needs_cleanup' && cycles >= this.project.matchPolicy.maxCleanupCycles) taskState = 'hard';
       if (state === 'rejected' && !task.best_attempt) taskState = 'open';
+      const hold = onTheWay ? { user: attempt.user_id, until: now() + AUTHOR_HOLD_MS } : holdFor(this.store, task.id, attempt.user_id);
       this.store.run(
         `UPDATE tasks SET state = ?, cleanup_cycles = ?, best_score = ?, best_attempt = ?, preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ?`,
         taskState,
         cycles,
         better ? score : task.best_score,
         better ? attempt.id : task.best_attempt,
-        attempt.user_id,
-        now() + AUTHOR_HOLD_MS,
+        hold.user,
+        hold.until,
         now(),
         task.id,
       );
