@@ -91,6 +91,7 @@ export class Verifier {
 
   start() {
     this.stopped = false;
+    this.clearStaleJobs();
     this.needsSync = !!this.config.pushRemote;
     this.store.run(`UPDATE batches SET state = 'queued' WHERE state = 'verifying'`);
     this.store.run(`UPDATE attempts SET state = 'queued' WHERE state = 'verifying'`);
@@ -113,6 +114,30 @@ export class Verifier {
   stop() {
     clearInterval(this.timer);
     this.stopped = true; // finishing verifications must not start new ones
+  }
+
+  /**
+   * Build folders left by a worker that stopped mid-check: `check` removes its folder in a
+   * `finally`, which a killed process never reaches. Nothing compiles before `start`, so every
+   * folder under `jobs/` here is stale. `keepJobDirs` keeps them for debugging, as `check` does.
+   */
+  clearStaleJobs() {
+    if (this.config.keepJobDirs) return;
+    let names;
+    try {
+      names = fs.readdirSync(this.jobsDir);
+    } catch (e) {
+      if (e.code === 'ENOENT') return;
+      throw e;
+    }
+    for (const name of names) {
+      try {
+        fs.rmSync(path.join(this.jobsDir, name), { recursive: true, force: true });
+      } catch (e) {
+        this.log.error(`could not remove stale job folder ${name}: ${e.message}`);
+      }
+    }
+    if (names.length) this.log.info(`removed ${names.length} stale job folder(s): ${names.join(', ')}`);
   }
 
   // New submissions drain active lanes once; queued members of the synchronized cohort do not.
