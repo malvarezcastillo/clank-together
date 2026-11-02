@@ -297,12 +297,17 @@ setInterval(() => {
   if (socketUp || document.visibilityState !== 'visible') return;
   if (currentView === 'home') {
     loadProgress().catch(() => {});
-    loadPipeline().catch(() => {});
     pollFeed().catch(() => {});
     loadMap().catch(() => {});
   }
   if (me) api('/api/credits/me').then((w) => setCredits(w.balance)).catch(() => {});
 }, 30_000);
+
+// Builds move every few seconds; without the socket the pipeline needs its own faster poll.
+setInterval(() => {
+  if (socketUp || document.visibilityState !== 'visible' || currentView !== 'home') return;
+  loadPipeline().catch(() => {});
+}, 5_000);
 
 // --- home
 

@@ -8,6 +8,8 @@
         reverse_proxy forgejo:3000
     }
     handle {
-        reverse_proxy web:8080
+        reverse_proxy web:8080 {
+            header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}
+        }
     }
 }
