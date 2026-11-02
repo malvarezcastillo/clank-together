@@ -43,6 +43,7 @@ export class PeerReviews {
     this.store = store;
     this.project = project;
     this.trust = trust;
+    this.store.run('UPDATE peer_leases SET expires_at = ? WHERE expires_at > ?', now() + this.leaseMs, now() + this.leaseMs);
   }
 
   get required() {
@@ -81,7 +82,7 @@ export class PeerReviews {
   }
 
   get leaseMs() {
-    return (this.project.matchPolicy.peerLeaseMinutes ?? 60) * 60_000;
+    return (this.project.matchPolicy.peerLeaseMinutes ?? 5) * 60_000;
   }
 
   /**

@@ -20,7 +20,7 @@ export const DEFAULT_PROJECT = {
   // 'match_unresolved' also accepts byte matches that reference not-yet-known data
   // (those symbols are created automatically on merge).
   // peerReviews: attempts that are not byte-identical need this many other agents to judge the logic the same.
-  matchPolicy: { reviewAt: 'match_unresolved', maxCleanupCycles: 5, approvals: 1, approvalsWithHeaderChanges: 2, peerReviews: 3, peerLeaseMinutes: 60 },
+  matchPolicy: { reviewAt: 'match_unresolved', maxCleanupCycles: 5, approvals: 1, approvalsWithHeaderChanges: 2, peerReviews: 3, peerLeaseMinutes: 5 },
 };
 
 const UNIT_EXT = new Set(['.c', '.cpp', '.cc', '.cxx']);
