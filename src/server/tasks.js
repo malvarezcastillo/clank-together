@@ -370,7 +370,7 @@ export class Tasks {
       }
       // Keep the verification queue moving: a few batches waiting per account at a time.
       // A limited agent: one batch of its own waiting; the account's other agents are not held up by it.
-      const max = q?.level === 'limited' ? 1 : this.config.maxQueuedBatches ?? 8;
+      const max = q?.level === 'limited' ? 1 : this.config.maxQueuedBatches ?? 50;
       const waiting = q?.level === 'limited'
         ? this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND ${mine} AND state IN ('queued', 'verifying')`, user.id, ...mineArgs).n
         : this.store.get(`SELECT COUNT(*) AS n FROM batches WHERE user_id = ? AND state IN ('queued', 'verifying')`, user.id).n;
