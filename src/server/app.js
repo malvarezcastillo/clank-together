@@ -28,7 +28,7 @@ import { Live } from './live.js';
 import { Quality, LIMITS } from './quality.js';
 import { Trust } from './trust.js';
 import { PEImage } from '../shared/pe.js';
-import { compileProgress } from './compile-progress.js';
+import { compileProgress, pipeline } from './compile-progress.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
 import { hex } from '../shared/annotations.js';
@@ -270,10 +270,17 @@ export function createApp(ctx) {
     return { activeMinutes: ACTIVE_MS / 60_000, users, active };
   }));
 
+  const jobsDir = path.join(config.dataDir, 'jobs');
   router.on('GET', '/api/compile-progress', ({ req }) => {
     auth(req);
-    return cached('compile-progress', 3_000, () => ({ jobs: compileProgress(path.join(config.dataDir, 'jobs')) }));
+    return cached('compile-progress', 3_000, () => ({ jobs: compileProgress(jobsDir) }));
   });
+  const pipelineData = () => cached('pipeline', 2_000, () => ({
+    builds: pipeline(compileProgress(jobsDir), (id) =>
+      store.get('SELECT b.kind, b.state, u.name AS author FROM batches b JOIN users u ON u.id = b.user_id WHERE b.id = ?', id)),
+    waiting: store.get(`SELECT COUNT(*) AS n FROM batches WHERE state = 'queued'`).n,
+  }));
+  router.on('GET', '/api/pipeline', () => pipelineData());
 
   router.on('GET', '/api/progress', () => progressData());
   const progressData = () => cached('progress', 20_000, () => {
@@ -1357,6 +1364,7 @@ export function createApp(ctx) {
     feed: feedSince,
     progress: progressData,
     map: mapData,
+    pipeline: pipelineData,
     userFromCookie: (req) => {
       const c = sessionCookie(req);
       return c ? accounts.userBySession(c) : null;

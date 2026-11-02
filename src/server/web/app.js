@@ -257,6 +257,7 @@ const handlers = {
   hello: () => {},
   feed: (m) => addFeed(m.items, true),
   progress: (m) => renderProgress(m.data),
+  pipeline: (m) => renderPipeline(m.data),
   map: (m) => applyMapChanges(m.changes),
   'map-reload': () => loadMap(),
   credits: (m) => setCredits(m.balance),
@@ -296,6 +297,7 @@ setInterval(() => {
   if (socketUp || document.visibilityState !== 'visible') return;
   if (currentView === 'home') {
     loadProgress().catch(() => {});
+    loadPipeline().catch(() => {});
     pollFeed().catch(() => {});
     loadMap().catch(() => {});
   }
@@ -305,11 +307,64 @@ setInterval(() => {
 // --- home
 
 async function loadHome() {
-  await Promise.all([loadProgress(), loadFeed(), loadMap(), loadCrew(), loadBoard()]);
+  await Promise.all([loadProgress(), loadPipeline(), loadFeed(), loadMap(), loadCrew(), loadBoard()]);
 }
 
 async function loadProgress() {
   renderProgress(await api('/api/progress'));
+}
+
+async function loadPipeline() {
+  renderPipeline(await api('/api/pipeline'));
+}
+
+const LANE_LABELS = {
+  verify: 'verifying',
+  merge: 'merging',
+  maintenance: 'maintenance',
+  'maintenance-base': 'main, for comparison',
+  baseline: 'refreshing main scores',
+  other: 'build',
+};
+
+function renderPipeline(p) {
+  const body = $('pipeline-body');
+  body.replaceChildren();
+  body.className = '';
+  if (!p.builds.length) {
+    body.append(el('p', p.waiting ? `Nothing compiling; ${fmt(p.waiting)} batch(es) waiting their turn.` : 'Nothing compiling right now. The compilers are idle.', 'muted'));
+    return;
+  }
+  const bars = el('div', null, 'progress-bars');
+  for (const b of p.builds) {
+    const row = el('div', null, 'pbar');
+    row.append(el('div', `${b.percent.toFixed(1)}%`, 'readout'));
+    const right = el('div', null, 'pbar-body');
+    const label = el('div', null, 'pbar-label');
+    if (b.batch !== null) {
+      const link = el('a', `#${b.batch}`);
+      link.href = `#/batches/${b.batch}`;
+      label.append(link, ` ${b.author ?? ''} · `);
+    }
+    label.append(LANE_LABELS[b.lane] ?? b.lane);
+    right.append(label);
+    const meter = el('div', null, 'meter');
+    meter.setAttribute('role', 'progressbar');
+    meter.setAttribute('aria-label', b.job);
+    meter.setAttribute('aria-valuemin', '0');
+    meter.setAttribute('aria-valuemax', '100');
+    meter.setAttribute('aria-valuenow', b.percent.toFixed(1));
+    const fill = el('div', null, 'fill');
+    fill.style.setProperty('width', `${Math.min(100, lastBars[`pipe:${b.job}`] ?? 0)}%`);
+    lastBars[`pipe:${b.job}`] = b.percent;
+    meter.append(fill);
+    setTimeout(() => fill.style.setProperty('width', `${Math.min(100, b.percent)}%`), 30);
+    right.append(meter, el('div', `${fmt(b.done)} of ${fmt(b.total)} units compiled · started ${ago(Date.parse(b.startedAt))}`, 'pbar-detail'));
+    row.append(right);
+    bars.append(row);
+  }
+  body.append(bars);
+  if (p.waiting) body.append(el('p', `${fmt(p.waiting)} more batch(es) waiting.`, 'muted'));
 }
 
 const lastBars = {}; // bars move from the previous reading, not from zero, when they refresh

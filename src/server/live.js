@@ -14,12 +14,13 @@ const MAX_CLIENTS = 1000;
 const MAX_PER_IP = 8;
 
 export class Live {
-  constructor({ store, credits, feed, progress, map, userFromCookie, allowedOrigins, clientIp, log = console }) {
-    Object.assign(this, { store, credits, feed, progress, map, userFromCookie, allowedOrigins, clientIp, log });
+  constructor({ store, credits, feed, progress, map, pipeline, userFromCookie, allowedOrigins, clientIp, log = console }) {
+    Object.assign(this, { store, credits, feed, progress, map, pipeline, userFromCookie, allowedOrigins, clientIp, log });
     this.clients = new Set();
     this.lastEvent = store.get('SELECT COALESCE(MAX(id), 0) AS n FROM events').n;
     this.lastMap = null;
     this.lastProgress = null;
+    this.lastPipeline = null;
   }
 
   attach(server) {
@@ -158,6 +159,14 @@ export class Live {
         else if (changes.length) this.broadcast({ type: 'map-reload' });
       }
       this.lastMap = m.states;
+    }
+    // Builds advance without events (one unit at a time), so the pipeline is compared every tick.
+    if (this.pipeline) {
+      const pl = JSON.stringify(this.pipeline());
+      if (pl !== this.lastPipeline) {
+        this.lastPipeline = pl;
+        this.broadcast({ type: 'pipeline', data: JSON.parse(pl) });
+      }
     }
     // Balances move with merges, reviews and games; each viewer only sees their own.
     for (const c of this.clients) if (c.user) this.sendBalance(c);
