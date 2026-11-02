@@ -74,6 +74,16 @@ export function addUnitsToCompileCommands(project, text, files) {
   return { text: JSON.stringify(doc, null, 1), added, units: doc.units };
 }
 
+/** The build list without the given units, or null when none of them is listed. */
+export function removeUnitsFromCompileCommands(project, text, files) {
+  if (!project.compile?.units || text === null) return null;
+  const doc = JSON.parse(text);
+  const removed = files.filter((f) => doc.units[f] !== undefined);
+  if (!removed.length) return null;
+  for (const f of removed) delete doc.units[f];
+  return { text: JSON.stringify(doc, null, 1), removed, units: doc.units };
+}
+
 export function loadToolchainLock(repoDir, readFile = (file) => readProjectFile(repoDir, file)) {
   return JSON.parse(readFile('data/toolchain.lock.json') ?? '{}');
 }
@@ -129,7 +139,10 @@ export function isUnit(file) {
  */
 export function scanAnnotations(repoDir, project, overrides = {}) {
   const files = new Set(listSources(repoDir, project));
-  for (const f of Object.keys(overrides)) files.add(f);
+  for (const [f, text] of Object.entries(overrides)) {
+    if (text === null) files.delete(f);
+    else files.add(f);
+  }
   const annotations = [];
   const errors = [];
   for (const f of [...files].sort()) {

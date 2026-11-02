@@ -9,7 +9,7 @@ import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { lintSubmission } from '../shared/lint.js';
-import { isUnit, addUnitsToCompileCommands } from '../shared/project.js';
+import { isUnit, addUnitsToCompileCommands, removeUnitsFromCompileCommands } from '../shared/project.js';
 import { bestResults, BuildRetryError, deferBuild, clearBuildRetry } from './verify.js';
 
 export class Maintenance {
@@ -68,6 +68,7 @@ export class Maintenance {
       allowedPragmas: this.project.allowedPragmas,
       baseSize: (f) => this.repo.size('HEAD', f),
       trackedPaths: this.repo.trackedPaths('HEAD'),
+      allowDeletions: true,
     });
     if (lintErrors.length) return back('rejected by the static gate', { lintErrors });
     if (!this.repo.isAncestor(batch.base_commit)) return back(`base commit ${batch.base_commit} is not part of main; sync and resubmit`);
@@ -109,14 +110,19 @@ export class Maintenance {
     // Commit like any merge; new units join the build list in the same commit.
     const author = this.store.get('SELECT name FROM users WHERE id = ?', batch.user_id).name;
     const listFile = this.project.compileCommands ?? null;
-    const grown = listFile ? addUnitsToCompileCommands(this.project, this.repo.show(startHead, listFile), Object.keys(merged.files).filter(isUnit)) : null;
-    const filesToCommit = grown ? { ...merged.files, [listFile]: grown.text } : merged.files;
+    const deletedUnits = Object.keys(merged.files).filter((f) => isUnit(f) && merged.files[f] === null);
+    const shrunk = listFile && deletedUnits.length ? removeUnitsFromCompileCommands(this.project, this.repo.show(startHead, listFile), deletedUnits) : null;
+    const grown = listFile ? addUnitsToCompileCommands(this.project, shrunk?.text ?? this.repo.show(startHead, listFile), Object.keys(merged.files).filter((f) => isUnit(f) && merged.files[f] !== null)) : null;
+    const listed = grown ?? shrunk;
+    const filesToCommit = listed ? { ...merged.files, [listFile]: listed.text } : merged.files;
     const summary = String(batch.notes ?? '').split('\n')[0].slice(0, 120) || `${Object.keys(files).length} file(s)`;
     const message =
       `Maintenance: ${summary}\n\nBatch #${batch.id} by ${author}: ${forced ? `forced by an admin (${regressions.length} lower score(s), ${changed.length} changed function(s))` : "no function's compiled code changes"}; checked with ${check.units.length} compiled unit(s)` +
-      `${changedHeaders.length ? `, including every includer of ${changedHeaders.join(', ')}` : ''}.\n${grown ? `Adds to the build: ${grown.added.join(', ')}\n` : ''}`;
+      `${changedHeaders.length ? `, including every includer of ${changedHeaders.join(', ')}` : ''}.\n${grown ? `Adds to the build: ${grown.added.join(', ')}\n` : ''}` +
+      `${Object.values(merged.files).some((c) => c === null) ? `Deletes: ${Object.keys(merged.files).filter((f) => merged.files[f] === null).join(', ')}\n` : ''}`;
     const commit = this.repo.commitFiles(filesToCommit, message, `${author} <${author.replace(/[^A-Za-z0-9_.-]/g, '_')}@users.clank-together.invalid>`);
-    if (grown) this.project.compile.units = grown.units;
+    if (listed) this.project.compile.units = listed.units;
+    for (const unit of deletedUnits) this.store.run('DELETE FROM unit_deps WHERE unit = ?', unit);
     this.store.tx(() => this.merger.applyCheckToDatabase(check, rec, commit, batch.user_id));
     if (forced) this.store.event('maintenance_forced', batch.user_id, { batch: batch.id, commit, regressions: regressions.map((r) => r.id), changed: changed.map((c) => c.id ?? c) });
     this.merger.afterCommit(commit);

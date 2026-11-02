@@ -196,6 +196,11 @@ export class Repo {
       for (const [file, theirs] of Object.entries(files)) {
         const baseText = this.show(base, file);
         const headText = this.show(head, file);
+        if (theirs === null) {
+          if (baseText === headText) out[file] = null;
+          else conflicts.push(file);
+          continue;
+        }
         if (baseText === headText || headText === null) {
           out[file] = theirs;
           continue;
@@ -248,13 +253,16 @@ export class Repo {
   }
 
   commitFiles(files, message, author) {
-    for (const [file, content] of Object.entries(files)) {
+    const written = Object.fromEntries(Object.entries(files).filter(([, content]) => content !== null));
+    const deleted = Object.keys(files).filter((file) => files[file] === null);
+    for (const [file, content] of Object.entries(written)) {
       const abs = path.join(this.dir, file);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, content);
     }
-    this.git(['add', '--', ...Object.keys(files)]);
-    this.assertStaged(files);
+    if (Object.keys(written).length) this.git(['add', '--', ...Object.keys(written)]);
+    if (deleted.length) this.git(['rm', '-q', '--ignore-unmatch', '--', ...deleted]);
+    this.assertStaged(written);
     // Nothing to commit (the code is already on main, e.g. a function resubmitted unchanged).
     if (!this.git(['status', '--porcelain', '--', ...Object.keys(files)]).trim()) return this.head();
     const name = process.env.TD_GIT_AUTHOR_NAME;
@@ -317,6 +325,7 @@ export class Repo {
    */
   assertStaged(files) {
     const paths = Object.keys(files);
+    if (!paths.length) return;
     const staged = new Map();
     for (const line of this.git(['ls-files', '-s', '-z', '--', ...paths]).split('\0').filter(Boolean)) {
       const tab = line.indexOf('\t');

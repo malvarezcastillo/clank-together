@@ -64,7 +64,7 @@ export function sourceIncluders(repo, project, headers, files = {}) {
     }
   }
   const units = listSources(repo.dir, project, { unitsOnly: true });
-  return units.filter((u) => affected.has(u));
+  return units.filter((u) => affected.has(u) && files[u] !== null);
 }
 
 function normalize(p) {

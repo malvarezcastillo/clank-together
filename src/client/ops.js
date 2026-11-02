@@ -339,11 +339,17 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta, confir
  * A maintenance batch (maintainers): the named files, with no function tasks. The server checks it
  * like any batch and merges it only when no function's compiled code changes.
  */
-export async function submitMaintenance(ws, files, { notes, force = false } = {}) {
-  if (!files.length) throw new Error('name the files of the change (--files a.cpp,b.h)');
+export async function submitMaintenance(ws, files, { notes, force = false, deleted = [] } = {}) {
+  if (!files.length && !deleted.length) throw new Error('name the files of the change (--files a.cpp,b.h and/or --delete c.h)');
   const contents = {};
   for (const f of files) contents[f.replace(/\\/g, '/')] = fs.readFileSync(path.join(ws.dir, f), 'utf8');
-  const errors = lintSubmission(contents, { allowedPaths: [`${ws.project.sourceDirs[0]}/**`, ...ws.project.headerGlobs], limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas, baseSize: (f) => ws.size(f), trackedPaths: ws.trackedPaths() });
+  const tracked = new Set(ws.trackedPaths());
+  for (const f of deleted.map((x) => x.replace(/\\/g, '/'))) {
+    if (Object.hasOwn(contents, f)) throw new Error(`${f} is both submitted and deleted`);
+    if (!tracked.has(f)) throw new Error(`${f} is not tracked on main; nothing to delete`);
+    contents[f] = null;
+  }
+  const errors = lintSubmission(contents, { allowedPaths: [`${ws.project.sourceDirs[0]}/**`, ...ws.project.headerGlobs], limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas, baseSize: (f) => ws.size(f), trackedPaths: [...tracked], allowDeletions: true });
   if (errors.length) {
     const e = new Error('submission fails the static gate:\n' + errors.map((x) => `  ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${x.message}`).join('\n'));
     e.details = errors;

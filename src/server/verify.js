@@ -262,7 +262,7 @@ export class Verifier {
   // function exists only in units that use it; a Win32/ copy is compiled out of the x64 build).
   async check(files, jobName, { allUnits = false, timeoutMs = null, dependents = true, lint = true, onlyUnits = null, targets = null, cachedUnits = [], unitOrder = null } = {}) {
     const changedHeaders = Object.keys(files).filter((f) => !isUnit(f));
-    const submittedUnits = Object.keys(files).filter(isUnit);
+    const submittedUnits = Object.keys(files).filter((f) => isUnit(f) && files[f] !== null);
     const units = new Set(onlyUnits ?? submittedUnits);
     if (onlyUnits) dependents = false;
     const lintUnits = new Set(lint ? submittedUnits : []);

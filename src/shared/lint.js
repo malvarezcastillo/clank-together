@@ -147,7 +147,7 @@ export function lintSource(file, text, { allowedPragmas = DEFAULT_PRAGMAS, maxIn
  *   file of the submission) only by letter case is rejected: on case-insensitive checkouts the
  *   two are one file, so the second silently overwrites or never reaches the commit.
  */
-export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragmas, baseSize = () => null, trackedPaths = [] } = {}) {
+export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragmas, baseSize = () => null, trackedPaths = [], allowDeletions = false } = {}) {
   const L = { ...DEFAULT_LIMITS, ...limits };
   const errors = [];
   const entries = Object.entries(files ?? {});
@@ -172,6 +172,10 @@ export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragma
     submittedFold.set(fold, n);
     if (!SOURCE_EXT.has(path.posix.extname(n).toLowerCase())) errors.push({ file: n, message: 'only C/C++ source and header files may be submitted' });
     if (!matchesAny(n, allowedPaths)) errors.push({ file: n, message: `path is not allowed for this task (allowed: ${allowedPaths.join(', ')})` });
+    if (content === null && allowDeletions) {
+      if (tracked !== n) errors.push({ file: n, message: 'only a file main tracks can be deleted' });
+      continue;
+    }
     if (typeof content !== 'string') {
       errors.push({ file: n, message: 'content must be a string' });
       continue;

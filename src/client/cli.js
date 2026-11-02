@@ -55,6 +55,7 @@ Maintenance (maintainers: structural changes with no function tasks)
   td maintenance submit --files a.cpp,b.h --notes T [--force]   verified like a batch; merges only when no
                                               function's compiled code changes (--force, admins: merge
                                               despite lower scores or changed code; every other gate still runs)
+       [--delete c.h,d.cpp]                   also remove these tracked files (units leave the build list)
   td maintenance symbol <id> [--size N] [--name N] [--retire] --reason T   correct the symbol database
        [--decorated N | --swap-decorated-with ID]   correct a decorated name or atomically swap two
 
@@ -155,6 +156,7 @@ async function main() {
       unit: { type: 'string' },
       range: { type: 'string' },
       files: { type: 'string' },
+      delete: { type: 'string' },
       confirm: { type: 'string' },
       reason: { type: 'string' },
       size: { type: 'string' },
@@ -269,9 +271,10 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
     case 'maintenance': {
       const [sub, id] = args;
       if (sub === 'submit') {
-        if (!values.files) throw new Error('usage: td maintenance submit --files a.cpp,b.h --notes "what and why" [--force]');
-        const files = values.files.split(',').map((f) => ops.relPath(ws, f));
-        return print(await ops.submitMaintenance(ws, files, { notes: values.notes, force: values.force }));
+        if (!values.files && !values.delete) throw new Error('usage: td maintenance submit [--files a.cpp,b.h] [--delete c.h] --notes "what and why" [--force]');
+        const files = values.files ? values.files.split(',').map((f) => ops.relPath(ws, f)) : [];
+        const deleted = values.delete ? values.delete.split(',').map((f) => ops.relPath(ws, f)) : [];
+        return print(await ops.submitMaintenance(ws, files, { notes: values.notes, force: values.force, deleted }));
       }
       if (sub === 'symbol') {
         if (!id || !values.reason) throw new Error('usage: td maintenance symbol <id> [--size N] [--name N] [--retire] [--decorated N | --swap-decorated-with ID] --reason "evidence"');

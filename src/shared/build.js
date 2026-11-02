@@ -25,6 +25,10 @@ export function prepareJobDir({ repoDir, jobDir, project, overrides = {} }) {
   }
   for (const [rel, content] of Object.entries(overrides)) {
     const dst = path.join(jobDir, rel);
+    if (content === null) {
+      fs.rmSync(dst, { force: true });
+      continue;
+    }
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     fs.writeFileSync(dst, content);
   }
