@@ -7,6 +7,9 @@
 
 import { now } from './db.js';
 
+// How long a function sent back stays reserved for the author of its last attempt.
+export const AUTHOR_HOLD_MS = 20 * 60_000;
+
 export function returnBatch(store, batchId, reason) {
   if (!batchId) return;
   const b = store.get('SELECT * FROM batches WHERE id = ?', batchId);
@@ -17,7 +20,7 @@ export function returnBatch(store, batchId, reason) {
     store.run('DELETE FROM peer_leases WHERE attempt_id = ?', a.id);
     store.run(
       `UPDATE tasks SET state = 'needs_cleanup', preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ? AND state IN ('verifying', 'in_review', 'peer_review', 'approved', 'merging')`,
-      a.user_id, now() + 6 * 3600_000, now(), a.task_id,
+      a.user_id, now() + AUTHOR_HOLD_MS, now(), a.task_id,
     );
   }
   store.run(`UPDATE batches SET state = 'returned', result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?) WHERE id = ?`, reason, batchId);

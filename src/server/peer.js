@@ -22,7 +22,7 @@ import { HttpError } from './http.js';
 import { now } from './db.js';
 import { untrusted } from './tasks.js';
 import { hex } from '../shared/annotations.js';
-import { settleBatch } from './batches.js';
+import { settleBatch, AUTHOR_HOLD_MS } from './batches.js';
 import { SKIP_CATEGORIES } from './tasks.js';
 
 // How many functions one review claim covers.
@@ -269,7 +269,7 @@ export class PeerReviews {
       this.store.run(
         `UPDATE tasks SET state = 'needs_cleanup', cleanup_cycles = cleanup_cycles + 1, preferred_user = ?, preferred_until = ?, updated_at = ? WHERE id = ? ${notOthers}
             AND NOT EXISTS (SELECT 1 FROM attempts o WHERE o.task_id = tasks.id AND o.id != ? AND o.state IN ('queued', 'verifying', 'peer_review', 'in_review', 'approved', 'merging'))`,
-        a.user_id, now() + 6 * 3600_000, now(), a.task_id, a.id,
+        a.user_id, now() + AUTHOR_HOLD_MS, now(), a.task_id, a.id,
       );
       // Only this function goes back; the rest of its batch carries on.
       settleBatch(this.store, a.batch_id, `${why} (${a.task_id})`);

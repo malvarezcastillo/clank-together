@@ -337,6 +337,8 @@ export class Store {
                     AND attempt_id IN (SELECT id FROM attempts WHERE state IN ('peer_review', 'in_review'))`);
     this.db.exec('UPDATE users SET review_weight = 2 WHERE review_weight > 2');
     this.retireFinishedSentBack();
+    // Author holds were 6 hours; none may run longer than the current 20 minutes (batches.js AUTHOR_HOLD_MS).
+    this.db.prepare('UPDATE tasks SET preferred_until = ? WHERE preferred_until > ?').run(Date.now() + 20 * 60_000, Date.now() + 20 * 60_000);
   }
 
   /**

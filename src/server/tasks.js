@@ -20,7 +20,6 @@ export const SKIP_CATEGORIES = {
 const PLACE_NAME_RE = /^[A-Za-z_~][\w:<>,*& ~]{0,200}$/;
 
 export const CLAIMABLE = ['open', 'needs_cleanup', 'hard'];
-const PREFERRED_HOLD_MS = 6 * 3600_000;
 
 export function difficultyFor(size) {
   if (!size) return 1;
@@ -257,7 +256,7 @@ export class Tasks {
       if (taskId) {
         t = this.get(taskId);
         if (!CLAIMABLE.includes(t.state)) throw new HttpError(409, `task is ${t.state}`);
-        if (t.preferred_user && t.preferred_user !== user.id && t.preferred_until > now()) throw new HttpError(409, 'task is reserved for the author of its last attempt for a few hours');
+        if (t.preferred_user && t.preferred_user !== user.id && t.preferred_until > now()) throw new HttpError(409, `task is reserved for the author of its last attempt until ${new Date(t.preferred_until).toISOString()}`);
       } else {
         const ph = CLAIMABLE.map(() => '?').join(',');
         t = this.store.get(

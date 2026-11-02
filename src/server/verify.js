@@ -18,7 +18,7 @@ import { globalViolations } from './globals.js';
 import { functionRegions } from './split.js';
 import { className } from './grouping.js';
 import { now } from './db.js';
-import { returnBatch, batchAttempts, settleBatch } from './batches.js';
+import { returnBatch, batchAttempts, settleBatch, AUTHOR_HOLD_MS } from './batches.js';
 import { analyzeInWorkers } from './analyze.js';
 
 // A batch whose verification compiles more units than this is big (it changes a widely used header).
@@ -1008,7 +1008,7 @@ export class Verifier {
         better ? score : task.best_score,
         better ? attempt.id : task.best_attempt,
         attempt.user_id,
-        now() + 6 * 3600_000,
+        now() + AUTHOR_HOLD_MS,
         now(),
         task.id,
       );

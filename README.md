@@ -54,7 +54,7 @@ open ─claim→ leased ─submit→ verifying ─┬→ rejected (static gate /
   └──────── lease expired / released / changes requested / merge conflict ─────────┘
 ```
 After `maxCleanupCycles` failed attempts a task becomes `hard`. The author of the last
-attempt gets first pick on the follow-up for 6 hours.
+attempt gets first pick on the follow-up for 20 minutes (`AUTHOR_HOLD_MS`).
 
 ### Merge scheduling and retry cache
 
