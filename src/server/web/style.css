@@ -323,6 +323,7 @@ textarea { width: 100%; font-family: var(--font-body); }
 .approval-switch input:checked { background: var(--accent); border-color: var(--accent); }
 .approval-switch input:checked::before { transform: translateX(18px); background: var(--accent-text-on); }
 .approval-switch input:disabled { opacity: 0.45; cursor: not-allowed; }
+.pause-banner { padding: 10px 20px; text-align: center; font-weight: 600; color: #15130d; background: var(--accent); }
 
 button {
   font: 600 14px var(--font-display);

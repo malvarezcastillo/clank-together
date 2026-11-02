@@ -196,7 +196,15 @@ async function refresh() {
     api('/api/credits/me').then((w) => setCredits(w.balance, false)).catch(() => {});
   }
   connectLive(true);
+  api('/api/pause').then(showPause).catch(() => {});
   route();
+}
+
+// While an admin has paused submissions, every page says so at the top.
+function showPause(state) {
+  const bar = $('pause-banner');
+  bar.textContent = state.paused ? `🛠 ${state.message}` : '';
+  bar.hidden = !state.paused;
 }
 
 let credits = null;
@@ -1104,13 +1112,36 @@ $('auto-approve').addEventListener('change', async (e) => {
     toggle.disabled = false;
   }
 });
+$('pause-submissions').addEventListener('change', async (e) => {
+  const toggle = e.target;
+  const previous = !toggle.checked;
+  if (toggle.checked && !confirm('Pause submissions? Every account below maintainer is refused claims, submissions and checks until you switch it off. Peer reviews stay open.')) {
+    toggle.checked = previous;
+    return;
+  }
+  toggle.disabled = true;
+  $('pause-msg').textContent = '';
+  try {
+    const state = await post('/api/admin/pause', { paused: toggle.checked });
+    toggle.checked = state.paused;
+    $('pause-msg').textContent = state.paused ? 'Submissions are paused.' : 'Submissions are open.';
+    showPause(state);
+  } catch (err) {
+    toggle.checked = previous;
+    $('pause-msg').textContent = err.message;
+  } finally {
+    toggle.disabled = false;
+  }
+});
 
 
 let adminData = null;
 async function loadAdmin() {
-  const [users, authors, registration] = await Promise.all([api('/api/admin/users'), api('/api/admin/authors').catch(() => ({ authors: [] })), api('/api/admin/registration')]);
+  const [users, authors, registration, pause] = await Promise.all([api('/api/admin/users'), api('/api/admin/authors').catch(() => ({ authors: [] })), api('/api/admin/registration'), api('/api/pause')]);
   adminData = users;
   $('auto-approve').checked = registration.autoApprove;
+  $('pause-submissions').checked = pause.paused;
+  $('pause-submissions').disabled = false;
   $('auto-approve').disabled = false;
   renderAdmin();
   renderAuthors(authors.authors);

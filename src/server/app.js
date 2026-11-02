@@ -35,6 +35,9 @@ import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
 import { hex } from '../shared/annotations.js';
 import { GHIDRA_RELEASE } from '../shared/ghidra.js';
 
+// Maintenance pause (admin switch): contributors and reviewers may read, but not claim, submit or review.
+export const PAUSE_KEY = 'submissions_paused';
+export const PAUSED_MESSAGE = 'the project is currently in maintenance, pause what you\'re doing and come back later';
 // TD_WEB_DIR points through the release symlink in production, so new pages are live without a restart.
 const WEB_DIR = process.env.TD_WEB_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'web');
 
@@ -160,6 +163,14 @@ export function createApp(ctx) {
     }
     if (session && user.via !== 'session') throw new HttpError(403, 'this action needs a password login in the browser; API tokens cannot do it');
     if (role && !hasRole(user, role)) throw new HttpError(403, `requires the ${role} role`);
+    return user;
+  };
+  // Work that moves code toward main (claims, submissions, checks, new symbols) stops while an admin
+  // has paused it; maintainers and admins carry on. Reading, reviews, releasing leases and account
+  // settings still work.
+  const work = (req, opts) => {
+    const user = auth(req, opts);
+    if (!hasRole(user, 'maintainer') && store.getMeta(PAUSE_KEY) === '1') throw new HttpError(503, PAUSED_MESSAGE, { paused: true, retryAfterSeconds: 600 });
     return user;
   };
   const accountCall = async (fn) => {
@@ -432,7 +443,7 @@ export function createApp(ctx) {
   };
 
   router.on('POST', '/api/tasks/claim', async ({ req }) => {
-    const user = auth(req);
+    const user = work(req);
     const body = await readJson(req, 4096);
     if (body.taskId) {
       // Single functions only to fix one that came back; new work is claimed by region.
@@ -456,14 +467,14 @@ export function createApp(ctx) {
 
   // "No decompile": held functions claimed to need no source; peer reviewed like code.
   router.on('POST', '/api/tasks/no-decompile', async ({ req }) => {
-    const user = auth(req);
+    const user = work(req);
     const body = await readJson(req, 128 * 1024);
     return guided(tasks.markNoDecompile(user, body.items));
   });
 
   // Organize before porting: put held functions that are in no source file yet into files.
   router.on('POST', '/api/tasks/place', async ({ req }) => {
-    const user = auth(req);
+    const user = work(req);
     const body = await readJson(req, 64 * 1024);
     return guided(tasks.place(user, body.assignments));
   });
@@ -480,7 +491,7 @@ export function createApp(ctx) {
   });
 
   router.on('POST', '/api/tasks/:id/submit', async ({ req, params }) => {
-    const user = auth(req);
+    const user = work(req);
     submitLimiter.ensure(user.id);
     const taskId = intParam(params.id);
     const body = await readJson(req);
@@ -522,7 +533,7 @@ export function createApp(ctx) {
   // Bulk work: claim every open function of a unit (source file) or an address range, submit the
   // file once. Verified with one compile; merged as a whole.
   router.on('POST', '/api/tasks/claim-batch', async ({ req }) => {
-    const user = auth(req);
+    const user = work(req);
     const body = await readJson(req, 4096);
     reviewFirst(user);
     // Retired: work is claimed by region. A file becomes its region; nothing else is handed out.
@@ -549,7 +560,7 @@ export function createApp(ctx) {
   });
 
   router.on('POST', '/api/batches', async ({ req }) => {
-    const user = auth(req);
+    const user = work(req);
     submitLimiter.ensure(user.id);
     const body = await readJson(req, 8 * 1024 * 1024);
     const r = submitBatch(user, (body.taskIds ?? []).map((x) => intParam(x)), body);
@@ -818,7 +829,7 @@ export function createApp(ctx) {
   });
 
   router.on('POST', '/api/regions/claim', async ({ req }) => {
-    const user = auth(req);
+    const user = work(req);
     const body = await readJson(req, 4096);
     reviewFirst(user);
     const r = ctx.regions.claim(user, { kind: body.kind ?? 'unit', key: body.key });
@@ -915,7 +926,7 @@ export function createApp(ctx) {
   });
 
   router.on('POST', '/api/symbols', async ({ req }) => {
-    const user = auth(req);
+    const user = work(req);
     symbolLimiter.check(user.id);
     const body = await readJson(req, 4096);
     const kind = String(body.kind ?? '');
@@ -1055,7 +1066,7 @@ export function createApp(ctx) {
   const checkLimiter = new RateLimiter(config.checksPerHour ?? 60, 3600_000);
 
   router.on('POST', '/api/check', async ({ req, res }) => {
-    const user = auth(req);
+    const user = work(req);
     // Checks run on the contributor's machine; the server compiles only submissions and merges.
     if (!config.remoteChecks) {
       throw new HttpError(410, 'the server no longer compiles checks: compile locally. Run "td toolchain install" once (downloads the compiler), then td_check works on your machine. Submit with td_submit when your region compiles and matches.');
@@ -1255,6 +1266,16 @@ export function createApp(ctx) {
     const admin = auth(req, { role: 'admin', session: true });
     const body = await readJson(req, 1024);
     return accountCall(() => accounts.setRegistrationSettings(body.autoApprove, admin.id));
+  });
+  const pauseState = () => ({ paused: store.getMeta(PAUSE_KEY) === '1', message: PAUSED_MESSAGE });
+  router.on('GET', '/api/pause', () => pauseState());
+  router.on('POST', '/api/admin/pause', async ({ req }) => {
+    const admin = auth(req, { role: 'admin', session: true });
+    const body = await readJson(req, 1024);
+    if (typeof body.paused !== 'boolean') throw new HttpError(400, 'paused must be true or false');
+    store.setMeta(PAUSE_KEY, body.paused ? '1' : '0');
+    store.event(body.paused ? 'submissions_paused' : 'submissions_resumed', admin.id, {});
+    return pauseState();
   });
   router.on('GET', '/api/admin/users', ({ req, query }) => {
     auth(req, { role: 'admin', session: true });
