@@ -446,7 +446,11 @@ function renderWay(removed = new Set()) {
     const k = f.blocker.kind === 'reserved' ? 'reserved' : BLOCKERS[f.blocker.kind]?.(f.blocker) ?? f.blocker.kind;
     reasons.set(k, (reasons.get(k) ?? 0) + 1);
   }
-  $('way-blocked').replaceChildren(...[...reasons].map(([k, n]) => el('span', `⛔ ${n} ${k === 'reserved' ? 'reserved for their authors' : k}`, 'way-reason')));
+  const free = fns.filter((f) => f.stage === 'back' && !f.blocker && wayMatches(f)).length;
+  $('way-blocked').replaceChildren(
+    ...[...reasons].map(([k, n]) => el('span', `⛔ ${n} ${k === 'reserved' ? 'reserved for their authors' : k}`, 'way-reason')),
+    ...(free ? [el('span', `✋ ${free} back to author and free for anyone to claim`, 'way-reason free')] : []),
+  );
 
   if (reducedMotion()) return;
   for (const d of host.querySelectorAll('.way-dot')) {
