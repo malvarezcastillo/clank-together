@@ -5,9 +5,6 @@ import path from 'node:path';
 
 export const DEFAULT_LIMITS = {
   maxFiles: 24,
-  maxFileBytes: 256 * 1024,
-  // A file main already holds may grow this much beyond its size there (Unit_C.cpp is 800 KB).
-  maxFileGrowth: 128 * 1024,
   maxTotalBytes: 1024 * 1024,
   maxNotesBytes: 4000,
   maxInitializerNumbers: 256,
@@ -140,9 +137,8 @@ export function lintSource(file, text, { allowedPragmas = DEFAULT_PRAGMAS, maxIn
  * Checks a submission's shape and content.
  * @param {Record<string,string>} files   path -> content
  * @param {{allowedPaths: string[], limits?: object, allowedPragmas?: string[], baseSize?: (path: string) => number | null, trackedPaths?: Iterable<string>}} opts
- *   baseSize: the file's size on main (null when new). The size limits count what a submission
- *   adds: a file main already holds may be larger than maxFileBytes by maxFileGrowth over its size
- *   there, and only the part beyond the main size counts toward maxTotalBytes.
+ *   baseSize: the file's size on main (null when new). Only the part of a file beyond its size
+ *   on main counts toward maxTotalBytes; a single file has no size limit of its own.
  *   trackedPaths: every file main holds. A path that differs from one of them (or from another
  *   file of the submission) only by letter case is rejected: on case-insensitive checkouts the
  *   two are one file, so the second silently overwrites or never reaches the commit.
@@ -183,8 +179,6 @@ export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragma
     const bytes = Buffer.byteLength(content, 'utf8');
     const base = baseSize(n) ?? 0;
     total += Math.max(0, bytes - base);
-    const max = Math.max(L.maxFileBytes, base ? base + L.maxFileGrowth : 0);
-    if (bytes > max) errors.push({ file: n, message: base > L.maxFileBytes ? `file too large (${bytes} bytes; it may grow by ${L.maxFileGrowth} bytes over its ${base} on main)` : `file too large (${bytes} bytes)` });
     if (content.includes('\0')) errors.push({ file: n, message: 'file contains NUL bytes' });
     errors.push(...lintSource(n, content, { allowedPragmas, maxInitializerNumbers: L.maxInitializerNumbers }));
   }

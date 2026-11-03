@@ -94,12 +94,12 @@ test('large numeric initializers are rejected', () => {
   assert.ok(lintSubmission({ 'src/player.cpp': blob }, allowed).some((e) => e.message.includes('initializer')));
 });
 
-test('a file main already holds may be larger than the limit, and grow a little', () => {
+test('single files have no size limit; only what a submission adds beyond main counts', () => {
   const big = (kb) => 'int x;\n'.repeat(Math.ceil((kb * 1024) / 7));
   const tooLarge = (files, sizes) => lintSubmission(files, { ...allowed, baseSize: (f) => sizes[f] ?? null }).filter((e) => /too large/.test(e.message));
-  assert.equal(tooLarge({ 'src/unit.cpp': big(300) }, {}).length, 1, 'a new 300 KB file');
-  assert.equal(tooLarge({ 'src/unit.cpp': big(820) }, { 'src/unit.cpp': 800 * 1024 }).length, 0, 'Unit_C.cpp with an edit');
-  assert.equal(tooLarge({ 'src/unit.cpp': big(1000) }, { 'src/unit.cpp': 800 * 1024 }).length, 1, 'grows by 200 KB');
+  assert.equal(tooLarge({ 'src/unit.cpp': big(300) }, {}).length, 0, 'a new 300 KB file');
+  assert.equal(tooLarge({ 'src/unit.cpp': big(1000) }, { 'src/unit.cpp': 800 * 1024 }).length, 0, 'grows by 200 KB');
+  assert.equal(tooLarge({ 'src/unit.cpp': big(1300) }, { 'src/unit.cpp': 200 * 1024 }).length, 1, 'adds more than maxTotalBytes');
   assert.equal(tooLarge({ 'src/unit.cpp': big(800), 'src/player.cpp': big(500) }, { 'src/unit.cpp': 800 * 1024, 'src/player.cpp': 500 * 1024 }).length, 0, 'two big files count only what they add');
 });
 
