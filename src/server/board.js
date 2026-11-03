@@ -10,6 +10,9 @@
 //
 // Open functions go out as counts per folder only, and any other column over ROW_CAP as well, so
 // the snapshot stays small however many functions the project has.
+//
+// Maintenance batches carry no function tasks, so they are listed apart (`maintenance`): every
+// one that is queued or verifying, oldest first, which is the order the verifier runs them in.
 
 export const STAGES = ['open', 'leased', 'queued', 'compiling', 'review', 'merging', 'back'];
 export const ROW_CAP = 2000;
@@ -52,6 +55,27 @@ export function blockerOf(row, ctx) {
     if (ctx.maintenance && row.batch_id !== ctx.maintenance) return { kind: 'maintenance', batch: ctx.maintenance };
   }
   return null;
+}
+
+/** Maintenance batches still on their way to main, oldest first. */
+export function maintenanceOf(store, progress) {
+  return store.all(
+    `SELECT b.id, b.state, b.created_at, b.files_json, b.notes, u.name AS author
+       FROM batches b LEFT JOIN users u ON u.id = b.user_id
+      WHERE b.kind = 'maintenance' AND b.state IN ('queued', 'verifying')
+      ORDER BY b.id`,
+  ).map((b) => {
+    const build = progress.get(b.id);
+    return {
+      batch: b.id,
+      state: b.state,
+      since: b.created_at,
+      who: b.author ?? null,
+      files: Object.keys(JSON.parse(b.files_json || '{}')).length,
+      title: (b.notes ?? '').split('\n')[0].slice(0, 160) || null,
+      build: build ? { done: build.done, total: build.total } : null,
+    };
+  });
 }
 
 /** The board, for signed-in viewers. `builds` is compileProgress() of the job folders. */
@@ -118,6 +142,7 @@ export function snapshot(store, { builds = [], now = Date.now(), cap = ROW_CAP }
     folders,
     overflow,
     functions,
+    maintenance: maintenanceOf(store, progress),
     builds: builds.map((b) => ({
       job: b.job, lane: b.lane, batch: b.batch, done: b.done, total: b.total, startedAt: b.startedAt,
       author: b.batch === null ? null : store.get('SELECT u.name FROM batches x JOIN users u ON u.id = x.user_id WHERE x.id = ?', b.batch)?.name ?? null,
@@ -140,6 +165,6 @@ export function diff(before, after) {
   }
   const remove = [...old.keys()].filter((t) => !seen.has(t));
   const same = (k) => JSON.stringify(before?.[k]) === JSON.stringify(after[k]);
-  if (!upsert.length && !remove.length && ['counts', 'folders', 'builds', 'overflow'].every(same)) return null;
-  return { at: after.at, upsert, remove, counts: after.counts, folders: after.folders, overflow: after.overflow, builds: after.builds };
+  if (!upsert.length && !remove.length && ['counts', 'folders', 'builds', 'overflow', 'maintenance'].every(same)) return null;
+  return { at: after.at, upsert, remove, counts: after.counts, folders: after.folders, overflow: after.overflow, maintenance: after.maintenance, builds: after.builds };
 }

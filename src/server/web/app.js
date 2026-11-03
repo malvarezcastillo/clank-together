@@ -358,7 +358,7 @@ function applyWay(change) {
   if (!way || currentView !== 'pipeline') return;
   for (const t of change.remove) way.byTask.delete(t);
   for (const f of change.upsert) way.byTask.set(f.task, f);
-  Object.assign(way, { at: change.at, counts: change.counts, folders: change.folders, overflow: change.overflow, builds: change.builds });
+  Object.assign(way, { at: change.at, counts: change.counts, folders: change.folders, overflow: change.overflow, maintenance: change.maintenance, builds: change.builds });
   renderWay(new Set(change.remove));
 }
 
@@ -460,6 +460,7 @@ function renderWay(removed = new Set()) {
     ...[...reasons].map(([k, n]) => el('span', `⛔ ${n} ${k === 'reserved' ? 'reserved for their authors' : k}`, 'way-reason')),
     ...(free ? [el('span', `✋ ${free} back to author and free for anyone to claim`, 'way-reason free')] : []),
   );
+  renderWayMaintenance();
 
   if (reducedMotion()) return;
   for (const d of host.querySelectorAll('.way-dot')) {
@@ -480,6 +481,30 @@ function renderWay(removed = new Set()) {
     document.body.append(ghost);
     ghost.animate([{ transform: 'none', opacity: 1 }, { transform: 'translateY(-24px) scale(1.6)', opacity: 0 }], { duration: 900, easing: 'ease-out' }).finished.then(() => ghost.remove());
   }
+}
+
+// Maintenance batches have no functions to show as dots: one row each, in the order they run.
+function renderWayMaintenance() {
+  const host = $('way-maintenance');
+  const shown = (way.maintenance ?? []).filter((m) => !wayFilter || [`#${m.batch}`, m.who, m.title].some((v) => v && v.toLowerCase().includes(wayFilter.toLowerCase())));
+  if (!shown.length) {
+    host.replaceChildren();
+    return;
+  }
+  host.replaceChildren(
+    el('h3', `Maintenance batches · ${fmt(shown.length)}`),
+    ...shown.map((m, i) => {
+      const row = el('div', null, `maint-row ${m.state}`);
+      const link = el('a', `#${m.batch}`);
+      link.href = `#/batches/${m.batch}`;
+      const state = m.state === 'verifying'
+        ? `verifying${m.build ? ` ${Math.round((m.build.done / m.build.total) * 100)}%` : ''}`
+        : `queued${i ? ` · ${i} ahead` : ''}`;
+      row.append(link, el('span', state, 'maint-state'), el('span', m.who ?? '', 'muted'), el('span', `${fmt(m.files)} files`, 'muted'), el('span', m.title ?? '', 'maint-title'));
+      row.title = `${m.title ?? ''}\nsubmitted ${ago(m.since)}`;
+      return row;
+    }),
+  );
 }
 
 const BUILD_LANES = { verify: 'verifying', merge: 'merging', maintenance: 'maintenance', 'maintenance-base': 'main, for comparison', baseline: 'refreshing main scores', other: 'build' };

@@ -101,6 +101,25 @@ test('the live diff sends moves and removals only, and nothing when the board is
   assert.deepEqual(change.upsert.map((f) => [f.task, f.stage]), [[b, 'queued']]);
 });
 
+test('maintenance batches on their way are listed in run order, and leave once finished', (t) => {
+  const { s, user, batch } = fixture(t);
+  const ann = user('ann');
+  batch(ann, 'merged', 'maintenance');
+  const running = batch(ann, 'verifying', 'maintenance');
+  const waiting = batch(ann, 'queued', 'maintenance');
+  batch(ann, 'queued');
+  s.run(`UPDATE batches SET files_json = ?, notes = ? WHERE id = ?`, JSON.stringify({ 'a.cpp': 'x', 'b.h': 'y' }), 'Family R4: drop IJL15Runtime\nmore', waiting);
+
+  const first = snapshot(s, { builds: [{ job: `maintenance-${running}`, lane: 'maintenance', batch: running, done: 1, total: 4, active: true }] });
+  assert.deepEqual(first.maintenance.map((m) => [m.batch, m.state]), [[running, 'verifying'], [waiting, 'queued']], 'merged and code batches are not listed');
+  assert.deepEqual(first.maintenance[0].build, { done: 1, total: 4 });
+  assert.deepEqual([first.maintenance[1].files, first.maintenance[1].title, first.maintenance[1].who], [2, 'Family R4: drop IJL15Runtime', 'ann']);
+
+  s.run(`UPDATE batches SET state = 'merged' WHERE id = ?`, running);
+  const change = diff(first, snapshot(s));
+  assert.deepEqual(change.maintenance.map((m) => m.batch), [waiting], 'the live diff carries the list when it changes');
+});
+
 test('a column over the cap is counted per folder instead of listed', (t) => {
   const { s, task } = fixture(t);
   for (let i = 0; i < 3; i++) task('needs_cleanup');
