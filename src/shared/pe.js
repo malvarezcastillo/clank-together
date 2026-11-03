@@ -87,6 +87,11 @@ export class PEImage {
     return !!s && (s.characteristics & 0x20000000) !== 0; // IMAGE_SCN_MEM_EXECUTE
   }
 
+  isWritable(va) {
+    const s = this.sectionForVa(va);
+    return !!s && (s.characteristics & 0x80000000) !== 0; // IMAGE_SCN_MEM_WRITE
+  }
+
   /** Set of virtual addresses that carry a base relocation (absolute pointers: HIGHLOW on x86, DIR64 on x64). */
   baseRelocations() {
     if (this._relocs) return this._relocs;

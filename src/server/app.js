@@ -955,7 +955,7 @@ export function createApp(ctx) {
     const pe = ctx.getPe();
     if (!pe.sectionForVa(addr)) throw new HttpError(400, `0x${hex(addr)} is not inside the target image`);
     if (kind === 'function' && !pe.isCode(addr)) throw new HttpError(400, 'functions must be in an executable section');
-    if (kind !== 'function' && pe.isCode(addr) && kind !== 'string') throw new HttpError(400, `${kind} symbols cannot be in a code section`);
+    if (kind !== 'function' && pe.isCode(addr) && !pe.isWritable(addr) && kind !== 'string') throw new HttpError(400, `${kind} symbols cannot be in a code section`);
     const name = body.name ? String(body.name).slice(0, 200) : null;
     const v = store.currentVersion();
     const r = store.tx(() => store.ensureSymbol({ kind, versionId: v.id, addr, name, userId: user.id }));
