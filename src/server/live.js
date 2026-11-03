@@ -153,13 +153,16 @@ export class Live {
         this.broadcast({ type: 'progress', data: p });
       }
       const m = this.map();
-      if (this.lastMap && this.lastMap.length === m.states.length) {
+      if (this.lastMap && this.lastMap.length === m.states.length && this.lastScores?.length === m.scores.length) {
         const changes = [];
-        for (let i = 0; i < m.states.length; i++) if (m.states[i] !== this.lastMap[i]) changes.push([i, m.states[i]]);
+        for (let i = 0; i < m.states.length; i++) {
+          if (m.states[i] !== this.lastMap[i] || m.scores[i] !== this.lastScores[i]) changes.push([i, m.states[i], m.scores[i]]);
+        }
         if (changes.length && changes.length < 5000) this.broadcast({ type: 'map', changes });
         else if (changes.length) this.broadcast({ type: 'map-reload' });
       }
       this.lastMap = m.states;
+      this.lastScores = m.scores;
     }
     // Functions move without events (a build advances one unit at a time), so the board is compared
     // every tick and only what changed goes out: to signed-in viewers only, computed only for them.

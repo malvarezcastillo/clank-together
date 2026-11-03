@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>Clank Together</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=board-20261103">
+  <link rel="stylesheet" href="/style.css?v=matchmap4-20261103">
 </head>
 <body>
   <header class="topbar">
@@ -82,6 +82,7 @@
           <h2>The binary, function by function</h2>
           <div class="map-tools">
             <input id="map-search" type="search" placeholder="Highlight a file or folder…" aria-label="Highlight a file or folder">
+            <label class="approval-switch map-toggle"><input id="map-by-match" type="checkbox" role="switch"> Byte match %</label>
           </div>
         </div>
         <p class="hint">Every square is one function of the original, in address order. Watch it fill up.</p>
@@ -468,6 +469,6 @@
     <div class="hazard thin" aria-hidden="true"></div>
     <p>Clank Together · source is open: <code id="clone-cmd">git clone https://clank.rodecomp.online/git/clank/game-decomp.git</code></p>
   </footer>
-  <script src="/app.js?v=board-20261103"></script>
+  <script src="/app.js?v=matchmap4-20261103"></script>
 </body>
 </html>

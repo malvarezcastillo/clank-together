@@ -658,7 +658,13 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .map-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 13px; }
 .map-legend .sw::before { content: ""; display: inline-block; width: 11px; height: 11px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: var(--c); }
 .map-legend .n { font-family: var(--font-mono); color: var(--muted); margin-left: 4px; }
-.map-tools input { min-width: 260px; }
+.map-tools { display: flex; align-items: center; gap: 12px; }
+.map-tools input[type="search"] { min-width: 260px; }
+.map-toggle input { transition: background 0.15s, border-color 0.15s; }
+.map-toggle input::before { transition: transform 0.15s; }
+.map-toggle { font-size: 13px; white-space: nowrap; }
+.map-legend .grad { display: inline-block; width: 120px; height: 11px; border-radius: 2px; align-self: center; background: var(--c); }
+.map-legend .grad + .n { margin-left: 0; }
 .map-detail { margin-top: 10px; padding: 10px 12px; background: var(--well); border: 1px solid var(--line); border-radius: 3px; font: 13px var(--font-mono); }
 
 /* Small tab strips */

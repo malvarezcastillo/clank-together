@@ -720,13 +720,14 @@ const STATE_INFO = {
   b: ['sent back', '--st-b'],
   o: ['open', '--st-o'],
 };
-const map = { states: '', units: [], unitOf: [], cell: 4, cols: 1, colors: {}, highlight: null, pulses: new Map() };
+const map = { states: '', units: [], unitOf: [], scores: [], cell: 4, cols: 1, colors: {}, highlight: null, pulses: new Map(), byMatch: localStorage.getItem('mapByMatch') === '1' };
 
 async function loadMap() {
   const m = await api('/api/map');
   map.states = m.states;
   map.units = m.units;
   map.unitOf = m.unitOf;
+  map.scores = m.scores ?? [];
   drawMap();
 }
 
@@ -764,7 +765,7 @@ function drawCell(g, i, flash = 0) {
   const gap = map.cell >= 5 ? 1 : 0;
   const dim = map.highlight && !map.highlight.has(map.unitOf[i]);
   g.globalAlpha = dim ? 0.18 : 1;
-  g.fillStyle = map.colors[map.states[i]] || map.colors.o;
+  g.fillStyle = cellColor(i);
   g.fillRect(x, y, map.cell - gap, map.cell - gap);
   if (flash > 0) {
     g.globalAlpha = flash;
@@ -774,11 +775,34 @@ function drawCell(g, i, flash = 0) {
   g.globalAlpha = 1;
 }
 
+// Byte-match view: byte-identical stays yellow, needs-no-source gray, no compiled result open;
+// everything else runs red (0 %) through purple to cyan (100 %), never crossing yellow.
+function cellColor(i) {
+  const st = map.states[i];
+  if (!map.byMatch || st === 'd' || st === 's') return map.colors[st] || map.colors.o;
+  const sc = map.scores[i] ?? -1;
+  return sc < 0 ? map.colors.o : matchColor(sc);
+}
+function matchColor(pct) {
+  return `hsl(${Math.round(360 - pct * 1.7) % 360}, 75%, 55%)`;
+}
+
 function renderLegend() {
-  const counts = {};
-  for (const c of map.states) counts[c] = (counts[c] ?? 0) + 1;
   const box = $('map-legend');
   box.replaceChildren();
+  if (map.byMatch) {
+    const sw = (label, c) => {
+      const s = el('span', label, 'sw');
+      s.style.setProperty('--c', c);
+      return s;
+    };
+    const grad = el('span', '', 'grad');
+    grad.style.setProperty('--c', `linear-gradient(90deg, ${[0, 25, 50, 75, 100].map(matchColor).join(', ')})`);
+    box.append(sw('byte-identical', `var(--st-d)`), sw('needs no source', `var(--st-s)`), el('span', '0 %', 'n'), grad, el('span', '100 % byte match', 'n'), sw('no result yet', `var(--st-o)`));
+    return;
+  }
+  const counts = {};
+  for (const c of map.states) counts[c] = (counts[c] ?? 0) + 1;
   for (const [k, [label, v]] of Object.entries(STATE_INFO)) {
     const s = el('span', label, 'sw');
     s.style.setProperty('--c', `var(${v})`);
@@ -791,7 +815,8 @@ function renderLegend() {
 function applyMapChanges(changes) {
   if (!map.states) return;
   const arr = map.states.split('');
-  for (const [i, c] of changes) {
+  for (const [i, c, sc] of changes) {
+    if (sc !== undefined) map.scores[i] = sc;
     arr[i] = c;
     map.pulses.set(i, 1);
   }
@@ -829,7 +854,9 @@ $('map-canvas').addEventListener('mousemove', (ev) => {
   if (i < 0) return (tip.hidden = true);
   const wrap = $('map-wrap').getBoundingClientRect();
   tip.hidden = false;
-  tip.replaceChildren(el('div', map.units[map.unitOf[i]]), el('div', STATE_INFO[map.states[i]][0], 'muted'));
+  const sc = map.scores[i] ?? -1;
+  const status = STATE_INFO[map.states[i]][0] + (sc >= 0 && map.states[i] !== 's' ? ` · ${sc} % byte match` : '');
+  tip.replaceChildren(el('div', map.units[map.unitOf[i]]), el('div', status, 'muted'));
   const x = Math.min(ev.clientX - wrap.left + 14, wrap.width - 240);
   tip.style.setProperty('left', `${Math.max(4, x)}px`);
   tip.style.setProperty('top', `${ev.clientY - wrap.top + 14}px`);
@@ -837,7 +864,7 @@ $('map-canvas').addEventListener('mousemove', (ev) => {
   tipTimer = setTimeout(async () => {
     try {
       const f = await api(`/api/map/${i}`);
-      if (!tip.hidden) tip.prepend(el('div', `${f.symbol}${f.name ? ` ${f.name}` : ''}`));
+      if (!tip.hidden) tip.prepend(el('div', mapFnLabel(f)));
     } catch {}
   }, 250);
 });
@@ -850,11 +877,15 @@ $('map-canvas').addEventListener('click', async (ev) => {
   const d = $('map-detail');
   d.hidden = false;
   d.replaceChildren(
-    el('div', `${f.symbol}  ${f.name ?? '(unnamed)'}  ·  ${f.size ?? '?'} bytes`),
+    el('div', `${mapFnLabel(f)}  ·  ${f.size ?? '?'} bytes`),
     el('div', `${f.unit ?? 'not placed in a source file yet'}  ·  ${f.state}${f.holder ? ` (claimed by ${f.holder})` : ''}`, 'muted'),
   );
   if (f.unit) d.append(button(`Highlight ${shortPath(f.unit)}`, () => { $('map-search').value = f.unit; highlight(f.unit); }));
 });
+function mapFnLabel(f) {
+  const addr = f.addr == null ? '' : `  0x${f.addr.toString(16).toUpperCase().padStart(8, '0')}`;
+  return `${f.symbol}  ${f.name ?? '(unnamed)'}${addr}`;
+}
 function highlight(q) {
   q = q.trim().toLowerCase();
   if (!q) map.highlight = null;
@@ -862,6 +893,12 @@ function highlight(q) {
   drawMap();
 }
 $('map-search').addEventListener('input', (e) => highlight(e.target.value));
+$('map-by-match').checked = map.byMatch;
+$('map-by-match').addEventListener('change', (e) => {
+  map.byMatch = e.target.checked;
+  localStorage.setItem('mapByMatch', map.byMatch ? '1' : '0');
+  drawMap();
+});
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);

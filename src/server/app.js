@@ -41,6 +41,19 @@ export const PAUSED_MESSAGE = 'the project is currently in maintenance, pause wh
 // TD_WEB_DIR points through the release symlink in production, so new pages are live without a restart.
 const WEB_DIR = process.env.TD_WEB_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'web');
 
+// Qualified C++ name from an MSVC decorated name (`?Slot35@UIItemStoreSubWnd@@UAEXH@Z` →
+// `UIItemStoreSubWnd::Slot35`); constructors and destructors too. Null for anything else.
+export function qualifiedName(decorated) {
+  const m = /^\?(\?[01])?([A-Za-z_$][\w$]*(?:@[A-Za-z_$][\w$]*)*)@@/.exec(decorated ?? '');
+  if (!m) return null;
+  const parts = m[2].split('@');
+  if (m[1]) {
+    const cls = parts[0];
+    parts.unshift(m[1] === '?0' ? cls : `~${cls}`);
+  }
+  return parts.reverse().join('::');
+}
+
 export const DEFAULT_CONFIG = {
   listen: { host: '127.0.0.1', port: 8080 },
   publicUrl: 'http://127.0.0.1:8080',
@@ -777,9 +790,9 @@ export function createApp(ctx) {
   const mapData = () =>
     cached('map', 15_000, () => {
       const v = store.currentVersion();
-      if (!v) return { functions: 0, states: '', units: [], unitOf: [], ids: [] };
+      if (!v) return { functions: 0, states: '', units: [], unitOf: [], scores: [], ids: [] };
       const rows = store.all(
-        `SELECT t.symbol_id, t.state, s.unit, a.size, fs.status, fs.confirmed FROM tasks t JOIN symbols s ON s.id = t.symbol_id
+        `SELECT t.symbol_id, t.state, s.unit, a.size, fs.status, fs.score, fs.confirmed FROM tasks t JOIN symbols s ON s.id = t.symbol_id
            JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ?
            LEFT JOIN func_status fs ON fs.symbol_id = s.id ORDER BY a.addr`,
         v.id,
@@ -799,21 +812,27 @@ export function createApp(ctx) {
         if (!index.has(u)) index.set(u, units.push(u) - 1);
         return index.get(u);
       });
-      return { functions: rows.length, states: rows.map(code).join(''), units, unitOf, ids: rows.map((r) => r.symbol_id), sizes: rows.map((r) => r.size ?? 0) };
+      // Byte-match score in percent (0..100) of functions with a compiled match status, -1 without.
+      const scores = rows.map((r) => (r.status == null ? -1 : Math.round(r.score * 100)));
+      return { functions: rows.length, states: rows.map(code).join(''), units, unitOf, scores, ids: rows.map((r) => r.symbol_id), sizes: rows.map((r) => r.size ?? 0) };
     });
   router.on('GET', '/api/map', () => {
     const m = mapData();
-    return { functions: m.functions, states: m.states, units: m.units, unitOf: m.unitOf };
+    return { functions: m.functions, states: m.states, units: m.units, unitOf: m.unitOf, scores: m.scores };
   });
   router.on('GET', '/api/map/:i', ({ params }) => {
     const m = mapData();
     const i = intParam(params.i);
     if (i < 0 || i >= m.functions) throw new HttpError(404, 'no such function');
     const s = store.get(
-      `SELECT s.id, s.name, s.unit, t.state, u.name AS holder FROM symbols s JOIN tasks t ON t.symbol_id = s.id LEFT JOIN users u ON u.id = t.lease_user AND t.state = 'leased' WHERE s.id = ?`,
+      `SELECT s.id, s.name, s.decorated, s.unit, t.state, a.addr, u.name AS holder FROM symbols s JOIN tasks t ON t.symbol_id = s.id
+         LEFT JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ?
+         LEFT JOIN users u ON u.id = t.lease_user AND t.state = 'leased' WHERE s.id = ?`,
+      store.currentVersion()?.id,
       m.ids[i],
     );
-    return { index: i, symbol: s?.id, name: s?.name ?? null, unit: s?.unit ?? null, state: s?.state, holder: s?.holder ?? null, size: m.sizes[i] };
+    const name = qualifiedName(s?.decorated) ?? s?.name ?? null;
+    return { index: i, symbol: s?.id, name, addr: s?.addr ?? null, unit: s?.unit ?? null, state: s?.state, holder: s?.holder ?? null, size: m.sizes[i] };
   });
 
   // --- regions: a source file or class, claimed and worked on as a whole (regions.js)
