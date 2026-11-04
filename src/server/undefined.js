@@ -67,6 +67,8 @@ export function newPrototypes(after, before) {
     if (NOT_A_TYPE.has(first) || /=/.test(m[1])) continue;
     // A literal in the parentheses makes it an object constructed with arguments: CImVector c(0xFF, ...).
     if (/(?:^|[(,\s])(?:-?\d|'|")/.test(m[3])) continue;
+    // A pure virtual (`= 0;`) never has a body: overriders in derived classes provide the code.
+    if (/\)\s*(?:const\s*)?=\s*0\s*;/.test(line)) continue;
     out.add(m[2]);
   }
   return [...out];

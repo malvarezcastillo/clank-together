@@ -19,6 +19,8 @@ test('functions a submission declares but nobody defines are found', () => {
     'static const CImVector s_shipMarkerColor(0xFF, 0xFF, 0xFF, 0xFF);',
     'class Widget {',
     '    void Member(int a);',
+    '    virtual std::size_t BlockSize() const = 0;',
+    '    virtual void SetKey(int key) = 0;',
     '};',
     'void Helper(int a) {',
     '}',
