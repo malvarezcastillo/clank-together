@@ -280,6 +280,9 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
   const unresolvedRefs = [];
   const inferred = [];
   const baseRelocs = pe.baseRelocations();
+  // Without a relocation table every absolute pointer is unmarked, so its value is the only evidence:
+  // it is then judged like any other reference, by the address it reaches.
+  const absByValue = pe.relocsStripped && baseRelocs.size === 0;
 
   // x86 address arithmetic wraps at 32 bits; x64 image addresses do not wrap.
   const wrap = pe.is64 ? (x) => x : (x) => x >>> 0;
@@ -297,7 +300,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     let reason = null;
 
     if (r.kind === 'abs') {
-      if (!baseRelocs.has(addr + r.offset)) {
+      if (!absByValue && !baseRelocs.has(addr + r.offset)) {
         ok = false;
         reason = NO_BASE_RELOC;
       }

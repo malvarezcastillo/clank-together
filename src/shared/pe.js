@@ -44,6 +44,8 @@ export class PEImage {
         characteristics: buf.readUInt32LE(o + 36),
       });
     }
+    // IMAGE_FILE_RELOCS_STRIPPED: the image has no base relocations (it only loads at imageBase).
+    this.relocsStripped = (buf.readUInt16LE(coff + 18) & 0x0001) !== 0;
     this._relocs = null;
   }
 
@@ -92,7 +94,10 @@ export class PEImage {
     return !!s && (s.characteristics & 0x80000000) !== 0; // IMAGE_SCN_MEM_WRITE
   }
 
-  /** Set of virtual addresses that carry a base relocation (absolute pointers: HIGHLOW on x86, DIR64 on x64). */
+  /**
+   * Set of virtual addresses that carry a base relocation (absolute pointers: HIGHLOW on x86, DIR64 on x64).
+   * Empty when the image has none (`relocsStripped`): then absolute pointers can only be judged by value.
+   */
   baseRelocations() {
     if (this._relocs) return this._relocs;
     const set = new Set();

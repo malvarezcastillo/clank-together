@@ -21,8 +21,8 @@ function symbols(extra = []) {
   );
 }
 
-function run({ objPatch, globalName, nameIndex = new Map(), syms = symbols() } = {}) {
-  const f = fixture({ objPatch, globalName });
+function run({ objPatch, globalName, nameIndex = new Map(), syms = symbols(), relocsStripped = false } = {}) {
+  const f = fixture({ objPatch, globalName, relocsStripped });
   const { annotations } = parseAnnotations(f.source, FILE);
   const result = compareObject({
     obj: new CoffObject(f.obj),
@@ -59,6 +59,38 @@ test('exact match when every referenced symbol is known', () => {
   assert.equal(fn.score, 1);
   assert.equal(fn.symbol, '?Update@Player@@QAEXXZ');
   assert.equal(fn.demangled, 'Player::Update');
+});
+
+// A packer that strips the relocation table leaves every absolute pointer unmarked: its value is
+// then the only evidence, and a correct one must count. With a table, a pointer the original does
+// not relocate is not one (an immediate that happens to equal an address), and stays a failure.
+test('absolute pointers are judged by value only when the original has no relocation table', () => {
+  const known = new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00001']]);
+  const stripped = run({ nameIndex: known, relocsStripped: true }).fn;
+  assert.equal(stripped.status, STATUS.EXACT, 'right address, no table: exact');
+  assert.equal(stripped.score, 1);
+
+  const elsewhere = symbols([{ id: 'gl_00002', kind: 'global', addr: GLOBAL_ADDR + 8, size: 4 }]);
+  const wrong = run({ nameIndex: new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00002']]), syms: elsewhere, relocsStripped: true }).fn;
+  assert.equal(wrong.status, STATUS.MISMATCH, 'wrong address, no table: still a mismatch');
+  assert.match(wrong.relocations[0].reason, /references gl_00002/);
+
+  const pe = new PEImage(fixture({ relocsStripped: true }).pe);
+  assert.equal(pe.relocsStripped, true);
+  assert.equal(pe.baseRelocations().size, 0);
+  assert.equal(new PEImage(fixture().pe).relocsStripped, false);
+});
+
+test('with a relocation table, an absolute pointer it does not mark is a mismatch', () => {
+  // The original keeps its table, but has no fixup at +9: the field there is not a pointer.
+  const f = fixture();
+  const pe = new PEImage(f.pe);
+  pe._relocs = new Set();
+  const { annotations } = parseAnnotations(f.source, FILE);
+  const known = new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00001']]);
+  const fn = compareObject({ obj: new CoffObject(f.obj), listing: parseListing(f.listing), file: FILE, annotations, symbols: symbols(), nameIndex: known, pe }).functions[0];
+  assert.equal(fn.status, STATUS.MISMATCH);
+  assert.equal(fn.relocations[0].reason, 'original has no absolute pointer at this offset');
 });
 
 test('effectiveHash ignores the per-unit tags MSVC gives anonymous namespaces and lambda closures', () => {

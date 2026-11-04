@@ -116,10 +116,11 @@ export function buildDebugS(functions) {
 }
 
 /**
- * @param {{imageBase?: number, sections: Array<{name, rva, data, characteristics?}>, baseRelocs?: number[]}} p
- *        baseRelocs are virtual addresses of HIGHLOW fixups.
+ * @param {{imageBase?: number, sections: Array<{name, rva, data, characteristics?}>, baseRelocs?: number[], relocsStripped?: boolean}} p
+ *        baseRelocs are virtual addresses of HIGHLOW fixups. relocsStripped marks the image as linked
+ *        without a relocation table (IMAGE_FILE_RELOCS_STRIPPED), as a packer leaves it.
  */
-export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [] }) {
+export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], relocsStripped = false }) {
   const all = [...sections];
   if (baseRelocs.length) {
     const pages = new Map();
@@ -161,6 +162,7 @@ export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [] }) {
   buf.writeUInt16LE(0x14c, coff);
   buf.writeUInt16LE(placed.length, coff + 2);
   buf.writeUInt16LE(optSize, coff + 16);
+  if (relocsStripped) buf.writeUInt16LE(0x0001, coff + 18);
   const opt = coff + 20;
   buf.writeUInt16LE(0x10b, opt);
   buf.writeUInt32LE(0x1000, opt + 16);
@@ -199,7 +201,7 @@ export const FN_ADDR = 0x401000;
 export const CALLEE_ADDR = 0x401100;
 export const GLOBAL_ADDR = 0x405000;
 
-export function fixture({ objPatch, globalName = '?g_val@@3HA' } = {}) {
+export function fixture({ objPatch, globalName = '?g_val@@3HA', relocsStripped = false } = {}) {
   const text = Buffer.alloc(0x200, 0xcc);
   const code = Buffer.from([0x55, 0x8b, 0xec, 0xe8, 0, 0, 0, 0, 0xa1, 0, 0, 0, 0, 0x5d, 0xc3]);
   code.copy(text, 0);
@@ -212,7 +214,8 @@ export function fixture({ objPatch, globalName = '?g_val@@3HA' } = {}) {
       { name: '.text', rva: 0x1000, data: text },
       { name: '.data', rva: 0x5000, data, characteristics: 0xc0000040 },
     ],
-    baseRelocs: [FN_ADDR + 9],
+    baseRelocs: relocsStripped ? [] : [FN_ADDR + 9],
+    relocsStripped,
   });
 
   const objCode = Buffer.from(code);
