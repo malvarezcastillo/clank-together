@@ -16,6 +16,8 @@ export const DEFAULT_PROJECT = {
   allowedPragmas: undefined,
   lintLimits: {},
   globalRules: false, // opt-in source storage/provenance checks; no symbol-database definition exemption
+  // encodedLiterals: literals the original stores encoded, MACRO("text", key); see freetext.js.
+  encodedLiterals: [],
   // reviewAt: 'exact' requires every relocation target to be a known symbol;
   // 'match_unresolved' also accepts byte matches that reference not-yet-known data
   // (those symbols are created automatically on merge).

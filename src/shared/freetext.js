@@ -68,7 +68,7 @@ export function scanText(src, executionCharset = null) {
         prev.wide ||= wide;
         prev.end = end;
       } else {
-        literals.push({ pieces: [{ value, segments }], wide, line, include: INCLUDE_RE.test(src.slice(lineBegin, i)) ? value : null, linkage: lastCode === 'extern', end });
+        literals.push({ pieces: [{ value, segments }], wide, line, include: INCLUDE_RE.test(src.slice(lineBegin, i)) ? value : null, linkage: lastCode === 'extern', call: CALL_OPEN_RE.exec(src.slice(Math.max(0, i - 80), i))?.[1] ?? null, end });
       }
       i = end;
       continue;
@@ -95,6 +95,7 @@ export function scanText(src, executionCharset = null) {
     line: l.line,
     include: l.include,
     linkage: l.linkage,
+    call: l.call === null ? null : callWithKey(l.call, src.slice(l.end, l.end + 80)),
   }));
   return { comments, strings };
 }
@@ -104,6 +105,65 @@ function lastCodeEnd(src, at) {
   let j = at - 1;
   while (j >= 0 && /\s/.test(src[j])) j--;
   return j + 1;
+}
+
+// `NAME(` right before a literal: the literal is the first argument of that call or macro.
+const CALL_OPEN_RE = /\b([A-Za-z_]\w*)\s*\(\s*$/;
+// `, <integer literal>)` right after it: the second and last argument, a constant key.
+const CALL_KEY_RE = /^\s*,\s*(0[xX][0-9A-Fa-f]+|[1-9]\d*|0)(?:[uU](?:ll|LL|l|L)?|(?:ll|LL|l|L)[uU]?)?\s*\)/;
+
+function callWithKey(name, after) {
+  const m = CALL_KEY_RE.exec(after);
+  return m ? { name, key: BigInt(m[1]) } : null;
+}
+
+/**
+ * Encodings a project may declare for literals the original stores encoded (data/decomp.json):
+ *   "encodedLiterals": [{ "macro": "CRYPT_NAME", "kind": "xor-repeating-key", "keyBytes": 8, "includeTerminator": true }]
+ * A literal written as MACRO("text", key) is accepted when its encoded bytes and the key occur in
+ * the original, which proves the text is the original's as much as a plain match does.
+ */
+const ENCODINGS = {
+  'xor-repeating-key': (bytes, key, rule) => {
+    const keyBytes = rule.keyBytes ?? 8;
+    return Buffer.from(bytes.map((b, i) => b ^ Number((key >> BigInt(8 * (i % keyBytes))) & 0xffn)));
+  },
+};
+
+export function encodedLiteralRules(list) {
+  const rules = new Map();
+  for (const rule of list ?? []) {
+    if (!/^[A-Za-z_]\w*$/.test(rule.macro ?? '')) throw new Error(`encodedLiterals: invalid macro name ${JSON.stringify(rule.macro)}`);
+    if (!ENCODINGS[rule.kind]) throw new Error(`encodedLiterals: unknown kind ${JSON.stringify(rule.kind)}`);
+    const keyBytes = rule.keyBytes ?? 8;
+    if (!Number.isInteger(keyBytes) || keyBytes < 1 || keyBytes > 8) throw new Error('encodedLiterals: keyBytes must be 1 to 8');
+    rules.set(rule.macro, rule);
+  }
+  return rules;
+}
+
+// Compilers store short constant data as aligned blocks and immediates (4, then 2 and 1 bytes for
+// a tail), so the encoded bytes must occur either whole or in those pieces.
+function chunks(bytes) {
+  const out = [];
+  let i = 0;
+  for (; i + 4 <= bytes.length; i += 4) out.push(bytes.subarray(i, i + 4));
+  if (i + 2 <= bytes.length) out.push(bytes.subarray(i, (i += 2)));
+  if (i < bytes.length) out.push(bytes.subarray(i));
+  return out;
+}
+
+function inOriginalEncoded(s, rules, inOriginal) {
+  const rule = s.call && !s.wide ? rules.get(s.call.name) : undefined;
+  if (!rule) return false;
+  const keyBytes = rule.keyBytes ?? 8;
+  if (s.call.key >> BigInt(8 * keyBytes) !== 0n) return false;
+  const key = Buffer.alloc(keyBytes);
+  for (let i = 0; i < keyBytes; i++) key[i] = Number((s.call.key >> BigInt(8 * i)) & 0xffn);
+  if (!chunks(key).every((c) => inOriginal(c))) return false;
+  const plain = Buffer.concat([...s.pieces, ...(rule.includeTerminator ? [Buffer.alloc(1)] : [])]);
+  const encoded = ENCODINGS[rule.kind](plain, s.call.key, rule);
+  return inOriginal(encoded) || chunks(encoded).every((c) => inOriginal(c));
 }
 
 const SIMPLE_ESCAPES = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', f: '\f', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' };
@@ -189,10 +249,11 @@ export function executionCharset(cflags) {
  * @param {string} text           submitted file
  * @param {string|null} baseText  the file on the base commit (null for a new file)
  * @param {(bytes: Buffer) => boolean} inOriginal  whether the bytes occur in the original executable
+ * @param {Map} [encoded]  the project's encodedLiterals (encodedLiteralRules)
  * @returns {{line: number, message: string}[]}  the messages never repeat the text itself
  */
-export function freeTextErrors(text, baseText, inOriginal, charset = null) {
-  return checkText(scanText(text, charset), baseText === null ? { comments: [], strings: [] } : scanText(baseText, charset), inOriginal);
+export function freeTextErrors(text, baseText, inOriginal, charset = null, encoded = new Map()) {
+  return checkText(scanText(text, charset), baseText === null ? { comments: [], strings: [] } : scanText(baseText, charset), inOriginal, encoded);
 }
 
 /**
@@ -200,18 +261,18 @@ export function freeTextErrors(text, baseText, inOriginal, charset = null) {
  * comments and strings may move from one submitted file to another, each base occurrence once.
  * @returns {{file: string, line: number, message: string}[]}
  */
-export function freeTextErrorsAcross(files, pooledBase, inOriginal, { charsetForFile = () => null, baseFiles = null } = {}) {
+export function freeTextErrorsAcross(files, pooledBase, inOriginal, { charsetForFile = () => null, baseFiles = null, encoded = new Map() } = {}) {
   const bases = baseFiles ? Object.entries(baseFiles).filter(([, text]) => text !== null).map(([file, text]) => scanText(text, charsetForFile(file))) : [scanText(pooledBase)];
   const pool = { comments: counts(bases.flatMap((base) => base.comments.map((c) => c.text.trim()))), strings: counts(bases.flatMap((base) => base.strings.map(stringKey))) };
   const errors = [];
   for (const [file, text] of Object.entries(files)) {
     if (typeof text !== 'string') continue;
-    for (const e of checkText(scanText(text, charsetForFile(file)), pool, inOriginal)) errors.push({ file, ...e });
+    for (const e of checkText(scanText(text, charsetForFile(file)), pool, inOriginal, encoded)) errors.push({ file, ...e });
   }
   return errors;
 }
 
-function checkText(now, base, inOriginal) {
+function checkText(now, base, inOriginal, encoded) {
   const errors = [];
   const baseComments = base.comments instanceof Map ? base.comments : counts(base.comments.map((c) => c.text.trim()));
   for (const c of now.comments) {
@@ -235,7 +296,7 @@ function checkText(now, base, inOriginal) {
     }
     if (s.linkage && LINKAGE.has(s.text)) continue;
     const whole = Buffer.concat(s.pieces);
-    if (inOriginal(whole) || (s.pieces.length > 1 && s.pieces.every((p) => inOriginal(p)))) continue;
+    if (inOriginal(whole) || (s.pieces.length > 1 && s.pieces.every((p) => inOriginal(p))) || inOriginalEncoded(s, encoded, inOriginal)) continue;
     errors.push({ line: s.line, message: "this string literal does not occur in the original executable; submissions may only use the original's strings" });
   }
   return errors;

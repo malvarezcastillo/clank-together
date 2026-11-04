@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lintAnnotations } from '../shared/annotations.js';
 import { lintSubmission } from '../shared/lint.js';
-import { freeTextErrorsAcross, executionCharset } from '../shared/freetext.js';
+import { freeTextErrorsAcross, executionCharset, encodedLiteralRules } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal } from '../shared/compare.js';
@@ -388,7 +388,7 @@ export class Verifier {
     const inOriginal = (bytes) => exe.indexOf(bytes) !== -1;
     const baseFiles = Object.fromEntries(this.repo.showMany(baseCommit, Object.keys(files)));
     const charsetForFile = (file) => executionCharset(unitSettings(this.project, file).cflags);
-    return freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile });
+    return freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile, encoded: encodedLiteralRules(this.project.encodedLiterals) });
   }
 
   /**

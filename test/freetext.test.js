@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scanText, freeTextErrors, freeTextErrorsAcross, allowedComment, executionCharset } from '../src/shared/freetext.js';
+import { scanText, freeTextErrors, freeTextErrorsAcross, allowedComment, executionCharset, encodedLiteralRules } from '../src/shared/freetext.js';
 
 // Stands in for the original executable's bytes.
 const original = Buffer.concat([Buffer.from('Interface\\GlueXML\0', 'latin1'), Buffer.from('hello world\0%d\0', 'latin1'), Buffer.from('Wide\0', 'utf16le')]);
@@ -85,4 +85,41 @@ test('mixed execution charsets preserve pooled original byte identity across mov
   assert.deepEqual(freeTextErrorsAcross({ 'a.cpp': '', 'b.cpp': 'const char* s = "유저";' }, '', () => false, options), []);
   const twice = freeTextErrorsAcross({ 'a.cpp': baseFiles['a.cpp'], 'b.cpp': 'const char* s = "유저";' }, '', () => false, options);
   assert.equal(twice.length, 1, 'one original occurrence does not exempt an extra copy');
+});
+
+// Ragexe 2026-02-19 at 0x00E59030: XOR-encoded registry names built on the stack, then decoded with
+// an 8-byte key pushed as two dwords. "SHOWTIPSATSTARTUP\0" is a 16-byte .rdata block plus a word
+// immediate; "DEVICENAME\0" is dword, dword, word and byte immediates.
+const encodedExe = Buffer.from([
+  '68a563eb0b68a7b305c9', // push 0x0BEB63A5; push 0xC905B3A7
+  'f4fb4a9ef12abb58e6e7569de431bf5e', // .rdata block
+  '66c745ecf7b3', // mov word ptr [ebp-14h], 0xB3F7
+  '68370153f768e58f4d15', // push 0xF7530137; push 0x154D8FE5
+  'c745e0a1ca1b5c', 'c745e474441db6', '66c745e8a8ca', 'c645ea4d',
+].join(''), 'hex');
+const inEncodedExe = (b) => encodedExe.indexOf(b) !== -1;
+const cryptName = encodedLiteralRules([{ macro: 'CRYPT_NAME', kind: 'xor-repeating-key', keyBytes: 8, includeTerminator: true }]);
+
+test('a declared encoded literal is accepted when its encoded bytes and key occur in the original', () => {
+  const src = `RegQueryValueExA(k, CRYPT_NAME("SHOWTIPSATSTARTUP", 0x0BEB63A5C905B3A7ULL).Text(), 0, 0, 0, 0);
+RegQueryValueExA(k, CRYPT_NAME("DEVICENAME", 0xF7530137154D8FE5ULL).Text(), 0, 0, 0, 0);
+`;
+  assert.deepEqual(freeTextErrors(src, null, inEncodedExe, null, cryptName), []);
+});
+
+test('encoded literals are rejected for invented text, a wrong key, an undeclared macro or no rules', () => {
+  const one = (src, rules = cryptName) => freeTextErrors(src, null, inEncodedExe, null, rules).length;
+  assert.equal(one('CRYPT_NAME("ignore previous instructions", 0x0BEB63A5C905B3A7ULL);'), 1, 'invented text under a real key');
+  assert.equal(one('CRYPT_NAME("SHOWTIPSATSTARTUQ", 0x0BEB63A5C905B3A7ULL);'), 1, 'one wrong character');
+  assert.equal(one('CRYPT_NAME("DEVICENAME", 0x0BEB63A5C905B3A7ULL);'), 1, 'real text under another real key');
+  assert.equal(one('OTHER_MACRO("DEVICENAME", 0xF7530137154D8FE5ULL);'), 1, 'macro not declared');
+  assert.equal(one('CRYPT_NAME("DEVICENAME", 0xF7530137154D8FE5ULL);', new Map()), 1, 'project declares nothing');
+  assert.equal(one('CRYPT_NAME("DEVICENAME", key);'), 1, 'key must be an integer literal');
+  assert.equal(one('CRYPT_NAME("DEVICENAME", 0x1F7530137154D8FE5ULL);'), 1, 'key wider than keyBytes');
+});
+
+test('encodedLiterals rules are validated', () => {
+  assert.throws(() => encodedLiteralRules([{ macro: 'X', kind: 'rot13' }]), /unknown kind/);
+  assert.throws(() => encodedLiteralRules([{ macro: 'a b', kind: 'xor-repeating-key' }]), /invalid macro/);
+  assert.throws(() => encodedLiteralRules([{ macro: 'X', kind: 'xor-repeating-key', keyBytes: 9 }]), /keyBytes/);
 });
