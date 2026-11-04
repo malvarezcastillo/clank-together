@@ -495,6 +495,26 @@ test('a function compiled in several units counts with its best copy', () => {
   assert.equal(ctx.store.get('SELECT status FROM func_status WHERE symbol_id = ?', id).status, STATUS.EXACT);
 });
 
+// A merged function stays done when main's build of it stops being byte-identical (a compiler flag
+// change, a shared-header edit): it was accepted on main, so it counts as confirmed, and only a
+// new byte-identical build clears that again.
+test('a byte-identical function that main no longer builds exactly stays done', () => {
+  const v = ctx.store.currentVersion();
+  const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x401780, size: 8, unit: 'src/flag_a.cpp' }).symbol.id;
+  ctx.repo.commitFiles({ 'src/flag_a.cpp': `// FUNCTION: ${id}\nint flag_a() { return 1; }\n` }, 'flag fixture', 'test <test@example.invalid>');
+  const at = (status, score) => ({ units: [{ file: 'src/flag_a.cpp', compiled: true, includes: [], bindings: {}, functions: [{ id, status, score, relocations: [], size: { ours: 8, original: 8 } }] }] });
+  const rec = { conflicts: [], unknown: [], learned: [], learnedAddresses: [] };
+  const row = () => ctx.store.get('SELECT status, score, confirmed FROM func_status WHERE symbol_id = ?', id);
+  ctx.merger.applyCheckToDatabase(at(STATUS.EXACT, 1), rec, ctx.repo.head(), null);
+  assert.deepEqual({ ...row() }, { status: STATUS.EXACT, score: 1, confirmed: 0 });
+  ctx.merger.applyCheckToDatabase(at(STATUS.MISMATCH, 0.4), rec, ctx.repo.head(), null);
+  assert.deepEqual({ ...row() }, { status: STATUS.MISMATCH, score: 0.4, confirmed: 1 }, 'the real score, still done');
+  ctx.merger.applyCheckToDatabase(at(STATUS.MISMATCH, 0.3), rec, ctx.repo.head(), null);
+  assert.equal(row().confirmed, 1, 'a later mismatch keeps it');
+  ctx.merger.applyCheckToDatabase(at(STATUS.EXACT, 1), rec, ctx.repo.head(), null);
+  assert.equal(row().confirmed, 0, 'byte-identical again: counted as identical, not twice');
+});
+
 test('a function main no longer has loses its status and its done task reopens; kept, moved or failed-unit ones stay', () => {
   const v = ctx.store.currentVersion();
   const sym = (addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8 }).symbol.id;

@@ -596,8 +596,9 @@ export class Verifier {
       const old = this.store.get('SELECT status, score, code_hash FROM func_status WHERE symbol_id = ?', id);
       if (!old || (old.status === f.status && Math.abs(old.score - f.score) <= 1e-4 && old.code_hash === (f.codeHash ?? old.code_hash))) continue;
       this.store.run(
-        'UPDATE func_status SET file = ?, status = ?, score = ?, code_hash = COALESCE(?, code_hash), commit_hash = ?, updated_at = ? WHERE symbol_id = ?',
-        unit, f.status, f.score, f.codeHash ?? null, head, now(), id,
+        `UPDATE func_status SET file = ?, status = ?, score = ?, code_hash = COALESCE(?, code_hash), commit_hash = ?, updated_at = ?,
+           confirmed = CASE WHEN ? IN ('exact', 'match_unresolved') THEN 0 WHEN status IN ('exact', 'match_unresolved') THEN 1 ELSE confirmed END WHERE symbol_id = ?`,
+        unit, f.status, f.score, f.codeHash ?? null, head, now(), f.status, id,
       );
       this.store.event('baseline_refreshed', null, { id, was: old.status, wasScore: old.score, now: f.status, score: f.score, commit: head });
       this.log.info(`baseline of ${id} was stale (${old.status} ${(old.score * 100).toFixed(1)}%); main builds it as ${f.status} ${(f.score * 100).toFixed(1)}%`);

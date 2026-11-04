@@ -36,7 +36,7 @@ test('a stale baseline is measured again on main before it counts as a regressio
   v.repo = { head: () => 'c0ffee' };
   v.store = {
     get: (_, id) => rows.get(id),
-    run: (_, file, status, score, hash, commit, at, id) => rows.set(id, { ...rows.get(id), file, status, score, code_hash: hash }),
+    run: (_, file, status, score, hash, commit, at, _status, id) => rows.set(id, { ...rows.get(id), file, status, score, code_hash: hash }),
     event: (...e) => events.push(e),
   };
   const fn = (score, codeHash) => ({ units: [{ file: 'Engine/FrameScript.cpp', compiled: true, functions: [{ id: 'fn_02237', status: 'mismatch', score, codeHash }] }] });

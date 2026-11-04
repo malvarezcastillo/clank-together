@@ -624,7 +624,7 @@ export class Merger {
       this.store.run(
         `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash, reloc_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(symbol_id) DO UPDATE SET file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at, code_hash = COALESCE(excluded.code_hash, func_status.code_hash), reloc_only = excluded.reloc_only,
-           confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 WHEN excluded.status IN ('exact', 'match_unresolved') THEN 0 ELSE func_status.confirmed END`,
+           confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 WHEN excluded.status IN ('exact', 'match_unresolved') THEN 0 WHEN func_status.status IN ('exact', 'match_unresolved') THEN 1 ELSE func_status.confirmed END`,
         f.id, unit, f.status, f.score, commit, now(), confirmedIds.has(f.id) ? 1 : 0, f.codeHash ?? null, relocOnly(f) ? 1 : 0,
       );
       if (f.demangled) this.store.run('UPDATE symbols SET name = ? WHERE id = ? AND name IS NULL', f.demangled, f.id);
