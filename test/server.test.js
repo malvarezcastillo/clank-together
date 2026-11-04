@@ -181,6 +181,15 @@ test('review rules: no self review, approval moves to merge queue', async () => 
   const carolToken = await activeUser('carol', 'reviewer');
   // Reviews need a browser session; an API token is not enough.
   assert.equal((await call('GET', '/api/review/queue', null, carolToken)).status, 403);
+  // Any contributor may read the queue in the browser, but deciding stays with reviewers.
+  await activeUser('reader');
+  // Directly through accounts: the HTTP login is rate limited, and later tests need its budget.
+  const contributor = `td_session=${(await ctx.accounts.login('reader', PASSWORD)).token}`;
+  const seen = await request('GET', '/api/review/queue', null, { cookie: contributor });
+  assert.equal(seen.status, 200);
+  assert.ok(seen.body.some((q) => q.id === attemptId));
+  assert.equal((await request('GET', '/api/review/later', null, { cookie: contributor })).status, 200);
+  assert.equal((await request('POST', `/api/attempts/${attemptId}/review`, { action: 'approve' }, { cookie: contributor })).status, 403);
   const cookie = await login('carol');
   const queue = await request('GET', '/api/review/queue', null, { cookie });
   assert.ok(queue.body.some((q) => q.id === attemptId));

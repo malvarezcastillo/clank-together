@@ -1210,8 +1210,9 @@ export function createApp(ctx) {
 
   // --- reviewers
 
+  // Every contributor may read the queue; deciding stays with reviewers (/api/attempts/:id/review).
   router.on('GET', '/api/review/queue', ({ req }) => {
-    const user = auth(req, { role: 'reviewer', session: true });
+    const user = auth(req, { role: 'contributor', session: true });
     return store.all(
       `SELECT a.id, a.batch_id, a.task_id, a.state, a.score, a.created_at, a.finished_at, u.name AS author, t.symbol_id, s.name,
               m.score AS main_score,
@@ -1230,7 +1231,7 @@ export function createApp(ctx) {
 
   // Functions merged although a peer said "different", for a human to look at later.
   router.on('GET', '/api/review/later', ({ req }) => {
-    auth(req, { role: 'reviewer', session: true });
+    auth(req, { role: 'contributor', session: true });
     return store.all(
       `SELECT l.id, l.symbol_id, s.name, l.attempt_id, l.objections, l.merged_commit, l.created_at, u.name AS author
          FROM later_review l JOIN symbols s ON s.id = l.symbol_id JOIN attempts a ON a.id = l.attempt_id JOIN users u ON u.id = a.user_id

@@ -151,7 +151,7 @@ const TASK_STATES = {
 
 // --- router
 
-const VIEWS = { home: null, guide: null, login: null, account: 'contributor', review: 'reviewer', batches: 'contributor', pipeline: 'contributor', arcade: 'contributor', admin: 'admin' };
+const VIEWS = { home: null, guide: null, login: null, account: 'contributor', review: 'contributor', batches: 'contributor', pipeline: 'contributor', arcade: 'contributor', admin: 'admin' };
 let currentView = null;
 
 function route() {
@@ -1492,13 +1492,15 @@ function renderQueue() {
       b.append(el('span', `${l.symbol_id} ${l.name || ''}`, 'qname'), el('span', `${l.objections}✗`, 'warn'), el('span', `by ${l.author} · ${(l.merged_commit || '').slice(0, 10)}`, 'qsub'));
       b.dataset.attempt = l.attempt_id;
       queueOrder.push(l.attempt_id);
+      g.append(b);
+      if (!atLeast('reviewer')) continue;
       const done = button('Reviewed', async (ev) => {
         ev.stopPropagation();
         await post(`/api/review/later/${l.id}/clear`).catch((e) => toast(e.message));
         loadReview();
       });
       done.classList.add('ghost');
-      g.append(b, done);
+      g.append(done);
     }
     list.append(g);
     return;
@@ -1719,8 +1721,10 @@ async function openAttempt(id) {
 
   // Deciding a function still in peer review is for maintainers.
   const open = a.state === 'peer_review' || a.state === 'in_review';
-  $('decision').hidden = !open && a.state !== 'approved';
-  for (const btn of document.querySelectorAll('.actions button')) btn.disabled = a.state === 'peer_review' && !atLeast('maintainer');
+  // Contributors read the review; deciding is for reviewers (agents give peer verdicts with td peer).
+  const decides = atLeast('reviewer');
+  $('decision').hidden = !decides || (!open && a.state !== 'approved');
+  for (const btn of document.querySelectorAll('.actions button')) btn.disabled = !decides || (a.state === 'peer_review' && !atLeast('maintainer'));
   document.querySelector('.actions [data-action="approve"]').textContent = a.state === 'peer_review' ? 'Approve, skip peer review' : 'Approve';
   $('attempt-peer-note').hidden = a.state !== 'peer_review';
   $('review-status').textContent = a.reviews.map((x) => `${x.reviewer}: ${x.action}${x.comment ? ` - ${x.comment}` : ''}`).join('\n');
