@@ -385,14 +385,16 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
 
 /**
  * __LINE__ arguments (SMemAlloc(size, __FILE__, __LINE__, ...), error macros) carry the line
- * numbers of our files, not Blizzard's. A 16/32-bit immediate inside an instruction whose value is
- * exactly the source line the listing gives for that instruction is masked.
+ * numbers of our files, not the original's. A 16/32-bit immediate equal to the source line of its
+ * instruction is masked, but only when that line spells __LINE__: a
+ * constant that merely equals its line number is code, and its score must not depend on where
+ * the function sits in the file.
  */
 function maskLineNumbers({ ours, orig, masked, proc }) {
   const insns = proc.insns;
   for (let k = 0; k < insns.length; k++) {
     const insn = insns[k];
-    if (!insn.srcLine) continue;
+    if (!insn.srcLine || !insn.lineMacro) continue;
     const start = insn.offset;
     const end = Math.min(ours.length, k + 1 < insns.length ? insns[k + 1].offset : ours.length);
     for (let p = start + 1; p + 2 <= end; p++) {
@@ -477,14 +479,15 @@ export function lcsRatio(a, b) {
 /**
  * Fingerprint of our compiled code, to tell whether a function changed between two builds:
  * the bytes (relocated fields are zero in an object file) with __LINE__ immediates zeroed, so
- * editing lines above a function does not count as changing it.
+ * editing lines above a function does not count as changing it. Like maskLineNumbers, only lines
+ * that spell __LINE__ are masked.
  */
 export function codeHash(bytes, proc) {
   const b = Buffer.from(bytes);
   const insns = proc?.insns ?? [];
   for (let k = 0; k < insns.length; k++) {
     const insn = insns[k];
-    if (!insn.srcLine) continue;
+    if (!insn.srcLine || !insn.lineMacro) continue;
     const end = Math.min(b.length, k + 1 < insns.length ? insns[k + 1].offset : b.length);
     for (let p = insn.offset + 1; p + 2 <= end; p++) {
       if (p + 4 <= end && b.readUInt32LE(p) === insn.srcLine) b.fill(0, p, p + 4);

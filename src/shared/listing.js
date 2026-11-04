@@ -9,7 +9,11 @@
 const PROC_RE = /^(\S+)\s+PROC\b(?:[^;]*;\s*(.*))?$/;
 const ENDP_RE = /^(\S+)\s+ENDP\b/;
 const FILE_RE = /^;\s*File\s+(.+?)\s*$/;
-const SRC_LINE_RE = /^;\s*(\d+)\s*:/;
+// `; 42   : code of line 42` (the source text is listed after the line number).
+const SRC_LINE_RE = /^;\s*(\d+)\s*:(.*)$/;
+// A line whose code can put its own line number into the instruction stream. A macro that
+// expands to __LINE__ without spelling it on the calling line is not recognized.
+const LINE_MACRO_RE = /\b__LINE__\b/;
 const NAME_DECL_RE = /^(?:PUBLIC|EXTRN)\s+([^\s:]+)(?::\S+)?\s*(?:;\s*(.*))?$/;
 const DATA_RE = /^(\S+)\s+(?:DB|DW|DD|DQ|DT)\b.*?;\s*(.+)$/;
 // The byte column may wrap: the first line then ends right after the bytes (no tab, no text)
@@ -28,6 +32,7 @@ export function parseListing(text) {
   let file = null;
   let proc = null;
   let srcLine = null;
+  let srcHasLine = false;
   let pendingInsn = null;
 
   const cleanDemangled = (d) => (d ? d.replace(/,\s*COMDAT\s*$/, '').trim() : null);
@@ -47,6 +52,7 @@ export function parseListing(text) {
       if (proc.demangled) names.set(proc.symbol, proc.demangled);
       procs.push(proc);
       srcLine = null;
+      srcHasLine = false;
       continue;
     }
     if ((m = ENDP_RE.exec(line))) {
@@ -57,6 +63,7 @@ export function parseListing(text) {
     if (proc) {
       if ((m = SRC_LINE_RE.exec(line))) {
         srcLine = parseInt(m[1], 10);
+        srcHasLine = LINE_MACRO_RE.test(m[2]);
         if (proc.firstLine === null) {
           proc.firstLine = srcLine;
           proc.sourceFile = file;
@@ -64,7 +71,9 @@ export function parseListing(text) {
         continue;
       }
       if ((m = INSN_RE.exec(line))) {
-        const insn = { offset: parseInt(m[1], 16), text: (m[3] ?? '').replace(/\s+/g, ' ').trim(), srcLine };
+        // lineMacro: the line spells __LINE__, so a constant equal to its number is that line
+        // number (compare.js masks it). Without it, such a constant is a coincidence and is code.
+        const insn = { offset: parseInt(m[1], 16), text: (m[3] ?? '').replace(/\s+/g, ' ').trim(), srcLine, lineMacro: srcHasLine };
         proc.insns.push(insn);
         pendingInsn = insn.text ? null : insn;
         continue;
