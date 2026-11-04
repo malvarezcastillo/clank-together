@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lintAnnotations } from '../shared/annotations.js';
 import { lintSubmission } from '../shared/lint.js';
-import { freeTextErrorsAcross, executionCharset, encodedLiteralRules } from '../shared/freetext.js';
+import { freeTextErrorsAcross, executionCharset, encodedLiteralRules, VIRTUALIZED_RE } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal, resolvedEffectiveHash } from '../shared/compare.js';
@@ -34,6 +34,55 @@ export class BuildRetryError extends Error {
     this.diagnostic = { kind, stage, retryAt: now() + 60_000, files: failed.map((u) => u.file),
       errors: failed.map((u) => ({ file: u.file, log: u.log })) };
   }
+}
+
+// The longest prologue a protector stub keeps before it jumps into the virtual machine.
+const STUB_MAX = 96;
+
+/**
+ * The VIRTUALIZED marker in the annotation block of a function: `{ build, addr }`, or null.
+ * The block is the run of comment lines right above the definition the FUNCTION line belongs to.
+ */
+export function virtualizedMarker(files, symbolId) {
+  const fnRe = new RegExp(`^\\s*//\\s*FUNCTION\\s*:\\s*${symbolId}\\b`);
+  for (const text of Object.values(files)) {
+    const lines = String(text).split(/\r?\n/);
+    const at = lines.findIndex((l) => fnRe.test(l));
+    if (at < 0) continue;
+    for (let i = at - 1; i >= 0 && /^\s*\/\//.test(lines[i]); i--) {
+      const m = VIRTUALIZED_RE.exec(lines[i].trim());
+      if (m) return { build: m[1], addr: m[2] };
+    }
+    for (let i = at + 1; i < lines.length && /^\s*\/\//.test(lines[i]); i++) {
+      const m = VIRTUALIZED_RE.exec(lines[i].trim());
+      if (m) return { build: m[1], addr: m[2] };
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Whether the original at `addr` is a protector stub: within its first STUB_MAX bytes a jmp rel32
+ * (E9) leaves for a section whose bytes are not in the file (the virtual machine fills it at load).
+ * The marker may only stand on functions whose real body the binary does not contain.
+ */
+export function isVirtualizedStub(pe, addr, size) {
+  const len = Math.min(size || STUB_MAX, STUB_MAX);
+  let bytes;
+  try {
+    bytes = pe.read(addr, len + 4);
+  } catch {
+    return false;
+  }
+  for (let i = 0; i < len; i++) {
+    if (bytes[i] !== 0xe9) continue;
+    const dest = addr + i + 5 + bytes.readInt32LE(i + 1);
+    const s = pe.sectionForVa(dest);
+    if (!s || s === pe.sectionForVa(addr)) continue;
+    if (dest - pe.imageBase - s.rva >= s.rawSize) return true;
+  }
+  return false;
 }
 
 export function clearBuildRetry(store, batchId) {
@@ -1005,6 +1054,8 @@ export class Verifier {
     if (changedHeaders.length) feedback.warnings.push(`header changes (${changedHeaders.join(', ')}) need extra review`);
 
     const score = target?.score ?? 0;
+    const virtual = target ? virtualizedMarker(files, targetId) : null;
+    const targetAddr = typeof target?.addr === 'string' ? parseInt(target.addr, 16) : target?.addr;
     let state;
     if (failed.length) {
       feedback.summary = 'compilation failed';
@@ -1028,6 +1079,15 @@ export class Verifier {
     } else if (wrongRefs.length) {
       feedback.summary = `references point at the wrong symbols: ${wrongRefs.map((c) => c.message).join('; ')}`;
       state = 'needs_cleanup';
+    } else if (virtual && !(targetAddr && isVirtualizedStub(this.getPe(), targetAddr, target.size?.original))) {
+      feedback.summary = `${targetId} carries // VIRTUALIZED but its original is ordinary code (no jump into a section whose bytes the file lacks): remove the marker and port the function`;
+      state = 'needs_cleanup';
+    } else if (virtual && (target.status === STATUS.MISMATCH || target.status === STATUS.UNRESOLVED)) {
+      // The original is a protector stub, so neither the bytes nor peers reading them can judge the
+      // body: it comes from the reference build in the marker, and a maintainer approves it.
+      feedback.summary = `virtualized in the original (body from the ${virtual.build} build at ${virtual.addr}), sent to maintainer review: the target only has a protector stub, so it is not compared or peer reviewed`;
+      feedback.virtualized = virtual;
+      state = 'in_review';
     } else if (target.status === STATUS.EXACT || (target.status === STATUS.UNRESOLVED && policy.reviewAt === 'match_unresolved')) {
       // Byte-identical needs no human: approved directly, merged with its batch.
       const auto = policy.autoMergeIdentical !== false;

@@ -11,6 +11,9 @@ const OFFSET_RE = /^\/\*\s*(?:0x)?(?:[0-9A-Fa-f]{1,8}|-{2,8})\s*\*\/$/;
 const BLANK_RE = /^(?:\/\/[\s\-=*\/]*|\/\*[\s\-=*]*\*\/)$/;
 // The project marks inlined copies: // INLINED, optionally with the address range.
 const INLINED_RE = /^\/\/\s*INLINED(?::\s*\[?\s*0x[0-9A-Fa-f]+\s*->\s*0x[0-9A-Fa-f]+\s*\]?)?\s*$/;
+// A function whose original body is protector-virtualized: the reference build and address its
+// source comes from, e.g. // VIRTUALIZED: 2025-06-04 0x0060C460 (verify.js checks the stub).
+export const VIRTUALIZED_RE = /^\/\/\s*VIRTUALIZED:\s*(\d{4}-\d{2}-\d{2})\s+(0x[0-9A-Fa-f]{1,16})\s*$/;
 const INCLUDE_RE = /^\s*#\s*include\s*$/;
 const INCLUDE_PATH_RE = /^[\w.\/-]{1,200}$/;
 const LINKAGE = new Set(['C', 'C++']);
@@ -18,7 +21,7 @@ const LINKAGE = new Set(['C', 'C++']);
 /** Comments that are not free text: annotations, offset and inlining markers, separators. */
 export function allowedComment(text) {
   const t = text.trim();
-  return ANNOTATION_RE.test(t) || OFFSET_RE.test(t) || BLANK_RE.test(t) || INLINED_RE.test(t);
+  return ANNOTATION_RE.test(t) || OFFSET_RE.test(t) || BLANK_RE.test(t) || INLINED_RE.test(t) || VIRTUALIZED_RE.test(t);
 }
 
 /**
