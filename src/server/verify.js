@@ -925,12 +925,15 @@ export class Verifier {
     if (failed || withdrawn) settleBatch(this.store, batch.id, `${failed} of ${attempts.length} functions need work${withdrawn ? `, ${withdrawn} were not written` : ''}; see each function's feedback`);
   }
 
-  /** Whether a submitted function is no change to main: the same source, or the same compiled code. */
+  /**
+   * Whether a submitted function is no change to main: it compiles to the code main already has.
+   * The same source text is not enough: a function's code also changes through the helpers it
+   * inlines and the types it uses, which live outside its own definition.
+   */
   unchangedOnMain(symbolId, files, baseCommit, target) {
-    if (this.unchangedFromBase(symbolId, files, baseCommit)) return true;
-    if (!target?.codeHash) return false;
     const main = this.store.get('SELECT code_hash FROM func_status WHERE symbol_id = ?', symbolId);
-    return main?.code_hash === target.codeHash;
+    if (target?.codeHash && main?.code_hash) return main.code_hash === target.codeHash;
+    return this.unchangedFromBase(symbolId, files, baseCommit);
   }
 
   /** Whether the submitted definition of a function is exactly what the batch's base had. */

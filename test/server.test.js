@@ -1456,8 +1456,9 @@ test('revisions: merged functions of a claimed region are reviewed again; the ta
     const text = files[unit] ?? '';
     const ra = bodyOf(text, 'ra');
     const rb = bodyOf(text, 'rb');
+    const inlined = text.includes('__forceinline') ? '-inlined' : '';
     const functions = [
-      { id: a, status: STATUS.MISMATCH, score: ra.includes('worse') ? 0.4 : ra.includes('better') ? 0.8 : 0.7, file: unit, codeHash: ra.replace(/\s+/g, '') === 'return1;' ? 'a-main' : `a-${ra}`, relocations: [], size: { ours: 8, original: 8 } },
+      { id: a, status: STATUS.MISMATCH, score: ra.includes('worse') ? 0.4 : ra.includes('better') ? 0.8 : inlined ? 0.75 : 0.7, file: unit, codeHash: ra.replace(/\s+/g, '') === 'return1;' && !inlined ? 'a-main' : `a-${ra}${inlined}`, relocations: [], size: { ours: 8, original: 8 } },
       { id: b, status: STATUS.MISMATCH, score: 0.6, file: unit, codeHash: rb === 'return 2;' ? 'b-main' : `b-${rb}`, relocations: [], size: { ours: 8, original: 8 } },
     ];
     return { check: { annotationErrors: [], units: [{ file: unit, compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions }] }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: [unit] };
@@ -1496,6 +1497,13 @@ test('revisions: merged functions of a claimed region are reviewed again; the ta
       assert.match(fn.summary, /not changed/);
     }
     assert.equal(ctx.tasks.get(taskA).state, 'done');
+
+    // The same source text with different code (a helper it inlines changed outside its body) is a revision.
+    const helperOnly = await call('POST', '/api/batches', { taskIds: [taskA], baseCommit: ctx.repo.head(), files: { [unit]: `static __forceinline int one() { return 1; }\n${onMain}` } }, author);
+    assert.equal(helperOnly.status, 200, JSON.stringify(helperOnly.body));
+    const kept = (await settle(helperOnly.body.batchId)).functions[0];
+    assert.equal(kept.state, 'peer_review', JSON.stringify(kept));
+    await call('POST', `/api/attempts/${kept.attemptId}/withdraw`, {}, author);
 
     // A revision that moves a confirmed function away from the original goes back.
     const worse = await submit([taskA], onMain.replace('return 1;', 'int worse = 1; return worse;'));
