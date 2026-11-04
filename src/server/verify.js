@@ -8,6 +8,7 @@ import { lintAnnotations } from '../shared/annotations.js';
 import { lintSubmission } from '../shared/lint.js';
 import { freeTextErrorsAcross, executionCharset, encodedLiteralRules, VIRTUALIZED_RE } from '../shared/freetext.js';
 import { offsetErrors } from '../shared/offsets.js';
+import { unannotatedErrors } from '../shared/unannotated.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal, resolvedEffectiveHash } from '../shared/compare.js';
@@ -449,7 +450,8 @@ export class Verifier {
    * What the submitted files held on the base may move between them (a definition moving to its
    * owner keeps its provenance), but every such line counts once.
    * With `offsetAnnotations`, the OFFSET lines of the annotation blocks it adds or changes must
-   * match their IDs too (offsets.js).
+   * match their IDs too (offsets.js), and every function definition it adds or changes must carry
+   * FUNCTION/STUB or INLINED (unannotated.js).
    */
   freeTextGate(files, baseCommit) {
     const exe = this.getPe().buf;
@@ -463,6 +465,7 @@ export class Verifier {
     for (const [file, text] of Object.entries(files)) {
       if (typeof text !== 'string') continue;
       for (const e of offsetErrors(text, baseFiles[file] ?? null, addressOf)) errors.push({ file, ...e });
+      for (const e of unannotatedErrors(text, baseFiles[file] ?? null)) errors.push({ file, ...e });
     }
     return errors;
   }
