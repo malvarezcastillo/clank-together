@@ -2083,5 +2083,15 @@ api('/api/info')
   })
   .catch(() => {});
 for (const c of document.querySelectorAll('code[data-origin]')) c.textContent = c.textContent.replace('{origin}', location.origin);
+// In-guide links (data-jump) open the folded section they point at without leaving the #/guide route.
+for (const a of document.querySelectorAll('a[data-jump]')) {
+  a.addEventListener('click', (e) => {
+    const target = document.getElementById(a.getAttribute('href').slice(1));
+    if (!target) return;
+    e.preventDefault();
+    if (target.tagName === 'DETAILS') target.open = true;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
 addCopyButtons();
 refresh();

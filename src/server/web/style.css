@@ -469,6 +469,32 @@ code.cmd.prompt { white-space: normal; line-height: 1.45; }
 .faq dt { margin-top: 12px; font-weight: 700; }
 .faq dd { margin: 3px 0 0; color: var(--muted); font-size: 14px; }
 
+/* --- guide: big section titles, roomy steps, one card per prompt, extras folded away */
+.guide-lede { margin: 0 0 10px; font-size: 16px; line-height: 1.55; }
+.guide-needs { margin: 0; padding: 10px 14px; background: var(--well); border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font-size: 14px; }
+.guide-needs strong { color: var(--fg); }
+h3.guide-h { margin: 34px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 18px; font-weight: 700; color: var(--fg); letter-spacing: 0.08em; }
+.big-steps li { padding: 18px 0; gap: 16px; }
+.big-steps li > div > strong { display: block; margin-bottom: 4px; font-size: 16px; }
+.big-steps .bolt { width: 34px; height: 34px; font-size: 17px; }
+.prompt-cards { display: grid; gap: 12px; }
+.prompt-card { padding: 14px 16px; background: var(--well); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 3px; }
+.prompt-card h4 { margin: 0 0 4px; font: 700 15px var(--font-body); display: flex; align-items: center; gap: 8px; }
+.prompt-card p { margin: 0 0 8px; color: var(--muted); font-size: 14px; }
+.prompt-card code.cmd { display: block; padding: 8px 10px; background: var(--code-bg); border: 1px solid var(--line); border-radius: 3px; font-size: 13px; }
+.prompt-card .tag { font: 600 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent-text-on); background: var(--accent); padding: 1px 6px; border-radius: 2px; }
+.guide-more { margin: 10px 0 0; border: 1px solid var(--line); border-radius: 3px; background: var(--well); }
+.guide-more > summary { cursor: pointer; padding: 12px 16px; font-weight: 700; font-size: 15px; list-style: none; display: flex; align-items: center; }
+.guide-more > summary::-webkit-details-marker { display: none; }
+.guide-more > summary::after { content: ""; margin-left: auto; width: 8px; height: 8px; border-right: 2px solid var(--accent); border-bottom: 2px solid var(--accent); transform: rotate(45deg); transition: transform 0.15s; }
+.guide-more[open] > summary::after { transform: rotate(-135deg); }
+.guide-more > :not(summary) { margin-left: 16px; margin-right: 16px; }
+.guide-more > :last-child { margin-bottom: 14px; }
+.guide-more > p { color: var(--muted); font-size: 14px; }
+.guide-more > p strong { color: var(--fg); }
+.guide code.cmd { white-space: nowrap; overflow-x: auto; }
+.guide code.cmd.prompt { white-space: normal; }
+
 /* --- claimed work in the crew table */
 details.claimed { margin: 0; }
 details.claimed summary { font: inherit; }
