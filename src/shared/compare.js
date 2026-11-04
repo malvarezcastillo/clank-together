@@ -277,6 +277,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
   // What each reference reaches: a symbol's address plus the addend, so `g_object + 0x18` and a
   // name bound to that same address count as the same code (effectiveHash).
   const effective = [];
+  const unresolvedRefs = [];
   const inferred = [];
   const baseRelocs = pe.baseRelocations();
 
@@ -333,6 +334,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     // file-local symbols, which is no change to the code that calls them.
     const stable = symName.replace(/\?A0x[0-9a-f]{8}@/g, '?A@').replace(/_Closure_wrapper_[0-9a-f]{8}_/g, '_Closure_wrapper__');
     effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `?${stable}+${addend}`}`);
+    if (!(target && target.addr != null)) unresolvedRefs.push({ index: effective.length - 1, name: symName, addend, prefix: `${r.offset}:${r.kind}:` });
   }
 
   const sameLength = !origSize || origSize === ours.length;
@@ -373,7 +375,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     score: Math.round(score * 10000) / 10000,
     size: { ours: ours.length, original: origSize ?? null },
     codeHash: codeHash(ours, proc),
-    effectiveHash: effectiveHash(ours, relocMasked, effective),
+    ...effectiveFingerprint(ours, relocMasked, effective, unresolvedRefs, pe.is64),
     diffRegions: sameLength ? diffRegions(diffs, ours, orig, proc) : [],
     relocations: relocResults.filter((r) => !r.ok || r.unresolved),
     // Where the original points is only meaningful when the code lines up.
@@ -500,7 +502,41 @@ export function codeHash(bytes, proc) {
  * function look like changing it.
  */
 export function effectiveHash(bytes, masked, effective) {
+  return effectiveFromParts(maskedBytesHash(bytes, masked), effective);
+}
+
+function maskedBytesHash(bytes, masked) {
   const b = Buffer.from(bytes);
   for (let i = 0; i < b.length; i++) if (masked[i]) b[i] = 0;
-  return crypto.createHash('sha1').update(b).update(effective.join('|')).digest('hex').slice(0, 20);
+  return crypto.createHash('sha1').update(b).digest('hex');
+}
+
+function effectiveFromParts(bytesHash, effective) {
+  return crypto.createHash('sha1').update(bytesHash).update('|').update(effective.join('|')).digest('hex').slice(0, 20);
+}
+
+// References to names no symbol of the database has yet (a function renamed in the same
+// submission) keep what is needed to hash them again once the submission's bindings are known.
+function effectiveFingerprint(bytes, masked, effective, unresolvedRefs, is64) {
+  const bytesHash = maskedBytesHash(bytes, masked);
+  return {
+    effectiveHash: effectiveFromParts(bytesHash, effective),
+    ...(unresolvedRefs.length && { effectiveParts: { bytesHash, effective, unresolvedRefs, is64 } }),
+  };
+}
+
+/**
+ * effectiveHash with references resolved through `addressOf` (decorated name -> address or null),
+ * e.g. the bindings of every unit a check compiled. Without effectiveParts it is effectiveHash.
+ */
+export function resolvedEffectiveHash(f, addressOf) {
+  const parts = f.effectiveParts;
+  if (!parts) return f.effectiveHash ?? null;
+  const effective = [...parts.effective];
+  for (const u of parts.unresolvedRefs) {
+    const addr = addressOf(u.name);
+    if (addr == null) continue;
+    effective[u.index] = `${u.prefix}${parts.is64 ? addr + u.addend : (addr + u.addend) >>> 0}`;
+  }
+  return effectiveFromParts(parts.bytesHash, effective);
 }

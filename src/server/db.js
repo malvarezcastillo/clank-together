@@ -311,6 +311,8 @@ export class Store {
     this.addColumn('func_status', 'confirmed', 'INTEGER NOT NULL DEFAULT 0');
     // Fingerprint of main's compiled code per function (submissions may only change their own tasks).
     this.addColumn('func_status', 'code_hash', 'TEXT');
+    // What main's code does once linked (compare.js effectiveHash): renames leave it unchanged.
+    this.addColumn('func_status', 'effective_hash', 'TEXT');
     // 1 when main's code is byte-identical and only references the original has no relocation for differ.
     this.addColumn('func_status', 'reloc_only', 'INTEGER NOT NULL DEFAULT 0');
     this.addColumn('versions', 'label', 'TEXT');

@@ -1313,6 +1313,19 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   const outside = ctx.verifier.changedOutside({ units: [{ functions: [{ id: a, file: 'src/batch.cpp', codeHash: 'hash-a-changed' }] }] }, { 'src/batch.cpp': '' }, new Set([b]));
   assert.deepEqual(outside.map((o) => o.id), [a]);
 
+  // Another unit (a refactor's callers): renames pass, code changes need listing, exact passes.
+  const authorId = ctx.accounts.byName('bauthor').id;
+  ctx.store.run('UPDATE func_status SET effective_hash = ?, file = ? WHERE symbol_id = ?', 'eff-a', 'src/caller.cpp', a);
+  const inCaller = (f) => ctx.verifier.changedOutside({ units: [{ bindings: {}, functions: [{ id: a, file: 'src/caller.cpp', codeHash: 'other-bytes', ...f }] }] }, { 'src/caller.cpp': '' }, new Set([b]), authorId, new Set(['src/batch.cpp']));
+  assert.deepEqual(inCaller({ effectiveHash: 'eff-a', status: STATUS.MISMATCH }), [], 'same effective code: a rename');
+  const changed = inCaller({ effectiveHash: 'eff-a-changed', status: STATUS.MISMATCH });
+  assert.deepEqual(changed.map((o) => o.id), [a], 'a code change in another unit');
+  assert.match(changed[0].why, /list it in taskIds/);
+  assert.deepEqual(inCaller({ effectiveHash: 'eff-a-changed', status: STATUS.EXACT }), [], 'an improvement to byte-identical is proven');
+  assert.equal(ctx.verifier.crossUnit({ 'src/caller.cpp': '', 'src/batch.h': '' }, new Set(['src/batch.cpp'])), true);
+  assert.equal(ctx.verifier.crossUnit({ 'src/batch.cpp': '', 'src/batch.h': '' }, new Set(['src/batch.cpp'])), false, 'headers are not another unit');
+  assert.ok(ctx.tasks.allowedPathsForTasks([taskB]).includes('src/**'), 'every source unit may be edited');
+
   ctx.verifier.check = realCheck;
 });
 

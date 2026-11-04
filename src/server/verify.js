@@ -9,7 +9,7 @@ import { lintSubmission } from '../shared/lint.js';
 import { freeTextErrorsAcross, executionCharset, encodedLiteralRules } from '../shared/freetext.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
-import { STATUS, sameOriginal } from '../shared/compare.js';
+import { STATUS, sameOriginal, resolvedEffectiveHash } from '../shared/compare.js';
 import { listSources, isUnit, unitSettings, loadProject, loadToolchainLock, scanAnnotations } from '../shared/project.js';
 import { changedNames, unitsMentioning, virtualNames } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
@@ -38,6 +38,22 @@ export class BuildRetryError extends Error {
 
 export function clearBuildRetry(store, batchId) {
   store.run(`UPDATE batches SET result_json = json_remove(COALESCE(result_json, '{}'), '$.buildRetry') WHERE id = ?`, batchId);
+}
+
+/**
+ * Decorated name -> address, from the bindings of every unit a check compiled: a function the
+ * submission renamed is found under its new name, before the database learns it on merge.
+ */
+export function boundAddresses(check, symbols) {
+  const byName = new Map();
+  for (const u of check.units) {
+    for (const [name, id] of Object.entries(u.bindings ?? {})) {
+      const addr = symbols.get(id)?.addr;
+      if (addr != null && !byName.has(name)) byName.set(name, addr);
+    }
+    for (const f of u.functions) if (f.symbol && f.addr != null && !byName.has(f.symbol)) byName.set(f.symbol, f.addr);
+  }
+  return (name) => byName.get(name) ?? null;
 }
 
 export function deferBuild(store, batchId, error, { merge = false } = {}) {
@@ -667,24 +683,49 @@ export class Verifier {
    * Functions of the submitted files whose compiled code differs from main although they are not
    * part of the submission: a submission may only change the functions it holds the lease for.
    * Unknown on main (no fingerprint yet, e.g. before the first rebuild) is not counted.
+   * Main's code is compared on where its references land (effectiveHash, resolved through the
+   * names this check bound), so renaming a callee does not change its callers.
    */
-  // With `userId`, only functions someone else is working on count (held by another account, or in
-  // another account's submission on its way to main), and functions on main whose source the
-  // submission rewrote without listing them: those are revisions and need their own review.
-  // Other neighbours may change: their status is measured again, and the regression check still
-  // protects whatever already matches.
-  changedOutside(check, files, targets, userId = null) {
+  // With `userId`, in the tasks' own units (`ownUnits`), only functions someone else is working on
+  // count (held by another account, or in another account's submission on its way to main), and
+  // functions on main whose source the submission rewrote without listing them: those are
+  // revisions and need their own review. Other neighbours there may change: their status is
+  // measured again, and the regression check still protects whatever already matches.
+  // In every other unit a refactor may only rename and move: any code change counts, unless the
+  // function becomes byte-identical to the original (that proves it as merging it would).
+  changedOutside(check, files, targets, userId = null, ownUnits = null) {
     const fileSet = new Set(Object.keys(files));
+    const addressOf = boundAddresses(check, this.store.symbolMap(this.store.currentVersion().id));
     const seen = new Map();
     for (const u of check.units) for (const f of u.functions) if (fileSet.has(f.file) && !targets.has(f.id) && f.codeHash) seen.set(f.id, f);
     const out = [];
     for (const [id, f] of seen) {
-      const main = this.store.get('SELECT code_hash FROM func_status WHERE symbol_id = ?', id);
+      const main = this.store.get('SELECT code_hash, effective_hash FROM func_status WHERE symbol_id = ?', id);
       if (!main) out.push({ id, file: f.file, why: 'new or newly annotated' });
-      else if (main.code_hash && main.code_hash !== f.codeHash) out.push({ id, file: f.file, why: 'compiled code changed' });
+      else if (main.effective_hash ? main.effective_hash !== resolvedEffectiveHash(f, addressOf) : main.code_hash && main.code_hash !== f.codeHash) out.push({ id, file: f.file, why: 'compiled code changed' });
     }
     if (userId == null) return out;
-    return out.filter((o) => this.workedOnByOthers(o.id, userId) || this.unlistedRevision(o, files));
+    const foreign = (o) => ownUnits && !ownUnits.has(o.file);
+    return out.filter((o) => {
+      if (foreign(o)) {
+        if (this.workedOnByOthers(o.id, userId)) return true;
+        const f = seen.get(o.id);
+        if (f.status === STATUS.EXACT || f.status === STATUS.UNRESOLVED) return false;
+        o.why = 'in a unit outside this submission\'s tasks: a refactor there may rename and move, not change code; list it in taskIds to submit it as a revision';
+        return true;
+      }
+      return this.workedOnByOthers(o.id, userId) || this.unlistedRevision(o, files);
+    });
+  }
+
+  /** The units of the batch's tasks (Tasks.ownUnitsForTasks), or null when unknown. */
+  ownUnitsOf(attempts) {
+    return this.tasks.ownUnitsForTasks ? this.tasks.ownUnitsForTasks(attempts.map((a) => a.task_id)) : null;
+  }
+
+  /** Whether a batch edits a unit none of its tasks belong to (a cross-unit refactor). */
+  crossUnit(files, ownUnits) {
+    return !!ownUnits && Object.keys(files).some((f) => isUnit(f) && !ownUnits.has(f));
   }
 
   /** A function on main whose source this submission rewrote, though it is not one of its tasks. */
@@ -815,7 +856,13 @@ export class Verifier {
     }
     clearBuildRetry(this.store, batch.id);
     const targets = new Set(attempts.map((a) => a.symbol_id));
-    const outside = this.changedOutside(check, merged.files, targets, batch.user_id);
+    const ownUnits = this.ownUnitsOf(attempts);
+    const outside = this.changedOutside(check, merged.files, targets, batch.user_id, ownUnits);
+    // A refactor that edits other units merges whole: a renamed function without its callers
+    // (or the reverse) would not link.
+    if (this.crossUnit(submitted, ownUnits)) {
+      this.store.run(`UPDATE batches SET result_json = json_set(COALESCE(result_json, '{}'), '$.noSplit', ?) WHERE id = ?`, 'cross-unit refactor: it merges as a whole', batch.id);
+    }
     let failed = 0;
     let withdrawn = 0;
     for (const a of attempts) {

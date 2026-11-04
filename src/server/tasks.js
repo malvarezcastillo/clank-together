@@ -463,15 +463,22 @@ export class Tasks {
     });
   }
 
-  /** Allowed paths of a set of tasks: their unit files plus the project headers. */
+  /** Allowed paths of a set of tasks: every source unit plus the project headers (allowedPaths). */
   allowedPathsForTasks(taskIds) {
     const out = new Set();
-    for (const id of taskIds) {
-      const t = this.get(id);
-      const sym = this.store.get('SELECT * FROM symbols WHERE id = ?', t.symbol_id);
-      for (const p of this.allowedPaths(sym)) out.add(p);
-    }
+    for (const id of taskIds) for (const p of this.allowedPaths(this.symbolOf(id))) out.add(p);
     return [...out];
+  }
+
+  /** The units the tasks' functions belong to; a change elsewhere must leave other code as it is. */
+  ownUnitsForTasks(taskIds) {
+    const out = new Set();
+    for (const id of taskIds) for (const f of this.ownUnits(this.symbolOf(id))) out.add(f);
+    return out;
+  }
+
+  symbolOf(taskId) {
+    return this.store.get('SELECT * FROM symbols WHERE id = ?', this.get(taskId).symbol_id);
   }
 
   /** Returns a task to the pool, keeping its attempt history. */
@@ -510,13 +517,18 @@ export class Tasks {
     return over.length;
   }
 
+  // Any unit may be edited, so that a refactor can update its callers: the verifier rejects code
+  // changes outside the task's own units (Verifier.changedOutside) and merges such a batch whole.
   allowedPaths(symbol) {
-    const headers = this.project.headerGlobs;
-    // Also the unit the function is compiled from on main, when that is another file (a header's
-    // inline function, or the x64 file next to a Win32/ copy).
+    const own = this.ownUnits(symbol);
+    return [...own, ...this.project.sourceDirs.map((d) => `${d}/**`), ...this.project.headerGlobs].filter((p, i, a) => a.indexOf(p) === i);
+  }
+
+  // The unit the function belongs to, and the unit it is compiled from on main when that is another
+  // file (a header's inline function, or the x64 file next to a Win32/ copy).
+  ownUnits(symbol) {
     const at = this.store.get('SELECT file FROM func_status WHERE symbol_id = ?', symbol.id)?.file;
-    const own = [symbol.unit, at].filter((f, i, a) => f && a.indexOf(f) === i);
-    return own.length ? [...own, ...headers] : [`${this.project.sourceDirs[0]}/**`, ...headers];
+    return [symbol.unit, at].filter((f, i, a) => f && a.indexOf(f) === i);
   }
 
   /** Everything an agent needs to work on a task. */

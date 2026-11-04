@@ -121,3 +121,23 @@ test('maintenance timeout queues work and baseline failure cannot appear as chan
   assert.equal(JSON.parse(f.batch().result_json).buildRetry.stage, 'maintenance');
   await assert.rejects(m.changedFunctions(analysis(true), files, 'head'), (e) => e instanceof BuildRetryError && e.diagnostic.stage === 'maintenance-baseline');
 });
+
+test('a batch that edits a unit outside its tasks merges whole: one function sent back returns it all', async (t) => {
+  const f = fixture(t);
+  const refactor = { ...files, 'src/caller.cpp': 'int g() { return f(); }\n' };
+  f.store.run('UPDATE batches SET files_json = ? WHERE id = 1', JSON.stringify(refactor));
+  f.repo.mergeOntoHead = () => ({ files: refactor, conflicts: [] });
+  f.verifier.tasks.ownUnitsForTasks = () => new Set(['src/a.cpp']);
+  f.verifier.check = async () => ({ check: { annotationErrors: [], units: [] }, rec: { conflicts: [], unknown: [] }, changedHeaders: [] });
+  f.verifier.refreshBaselines = async () => 0;
+  f.verifier.evaluate = () => ({ state: 'peer_review', score: 0.5, feedback: { summary: '' } });
+  f.verifier.finish = () => {};
+  f.verifier.withdraw = () => {};
+  await f.verifier.verifyBatch(f.batch());
+  assert.match(JSON.parse(f.batch().result_json).noSplit, /cross-unit refactor/);
+  f.store.run("UPDATE batches SET state = 'open' WHERE id = 1");
+  f.store.run("INSERT INTO tasks (id, symbol_id, state) VALUES (2, 'fn_00002', 'approved')");
+  f.store.run("INSERT INTO attempts VALUES (2, 2, 1, 1, 'approved', NULL)");
+  f.store.run("UPDATE attempts SET state = 'rejected' WHERE id = 1");
+  assert.equal(f.merger.next(), null, 'its approved part never merges on its own');
+});

@@ -5,7 +5,7 @@ import { PEImage } from '../src/shared/pe.js';
 import { CoffObject } from '../src/shared/coff.js';
 import { parseListing } from '../src/shared/listing.js';
 import { parseAnnotations } from '../src/shared/annotations.js';
-import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor } from '../src/shared/compare.js';
+import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 
 const FILE = 'src/player.cpp';
@@ -69,6 +69,18 @@ test('effectiveHash ignores the per-unit tags MSVC gives anonymous namespaces an
   // A different closure of the same unit, or a different name, is a different reference.
   assert.notEqual(hash('??<lambda_invoker_cdecl>@_Closure_wrapper_63e67006_4@@CAXXZ'), hash('??<lambda_invoker_cdecl>@_Closure_wrapper_63e67006_5@@CAXXZ'));
   assert.notEqual(hash('?v@?A0x0c4fce31@@3HA'), hash('?w@?A0x0c4fce31@@3HA'));
+});
+
+test('a caller of a renamed function has the same effective code once the new name is bound', () => {
+  const known = new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00001']]);
+  const before = run({ nameIndex: known }).fn;
+  // The callee is renamed in the same submission: the database does not know the new name yet.
+  const renamed = run({ nameIndex: new Map([['?g_val@@3HA', 'gl_00001']]) }).fn;
+  assert.notEqual(renamed.effectiveHash, before.effectiveHash, 'unresolved, the reference hashes by name');
+  const bound = (name) => (name === '?Callee@@YAXXZ' ? CALLEE_ADDR : null);
+  assert.equal(resolvedEffectiveHash(renamed, bound), resolvedEffectiveHash(before, bound), 'bound to the same address it is the same code');
+  const elsewhere = (name) => (name === '?Callee@@YAXXZ' ? CALLEE_ADDR + 0x10 : null);
+  assert.notEqual(resolvedEffectiveHash(renamed, elsewhere), resolvedEffectiveHash(before, bound), 'a call to another function is a change');
 });
 
 test('unknown references are resolved through the symbol database addresses', () => {

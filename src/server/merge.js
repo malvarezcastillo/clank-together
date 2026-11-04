@@ -3,12 +3,12 @@
 import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hasRole } from './accounts.js';
-import { STATUS, relocOnly } from '../shared/compare.js';
+import { STATUS, relocOnly, resolvedEffectiveHash } from '../shared/compare.js';
 import { reconcile } from '../shared/reconcile.js';
 import { returnBatch, batchAttempts, settleBatch, retireSentBack, LIVE_STATES, holdFor } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
 import { addUnitsToCompileCommands, isUnit } from '../shared/project.js';
-import { RANK, bestResults, BIG_BATCH, BUILD_READY, BuildRetryError, deferBuild, clearBuildRetry } from './verify.js';
+import { RANK, bestResults, BIG_BATCH, BUILD_READY, BuildRetryError, deferBuild, clearBuildRetry, boundAddresses } from './verify.js';
 
 // Small merges may compile together. Broad-header merges drain both lanes before starting,
 // and maintenance commits share the same exclusion boundary.
@@ -445,7 +445,7 @@ export class Merger {
     // their source put back as on main); shared changes in the file may change their compiled code.
     // That is not a change to functions someone else holds; their status is measured again.
     if (parentId) for (const a of batchAttempts(this.store, parentId)) targets.add(a.symbol_id);
-    const outside = this.verifier.changedOutside(check, merged.files, targets, batch.user_id);
+    const outside = this.verifier.changedOutside(check, merged.files, targets, batch.user_id, this.verifier.ownUnitsOf(attempts));
     const confirmedIds = new Set();
     const results = [];
     const allowRegressions = attempts.some((a) => a.regressions_accepted);
@@ -613,19 +613,25 @@ export class Merger {
         for (const h of u.includes) this.store.run('INSERT OR IGNORE INTO unit_deps (unit, header) VALUES (?, ?)', u.file, h);
       }
       for (const [decorated, id] of Object.entries(u.bindings)) {
-        this.store.run('UPDATE symbols SET decorated = ? WHERE id = ? AND decorated IS NULL', decorated, id);
+        // A renamed function or global keeps its ID: main's code now uses the new name.
+        const owner = this.store.get('SELECT id FROM symbols WHERE decorated = ?', decorated)?.id;
+        const old = this.store.get('SELECT decorated FROM symbols WHERE id = ?', id)?.decorated ?? null;
+        if (old === decorated || (owner && owner !== id)) continue;
+        this.store.run('UPDATE symbols SET decorated = ? WHERE id = ?', decorated, id);
+        if (old) this.store.event('symbol_renamed', userId, { id, old, decorated, commit });
       }
     }
     const compiledUnits = new Set(check.units.filter((u) => u.compiled).map((u) => u.file));
+    const addressOf = boundAddresses(check, this.store.symbolMap(v.id));
     for (const [id, { f, unit }] of bestResults(check)) {
       // A status measured in a unit this check did not compile is not lowered from a partial view.
       const old = this.store.get('SELECT status, file FROM func_status WHERE symbol_id = ?', id);
       if (old && !compiledUnits.has(old.file) && RANK[old.status] > RANK[f.status]) continue;
       this.store.run(
-        `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash, reloc_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(symbol_id) DO UPDATE SET file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at, code_hash = COALESCE(excluded.code_hash, func_status.code_hash), reloc_only = excluded.reloc_only,
+        `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash, reloc_only, effective_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(symbol_id) DO UPDATE SET file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at, code_hash = COALESCE(excluded.code_hash, func_status.code_hash), reloc_only = excluded.reloc_only, effective_hash = COALESCE(excluded.effective_hash, func_status.effective_hash),
            confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 WHEN excluded.status IN ('exact', 'match_unresolved') THEN 0 WHEN func_status.status IN ('exact', 'match_unresolved') THEN 1 ELSE func_status.confirmed END`,
-        f.id, unit, f.status, f.score, commit, now(), confirmedIds.has(f.id) ? 1 : 0, f.codeHash ?? null, relocOnly(f) ? 1 : 0,
+        f.id, unit, f.status, f.score, commit, now(), confirmedIds.has(f.id) ? 1 : 0, f.codeHash ?? null, relocOnly(f) ? 1 : 0, resolvedEffectiveHash(f, addressOf),
       );
       if (f.demangled) this.store.run('UPDATE symbols SET name = ? WHERE id = ? AND name IS NULL', f.demangled, f.id);
       this.store.run('UPDATE symbols SET unit = ? WHERE id = ? AND unit IS NULL', unit, f.id);
