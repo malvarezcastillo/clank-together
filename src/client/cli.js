@@ -58,6 +58,8 @@ Maintenance (maintainers: structural changes with no function tasks)
        [--delete c.h,d.cpp]                   also remove these tracked files (units leave the build list)
   td maintenance symbol <id> [--size N] [--name N] [--retire] --reason T   correct the symbol database
        [--decorated N | --swap-decorated-with ID]   correct a decorated name or atomically swap two
+  td maintenance task <taskId> --close --batch B --reason T   admins: mark a task done whose code reached main
+                                              through merged maintenance batch B
 
 Peer review (attempts that are not byte-identical; judge by reading, not by tools)
   td peer list                                attempts waiting for review
@@ -163,6 +165,8 @@ async function main() {
       decorated: { type: 'string' },
       'swap-decorated-with': { type: 'string' },
       retire: { type: 'boolean', default: false },
+      close: { type: 'boolean', default: false },
+      batch: { type: 'string' },
       json: { type: 'boolean', default: false },
       free: { type: 'boolean', default: false },
       includers: { type: 'boolean', default: false },
@@ -288,7 +292,11 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
         };
         return print(await ops.correctSymbol(ws, id, body));
       }
-      throw new Error('usage: td maintenance submit|symbol ...');
+      if (sub === 'task') {
+        if (!/^\d+$/.test(id ?? '') || !values.close || !values.batch || !values.reason) throw new Error('usage: td maintenance task <taskId> --close --batch <maintenanceBatchId> --reason "why"');
+        return print(await client.post(`/api/admin/tasks/${id}`, { state: 'done', batch: Number(values.batch), reason: values.reason }));
+      }
+      throw new Error('usage: td maintenance submit|symbol|task ...');
     }
     case 'result': {
       const r = await client.get(`/api/attempts/${args[0]}`);

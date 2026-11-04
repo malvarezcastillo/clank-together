@@ -21,6 +21,7 @@ import { CheckQueue, WorkerUnavailable } from './checks.js';
 import { withGuidance } from './guidance.js';
 import { reviewerStats } from './reviewers.js';
 import { inferUnits } from './grouping.js';
+import { retireSentBack } from './batches.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { Regions } from './regions.js';
 import { Credits, SLOT_TABLE } from './credits.js';
@@ -1242,6 +1243,24 @@ export function createApp(ctx) {
     if (body.state === 'open' && t.state === 'done' && body.force === true) {
       store.run(`UPDATE tasks SET state = 'open', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), t.id);
     } else if (body.state === 'open' && t.state !== 'done') tasks.reopen(t.id);
+    // An admin closes a task whose code reached main through a merged maintenance batch, which
+    // carries no function tasks. The batch must be merged and name the task's function.
+    else if (body.state === 'done') {
+      if (!hasRole(user, 'admin')) throw new HttpError(403, 'closing a task needs an admin');
+      if (typeof body.reason !== 'string' || !body.reason.trim() || body.reason.length > 500) throw new HttpError(400, 'reason must be 1-500 characters');
+      const batchId = Number(body.batch);
+      if (!Number.isSafeInteger(batchId) || batchId <= 0) throw new HttpError(400, 'batch must be the merged maintenance batch that brought the code to main');
+      store.tx(() => {
+        const b = store.get('SELECT kind, state, merged_commit, result_json FROM batches WHERE id = ?', batchId);
+        if (!b || b.kind !== 'maintenance' || b.state !== 'merged') throw new HttpError(409, `batch ${batchId} is not a merged maintenance batch`);
+        const changed = JSON.parse(b.result_json ?? '{}').changedFunctions ?? [];
+        if (!changed.some((f) => f.id === t.symbol_id)) throw new HttpError(409, `batch ${batchId} did not change ${t.symbol_id}`);
+        if (store.get(`SELECT 1 FROM attempts WHERE task_id = ? AND state IN ('queued', 'verifying', 'peer_review', 'in_review', 'approved', 'merging')`, t.id)) throw new HttpError(409, 'the task has attempts on their way to main; withdraw them first');
+        store.run(`UPDATE tasks SET state = 'done', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), t.id);
+        retireSentBack(store, t.id, `${t.symbol_id} reached main through maintenance batch ${batchId}; this attempt is no longer needed`);
+        store.event('task_closed', user.id, { task: t.id, symbol: t.symbol_id, batch: batchId, commit: b.merged_commit, reason: body.reason.trim() });
+      });
+    }
     return tasks.get(t.id);
   });
 

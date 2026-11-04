@@ -271,6 +271,11 @@ gates, compiles affected units and compares effective code against a fresh main
 build. Behavior-changing function work must use the normal task/review path.
 `td maintenance symbol <id> --size N --reason "evidence"` corrects metadata;
 `--retire` is allowed only after main no longer annotates that global ID.
+A maintenance batch carries no function tasks, so a function it brought to main
+(a forced batch lists it under `changedFunctions`) keeps its task open. An admin
+closes it with `td maintenance task <taskId> --close --batch <batchId> --reason "why"`
+(`POST /api/admin/tasks/:id` with `{"state":"done","batch":B,"reason":"..."}`); the
+batch must be merged and name the task's function, and no attempt may be in flight.
 
 From a contributor workspace, a maintainer can correct a decorated/linker name
 without changing a symbol's ID, address, task state, match state or confirmations:
