@@ -1519,7 +1519,10 @@ function renderQueue() {
     g.append(head);
     for (const a of rows) {
       const b = button('', () => openAttempt(a.id), 'qitem');
-      b.append(el('span', `${a.symbol_id} ${a.name || ''}`, 'qname'), pips(a.peer_same, a.peer_different), el('span', `${((a.score || 0) * 100).toFixed(0)}% bytes${a.peer_working ? ` · ${a.peer_working} reviewing now` : ''}${a.reviewed_by_me ? ' · you reviewed' : ''}`, 'qsub'));
+      // A revision of a function already on main shows where it stands there and where it would go.
+      const pct = (s) => `${((s || 0) * 100).toFixed(0)}%`;
+      const bytes = a.main_score == null ? `${pct(a.score)} bytes` : `${pct(a.main_score)} -> ${pct(a.score)} bytes`;
+      b.append(el('span', `${a.symbol_id} ${a.name || ''}`, 'qname'), pips(a.peer_same, a.peer_different), el('span', `${bytes}${a.peer_working ? ` · ${a.peer_working} reviewing now` : ''}${a.reviewed_by_me ? ' · you reviewed' : ''}`, 'qsub'));
       b.dataset.attempt = a.id;
       if (currentAttempt?.id === a.id) b.classList.add('active');
       queueOrder.push(a.id);

@@ -1214,12 +1214,14 @@ export function createApp(ctx) {
     const user = auth(req, { role: 'reviewer', session: true });
     return store.all(
       `SELECT a.id, a.batch_id, a.task_id, a.state, a.score, a.created_at, a.finished_at, u.name AS author, t.symbol_id, s.name,
+              m.score AS main_score,
               (SELECT COUNT(*) FROM reviews r WHERE r.attempt_id = a.id AND r.action = 'approve') AS approvals,
               (SELECT COUNT(*) FROM reviews r WHERE r.attempt_id = a.id AND r.reviewer_id = ?) AS reviewed_by_me,
               (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'same') AS peer_same,
               (SELECT COALESCE(SUM(p.weight), 0) FROM peer_reviews p WHERE p.attempt_id = a.id AND p.verdict = 'different') AS peer_different,
               (SELECT COUNT(*) FROM peer_leases l WHERE l.attempt_id = a.id AND l.expires_at > ?) AS peer_working
          FROM attempts a JOIN users u ON u.id = a.user_id JOIN tasks t ON t.id = a.task_id JOIN symbols s ON s.id = t.symbol_id
+         LEFT JOIN func_status m ON m.symbol_id = t.symbol_id
         WHERE a.state IN ('in_review', 'peer_review') ORDER BY a.state = 'peer_review', a.finished_at`,
       user.id,
       Date.now(),
