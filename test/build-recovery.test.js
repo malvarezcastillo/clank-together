@@ -21,7 +21,7 @@ function fixture(t) {
   `);
   const store = { get: (sql, ...args) => db.prepare(sql).get(...args), all: (sql, ...args) => db.prepare(sql).all(...args),
     run: (sql, ...args) => db.prepare(sql).run(...args), tx: (fn) => fn(), event() {} };
-  store.run('INSERT INTO batches (id, user_id, base_commit, files_json, result_json, state) VALUES (1, 1, ?, ?, ?, ?)', 'head', JSON.stringify(files), JSON.stringify({ confirm: ['fn_00001'], splitKeepCode: true }), 'verifying');
+  store.run('INSERT INTO batches (id, user_id, base_commit, files_json, result_json, state) VALUES (1, 1, ?, ?, ?, ?)', 'head', JSON.stringify(files), JSON.stringify({ splitKeepCode: true }), 'verifying');
   const repo = { head: () => 'head', size: () => 100, trackedPaths: () => new Set(Object.keys(files)), isAncestor: () => true,
     mergeOntoHead: () => ({ files, conflicts: [] }), show: () => files['src/a.cpp'], commitFiles: () => assert.fail('must not commit') };
   const verifier = new Verifier({ store, repo, config: { dataDir: '.' }, project: { sourceDirs: ['src'], headerGlobs: [], matchPolicy: {} },
@@ -51,7 +51,6 @@ test('verification timeout preserves author evidence and cleanup count, then ret
   assert.equal(result.buildRetry.kind, 'timeout');
   assert.equal(result.buildRetry.stage, 'verification');
   assert.ok(result.buildRetry.retryAt > Date.now());
-  assert.deepEqual(result.confirm, ['fn_00001']);
   assert.equal(f.store.get('SELECT cleanup_cycles FROM tasks WHERE id = 1').cleanup_cycles, 0);
   assert.equal(f.store.get('SELECT state FROM attempts WHERE id = 1').state, 'queued');
   assert.equal(JSON.parse(f.store.get('SELECT result_json FROM attempts WHERE id = 1').result_json).approvedEvidence, true);

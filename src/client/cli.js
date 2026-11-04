@@ -42,7 +42,6 @@ Work (a region: a source file, a class, or a run of unplaced functions, done as 
   td claim <taskId>                           claim a function that came back, to fix it
   td task <taskId>                            show a task's context
   td submit [taskId...] [--files a.cpp,b.h]   submit everything you hold (or these tasks, or only these files)
-       [--confirm fn_00123,fn_00456]          also send these unchanged functions on main for peer review
   td batch <batchId>                          state of a submitted batch, per function
   td returned [--watch] [--json]              your functions that came back (sent back, rejected, returned), per batch,
                                               with why; --watch polls and prints new ones as they come back
@@ -182,7 +181,6 @@ async function main() {
       range: { type: 'string' },
       files: { type: 'string' },
       delete: { type: 'string' },
-      confirm: { type: 'string' },
       reason: { type: 'string' },
       size: { type: 'string' },
       decorated: { type: 'string' },
@@ -307,8 +305,7 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       // td submit <taskId>... [--files a.cpp,b.h]
       const ids = args.filter((x) => /^\d+$/.test(x)).map(Number);
       const files = values.files ? values.files.split(',').map((f) => ops.relPath(ws, f)) : [];
-      const confirm = values.confirm ? values.confirm.split(',').map((s) => s.trim()).filter(Boolean) : [];
-      return print(await ops.submit(ws, ids, { files, notes: values.notes, confirm, agentMeta: { client: 'td-cli' } }));
+      return print(await ops.submit(ws, ids, { files, notes: values.notes, agentMeta: { client: 'td-cli' } }));
     }
     case 'maintenance': {
       const [sub, id] = args;

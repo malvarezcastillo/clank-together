@@ -404,7 +404,7 @@ export class Tasks {
     return units.size;
   }
 
-  submitBatch(user, { taskIds, baseCommit, files, notes = null, agentMeta = null, envDigest = null, confirm = [] }) {
+  submitBatch(user, { taskIds, baseCommit, files, notes = null, agentMeta = null, envDigest = null }) {
     const ids = [...new Set((taskIds ?? []).map(Number))];
     if (!ids.length) throw new HttpError(400, 'taskIds must list the tasks this submission covers');
     const maxSubmit = this.config.maxTasksPerSubmission ?? 500;
@@ -444,7 +444,7 @@ export class Tasks {
       }
       const b = this.store.run(
         `INSERT INTO batches (user_id, token_id, base_commit, files_json, notes, agent_meta, env_digest, state, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
-        user.id, token, baseCommit, JSON.stringify(files), notes, agentMeta, envDigest, confirm.length ? JSON.stringify({ confirm: confirm.map(String).slice(0, 500) }) : null, now(),
+        user.id, token, baseCommit, JSON.stringify(files), notes, agentMeta, envDigest, null, now(),
       );
       const batchId = Number(b.lastInsertRowid);
       this.store.run('UPDATE batches SET cost = ? WHERE id = ?', this.compileCost(Object.keys(files)), batchId);

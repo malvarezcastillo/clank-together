@@ -759,7 +759,6 @@ export class Verifier {
   async verifyBatch(batch) {
     // Superseded while it waited (a competing candidate merged first): nothing to judge.
     const attempts = batchAttempts(this.store, batch.id).filter((a) => a.state === 'verifying' || a.state === 'queued');
-    const confirm = new Set(JSON.parse(batch.result_json ?? '{}').confirm ?? []);
     if (!attempts.length) {
       this.store.run(`UPDATE batches SET state = 'superseded', finished_at = ? WHERE id = ?`, now(), batch.id);
       return;
@@ -829,10 +828,11 @@ export class Verifier {
         withdrawn++;
         continue;
       }
-      // Code already on main, submitted again unchanged and not byte-identical: no new work, and it
-      // would only fill the peer review. Existing code is reviewed only when the agent asks (confirm).
-      if (ev.state === 'peer_review' && !confirm.has(a.symbol_id) && this.unchangedFromBase(a.symbol_id, submitted, batch.base_commit)) {
-        this.withdraw(a, 'not changed: this code is already on main as it is; submit the functions you rewrote. To have existing code confirmed by peer review, list it in confirm (td_submit confirm: [...])');
+      // Code already on main, submitted again unchanged (same source, or the same compiled code as
+      // main has) and not byte-identical: it does not move the function closer to the original, so
+      // it is not new work and would only fill the peer review.
+      if (ev.state === 'peer_review' && this.unchangedOnMain(a.symbol_id, submitted, batch.base_commit, ev.feedback.target)) {
+        this.withdraw(a, 'not changed: this code is already on main and compiles to the same code; only submissions that change a function are accepted. Submit the functions you rewrote');
         withdrawn++;
         continue;
       }
@@ -875,6 +875,14 @@ export class Verifier {
     // Failing functions went back one by one (finish); the rest of the batch carries on and its
     // approved part merges without them. Only a batch with nothing left on its way is over.
     if (failed || withdrawn) settleBatch(this.store, batch.id, `${failed} of ${attempts.length} functions need work${withdrawn ? `, ${withdrawn} were not written` : ''}; see each function's feedback`);
+  }
+
+  /** Whether a submitted function is no change to main: the same source, or the same compiled code. */
+  unchangedOnMain(symbolId, files, baseCommit, target) {
+    if (this.unchangedFromBase(symbolId, files, baseCommit)) return true;
+    if (!target?.codeHash) return false;
+    const main = this.store.get('SELECT code_hash FROM func_status WHERE symbol_id = ?', symbolId);
+    return main?.code_hash === target.codeHash;
   }
 
   /** Whether the submitted definition of a function is exactly what the batch's base had. */

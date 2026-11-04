@@ -1424,7 +1424,7 @@ test('revisions: merged functions of a claimed region are reviewed again; the ta
     const ra = bodyOf(text, 'ra');
     const rb = bodyOf(text, 'rb');
     const functions = [
-      { id: a, status: STATUS.MISMATCH, score: ra.includes('worse') ? 0.4 : ra.includes('better') ? 0.8 : 0.7, file: unit, codeHash: ra === 'return 1;' ? 'a-main' : `a-${ra}`, relocations: [], size: { ours: 8, original: 8 } },
+      { id: a, status: STATUS.MISMATCH, score: ra.includes('worse') ? 0.4 : ra.includes('better') ? 0.8 : 0.7, file: unit, codeHash: ra.replace(/\s+/g, '') === 'return1;' ? 'a-main' : `a-${ra}`, relocations: [], size: { ours: 8, original: 8 } },
       { id: b, status: STATUS.MISMATCH, score: 0.6, file: unit, codeHash: rb === 'return 2;' ? 'b-main' : `b-${rb}`, relocations: [], size: { ours: 8, original: 8 } },
     ];
     return { check: { annotationErrors: [], units: [{ file: unit, compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions }] }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: [unit] };
@@ -1452,6 +1452,17 @@ test('revisions: merged functions of a claimed region are reviewed again; the ta
     assert.match(claim.body.note, /revision/);
     const me = (await call('GET', '/api/me', null, author)).body;
     assert.ok(me.regionTasks.some((t) => t.taskId === taskA), 'plain td submit finds rewritten merged functions');
+
+    // Code that is no change to main goes no further, even when the agent asks for it to be reviewed:
+    // the same source, or a reformat that compiles to the code main already has.
+    for (const [files, extra] of [[onMain, { confirm: [a] }], [onMain.replace('return 1;', 'return  1;'), {}]]) {
+      const same = await call('POST', '/api/batches', { taskIds: [taskA], baseCommit: ctx.repo.head(), files: { [unit]: files }, ...extra }, author);
+      assert.equal(same.status, 200, JSON.stringify(same.body));
+      const fn = (await settle(same.body.batchId)).functions[0];
+      assert.equal(fn.state, 'withdrawn', JSON.stringify(fn));
+      assert.match(fn.summary, /not changed/);
+    }
+    assert.equal(ctx.tasks.get(taskA).state, 'done');
 
     // A revision that moves a confirmed function away from the original goes back.
     const worse = await submit([taskA], onMain.replace('return 1;', 'int worse = 1; return worse;'));

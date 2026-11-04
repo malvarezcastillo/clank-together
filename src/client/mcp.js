@@ -171,10 +171,9 @@ const TOOLS = [
         taskId: int('a single task (same as taskIds: [id])'),
         files: { type: 'array', items: { type: 'string' }, description: 'repo-relative files that make up the whole submission; only functions rewritten in them are submitted. Default: every changed file your tasks allow' },
         notes: str('short notes for reviewers and later agents'),
-        confirm: { type: 'array', items: { type: 'string' }, description: 'symbol IDs of functions whose existing code on main you checked and want peer-reviewed unchanged (otherwise unchanged functions are not submitted)' },
       },
     },
-    run: async (ws, a) => ops.submit(ws, a.taskIds ?? (a.taskId ? [a.taskId] : []), { files: a.files, notes: a.notes, confirm: a.confirm ?? [], agentMeta: { client: 'td-mcp' } }),
+    run: async (ws, a) => ops.submit(ws, a.taskIds ?? (a.taskId ? [a.taskId] : []), { files: a.files, notes: a.notes, agentMeta: { client: 'td-mcp' } }),
   },
   {
     name: 'td_mark_no_decompile',

@@ -557,7 +557,6 @@ export function createApp(ctx) {
       notes: body.notes ? String(body.notes).slice(0, DEFAULT_LIMITS.maxNotesBytes) : null,
       agentMeta: body.agentMeta ? JSON.stringify(body.agentMeta).slice(0, 1000) : null,
       envDigest: body.envDigest ? String(body.envDigest).slice(0, 200) : null,
-      confirm: Array.isArray(body.confirm) ? body.confirm.filter((x) => /^fn_\d+$/.test(String(x))) : [],
     });
     if (runsWorker) ctx.verifier.pump();
     return r;

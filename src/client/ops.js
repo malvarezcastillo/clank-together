@@ -293,14 +293,14 @@ export async function original(ws, query, kind) {
  * plus functions you took back to fix). Defaults to all changed files those tasks allow; named
  * `files` are the whole submission, and only functions rewritten in them count as new work.
  */
-export async function submit(ws, taskIds = [], { files, notes, agentMeta, confirm = [] } = {}) {
+export async function submit(ws, taskIds = [], { files, notes, agentMeta } = {}) {
   const me = await api(ws).get('/api/me');
   let ids = taskIds.length ? taskIds.map(Number) : me.leases;
   // Held functions whose code was not touched stay held; they are not new work.
   if (!taskIds.length && ids.length) {
     const rewritten = rewrittenFunctions(ws, me.leasedAllowedPaths ?? [], files);
     const symbols = me.leasedSymbols ?? [];
-    ids = symbols.filter((t) => rewritten.has(t.symbol) || confirm.includes(t.symbol)).map((t) => t.taskId);
+    ids = symbols.filter((t) => rewritten.has(t.symbol)).map((t) => t.taskId);
   }
   let allowed = taskIds.length ? [...new Set((await Promise.all(ids.map((id) => api(ws).get(`/api/tasks/${id}`)))).flatMap((c) => c.allowedPaths))] : me.leasedAllowedPaths;
   // Shared regions: functions another agent holds are submitted as competing candidates, but only
@@ -332,7 +332,7 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta, confir
     e.details = errors;
     throw e;
   }
-  return api(ws).post('/api/batches', { taskIds: ids, baseCommit: ws.head(), files: contents, notes, agentMeta, envDigest: ws.config.envDigest, ...(confirm.length ? { confirm } : {}) });
+  return api(ws).post('/api/batches', { taskIds: ids, baseCommit: ws.head(), files: contents, notes, agentMeta, envDigest: ws.config.envDigest });
 }
 
 /**
