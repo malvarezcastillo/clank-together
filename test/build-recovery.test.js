@@ -15,6 +15,7 @@ function fixture(t) {
     CREATE TABLE tasks (id INTEGER PRIMARY KEY, symbol_id TEXT, state TEXT, cleanup_cycles INTEGER DEFAULT 0, updated_at INTEGER);
     CREATE TABLE attempts (id INTEGER PRIMARY KEY, task_id INTEGER, batch_id INTEGER, user_id INTEGER, state TEXT, result_json TEXT);
     CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+    CREATE TABLE func_status (symbol_id TEXT PRIMARY KEY, code_hash TEXT, effective_hash TEXT);
     INSERT INTO users VALUES (1, 'author');
     INSERT INTO tasks (id, symbol_id, state) VALUES (1, 'fn_00001', 'verifying');
     INSERT INTO attempts VALUES (1, 1, 1, 1, 'verifying', '{"approvedEvidence":true}');
