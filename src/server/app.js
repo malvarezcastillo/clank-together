@@ -312,10 +312,10 @@ export function createApp(ctx) {
   const progressData = () => cached('progress', 20_000, () => {
     // Functions accepted as needing no decompilation (thunks, runtime library, ...) do not count.
     const total = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE s.kind = 'function' AND s.library = 0 AND s.skip_reason IS NULL`);
-    const byStatus = store.all(`SELECT fs.status, COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 GROUP BY fs.status`);
+    const byStatus = store.all(`SELECT fs.status, COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbols s ON s.id = fs.symbol_id JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE s.kind = 'function' AND s.library = 0 AND s.skip_reason IS NULL GROUP BY fs.status`);
     const byTaskState = store.all('SELECT state, COUNT(*) AS n FROM tasks GROUP BY state');
     const contributors = store.all(`SELECT u.name, COUNT(*) AS merged FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.state = 'merged' GROUP BY u.id ORDER BY merged DESC LIMIT 20`);
-    const confirmed = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE fs.confirmed = 1 AND fs.status NOT IN ('exact', 'match_unresolved')`);
+    const confirmed = store.get(`SELECT COUNT(*) AS n, COALESCE(SUM(a.size), 0) AS bytes FROM func_status fs JOIN symbols s ON s.id = fs.symbol_id JOIN symbol_addresses a ON a.symbol_id = fs.symbol_id JOIN versions v ON v.id = a.version_id AND v.is_current = 1 WHERE s.kind = 'function' AND s.library = 0 AND s.skip_reason IS NULL AND fs.confirmed = 1 AND fs.status NOT IN ('exact', 'match_unresolved')`);
     const peerQueue = store.get("SELECT COUNT(*) AS n FROM attempts WHERE state = 'peer_review'").n;
     // Functions merged into main per hour: the last hour, and the average over the last day.
     const mergedSince = (ms) => store.get(`SELECT COALESCE(SUM(json_extract(data, '$.functions')), 0) AS n FROM events WHERE type = 'merged' AND at > ?`, Date.now() - ms).n;
