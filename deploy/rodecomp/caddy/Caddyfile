@@ -7,6 +7,9 @@
     handle_path /git/* {
         reverse_proxy forgejo:3000
     }
+    handle_path /hooks/* {
+        reverse_proxy sync:9000
+    }
     handle {
         reverse_proxy web:8080 {
             header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}

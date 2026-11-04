@@ -64,9 +64,23 @@ services:
     volumes:
       - forgejo:/data
     restart: unless-stopped
+  # Fast-forward-only two-way sync with GitHub, triggered by webhooks on /hooks/sync.
+  sync:
+    build: ./sync
+    image: rodecomp/sync:local
+    environment:
+      SYNC_GITHUB_URL: "git@github.com:rodecomp/rodecomp.git"
+      SYNC_FORGEJO_URL: "http://forgejo:3000/clank/rodecomp.git"
+    volumes:
+      - ./secrets:/secrets:ro
+      - sync:/work
+    depends_on:
+      - forgejo
+    restart: unless-stopped
 volumes:
   data:
     name: rodecomp_data
     external: true
   forgejo:
     name: rodecomp_forgejo
+  sync:

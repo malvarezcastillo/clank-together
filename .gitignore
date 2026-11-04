@@ -6,3 +6,5 @@ dist/
 logs/
 # Per-host image pins for a deployment (docker compose picks it up next to compose.yaml)
 deploy/rodecomp/compose.override.yaml
+# Deployment credentials (sync deploy key, Forgejo token, webhook secret)
+deploy/rodecomp/secrets/
