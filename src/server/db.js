@@ -3,6 +3,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import { formatSymbolId } from '../shared/annotations.js';
+import { relocOnly } from '../shared/compare.js';
 
 // Accounts. Registrations stay 'pending' until approved unless auto-approval is on.
 // Approved users create API tokens for their agents; the browser uses short-lived
@@ -296,6 +297,8 @@ export class Store {
     this.addColumn('func_status', 'confirmed', 'INTEGER NOT NULL DEFAULT 0');
     // Fingerprint of main's compiled code per function (submissions may only change their own tasks).
     this.addColumn('func_status', 'code_hash', 'TEXT');
+    // 1 when main's code is byte-identical and only references the original has no relocation for differ.
+    this.addColumn('func_status', 'reloc_only', 'INTEGER NOT NULL DEFAULT 0');
     this.addColumn('versions', 'label', 'TEXT');
     this.addColumn('check_jobs', 'files_hash', 'TEXT'); // a retry of the same check joins the queued one
     this.addColumn('batches', 'cost', 'INTEGER'); // units its verification compiles (queue order)
@@ -331,14 +334,44 @@ export class Store {
     this.addColumn('batches', 'kind', "TEXT NOT NULL DEFAULT 'code'");
     this.db.exec('CREATE INDEX IF NOT EXISTS events_type_at ON events(type, at)'); // merge rates, feed
     this.db.exec('CREATE INDEX IF NOT EXISTS attempts_batch ON attempts(batch_id)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS attempts_task_state ON attempts(task_id, state)'); // candidates on their way (improvable)
     this.db.exec('CREATE INDEX IF NOT EXISTS peer_reviews_reviewer ON peer_reviews(reviewer_id, created_at)'); // reviewer trust
     // Admin-set weight is capped at 2 (peer.js setReviewWeight); bring older settings and their waiting verdicts down.
     this.db.exec(`UPDATE peer_reviews SET weight = 2 WHERE weight > 2 AND reviewer_id IN (SELECT id FROM users WHERE review_weight > 2)
                     AND attempt_id IN (SELECT id FROM attempts WHERE state IN ('peer_review', 'in_review'))`);
     this.db.exec('UPDATE users SET review_weight = 2 WHERE review_weight > 2');
     this.retireFinishedSentBack();
+    this.backfillRelocOnly();
     // Author holds were 6 hours; none may outlast 20 minutes after the function was sent back (batches.js AUTHOR_HOLD_MS).
     this.db.prepare('UPDATE tasks SET preferred_until = updated_at + ? WHERE preferred_until > updated_at + ? AND preferred_until > ?').run(20 * 60_000, 20 * 60_000, Date.now());
+  }
+
+  /**
+   * Once: reloc_only for functions merged before it was recorded, from their latest merged attempt's
+   * target result when that attempt still describes main's code (same code hash). Later merges
+   * set it from their own check (merge.js applyCheckToDatabase).
+   */
+  backfillRelocOnly() {
+    if (this.getMeta('migration_backfill_reloc_only')) return;
+    const rows = this.db.prepare(
+      `SELECT fs.symbol_id, fs.code_hash, json_extract(a.result_json, '$.feedback.target') AS target
+         FROM func_status fs JOIN tasks t ON t.symbol_id = fs.symbol_id
+         JOIN attempts a ON a.id = (SELECT MAX(x.id) FROM attempts x WHERE x.task_id = t.id AND x.state = 'merged' AND x.result_json IS NOT NULL)
+        WHERE fs.status = 'mismatch'`,
+    ).all();
+    const flag = this.db.prepare('UPDATE func_status SET reloc_only = 1 WHERE symbol_id = ?');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const r of rows) {
+        const target = r.target ? JSON.parse(r.target) : null;
+        if (target && (!r.code_hash || target.codeHash === r.code_hash) && relocOnly(target)) flag.run(r.symbol_id);
+      }
+      this.setMeta('migration_backfill_reloc_only', Date.now());
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   /**

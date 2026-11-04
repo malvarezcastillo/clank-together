@@ -36,6 +36,9 @@ Work (a region: a source file, a class, or a run of unplaced functions, done as 
                                               (--includers: every unit that includes a changed header)
   td submit [--notes T]                       submit the region's work as one batch
   td tasks [--state S] [--limit N]            list claimable tasks
+  td improvable [--max-score 60] [--min-size 16]   merged functions that still differ, lowest % first:
+       [--prefix P] [--by-unit] [--sort score|gain|size] [--all] [--limit N] [--json]
+                                              claim the file (td region claim) and submit improvements
   td claim <taskId>                           claim a function that came back, to fix it
   td task <taskId>                            show a task's context
   td submit [taskId...] [--files a.cpp,b.h]   submit everything you hold (or these tasks, or only these files)
@@ -85,6 +88,26 @@ function printCheck(r) {
     if (u.unannotated.length) console.log(`  unannotated: ${u.unannotated.join(', ')}`);
   }
   for (const c of r.referenceConflicts) console.log(`conflict: ${c.message ?? c}`);
+}
+
+function printImprovable(r, json) {
+  if (json) return print(r);
+  const pct = (x) => `${Math.round(x * 100)}%`.padStart(4);
+  const who = (c) => (c?.length ? `  claimed: ${c.join(', ')}` : '');
+  if (!r.items.length) console.log('nothing below this score');
+  else if (r.by === 'unit') {
+    console.log('lowest  avg  below  bytes  file');
+    for (const u of r.items) console.log(`  ${pct(u.minScore)} ${pct(u.avgScore)}  ${String(u.below).padStart(5)}  ${String(u.bytes).padStart(5)}  ${u.unit}${who(u.claimedBy)}`);
+  } else {
+    console.log('score   size  symbol    name  (file)');
+    for (const f of r.items) console.log(` ${pct(f.score)}  ${String(f.size ?? '?').padStart(5)}  ${f.symbol.padEnd(8)}  ${f.name ?? '?'}  (${f.unit})${f.relocOnly ? '  [code matches]' : ''}${who(f.claimedBy)}`);
+  }
+  const shown = r.items.length < r.total ? `${r.items.length} of ${r.total}` : `${r.total}`;
+  const notes = [];
+  if (r.hidden?.inFlight) notes.push(`${r.hidden.inFlight} already on their way to main`);
+  if (r.hidden?.relocOnly) notes.push(`${r.hidden.relocOnly} whose code already matches (only a reference the original has no relocation for differs; --all shows them)`);
+  console.log(`\n${shown} ${r.by === 'unit' ? 'files' : 'functions'}${notes.length ? `; not listed: ${notes.join(', ')}` : ''}`);
+  if (r.items.length) console.log('next: td region claim <file>, td check <file>, improve, then td submit <taskIds> --files <file> (a revision: peer reviewed, main stays as it is if it goes back)');
 }
 
 function printReturned(r) {
@@ -176,6 +199,11 @@ async function main() {
       workspace: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
       watch: { type: 'boolean', default: false },
+      'max-score': { type: 'string' },
+      'min-size': { type: 'string' },
+      sort: { type: 'string' },
+      'by-unit': { type: 'boolean', default: false },
+      all: { type: 'boolean', default: false },
     },
   });
   const [cmd, ...args] = positionals;
@@ -212,6 +240,16 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
         console.log(`#${String(t.id).padEnd(6)} ${t.symbol_id} ${t.addr} size ${String(t.size ?? '?').padEnd(6)} d${t.difficulty} ${t.state.padEnd(13)} best ${(t.best_score * 100).toFixed(0)}% ${t.name ?? ''} ${t.unit ?? ''}`);
       }
       return;
+    case 'improvable':
+      return printImprovable(await ops.improvable(ws, {
+        maxScore: values['max-score'],
+        minSize: values['min-size'],
+        prefix: values.prefix,
+        byUnit: values['by-unit'],
+        sort: values.sort,
+        limit: values.limit,
+        includeRelocOnly: values.all,
+      }), values.json);
     case 'claim': {
       // td claim [taskId] | td claim --unit <file> | td claim --range 0x140001000-0x140002000 [--limit N]
       if (values.unit) return print(await ops.claimRegion(ws, { kind: 'unit', key: ops.relPath(ws, values.unit) }));

@@ -3,7 +3,7 @@
 import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hasRole } from './accounts.js';
-import { STATUS } from '../shared/compare.js';
+import { STATUS, relocOnly } from '../shared/compare.js';
 import { reconcile } from '../shared/reconcile.js';
 import { returnBatch, batchAttempts, settleBatch, retireSentBack, LIVE_STATES, holdFor } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
@@ -621,10 +621,10 @@ export class Merger {
       const old = this.store.get('SELECT status, file FROM func_status WHERE symbol_id = ?', id);
       if (old && !compiledUnits.has(old.file) && RANK[old.status] > RANK[f.status]) continue;
       this.store.run(
-        `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(symbol_id) DO UPDATE SET file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at, code_hash = COALESCE(excluded.code_hash, func_status.code_hash),
+        `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash, reloc_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(symbol_id) DO UPDATE SET file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at, code_hash = COALESCE(excluded.code_hash, func_status.code_hash), reloc_only = excluded.reloc_only,
            confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 WHEN excluded.status IN ('exact', 'match_unresolved') THEN 0 ELSE func_status.confirmed END`,
-        f.id, unit, f.status, f.score, commit, now(), confirmedIds.has(f.id) ? 1 : 0, f.codeHash ?? null,
+        f.id, unit, f.status, f.score, commit, now(), confirmedIds.has(f.id) ? 1 : 0, f.codeHash ?? null, relocOnly(f) ? 1 : 0,
       );
       if (f.demangled) this.store.run('UPDATE symbols SET name = ? WHERE id = ? AND name IS NULL', f.demangled, f.id);
       this.store.run('UPDATE symbols SET unit = ? WHERE id = ? AND unit IS NULL', unit, f.id);

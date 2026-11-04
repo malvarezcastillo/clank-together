@@ -400,6 +400,23 @@ export function claimRegion(ws, { kind = 'unit', key }) {
   return api(ws).post('/api/regions/claim', { kind, key });
 }
 
+/** Merged functions that still differ from the original, lowest score first. `maxScore` is a percent. */
+export function improvable(ws, { maxScore, minSize, prefix, byUnit = false, sort, limit, includeRelocOnly = false } = {}) {
+  const q = new URLSearchParams();
+  if (maxScore != null && maxScore !== '') {
+    const pct = Number(maxScore);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw new Error('--max-score is a percentage from 0 to 100');
+    q.set('maxScore', String(pct / 100));
+  }
+  if (minSize != null && minSize !== '') q.set('minSize', String(minSize));
+  if (prefix) q.set('prefix', prefix);
+  if (byUnit) q.set('by', 'unit');
+  if (sort) q.set('sort', sort);
+  if (limit != null && limit !== '') q.set('limit', String(limit));
+  if (includeRelocOnly) q.set('includeRelocOnly', '1');
+  return api(ws).get('/api/improvable?' + q.toString());
+}
+
 export function releaseRegion(ws, { kind = 'unit', key }) {
   return api(ws).post('/api/regions/release', { kind, key });
 }

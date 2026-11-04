@@ -5,7 +5,7 @@ import { now } from './db.js';
 import { hex } from '../shared/annotations.js';
 import { groupFor } from './grouping.js';
 import { normalizeRepoPath } from '../shared/lint.js';
-import { settleBatch } from './batches.js';
+import { settleBatch, LIVE_STATES } from './batches.js';
 
 // Why a function needs no decompilation (a "no decompile" claim).
 export const SKIP_CATEGORIES = {
@@ -77,6 +77,72 @@ export class Tasks {
       Math.min(limit, 500),
       offset,
     ).map(formatTaskRow);
+  }
+
+  /**
+   * Functions on main that still differ from the original, lowest score first: work anyone may
+   * take as a revision (claim the file, improve the function, submit). Counted functions only,
+   * none with a candidate already on its way, and none whose bytes already match (only a
+   * reference the original keeps without a relocation differs: no source change fixes those).
+   * `by: 'unit'` groups them per source file, the unit of a region claim.
+   */
+  improvable({ maxScore = 0.6, minSize = 16, prefix = null, by = 'function', sort = 'score', limit = 50, offset = 0, includeRelocOnly = false } = {}) {
+    const v = this.store.currentVersion();
+    if (!v) return { by, items: [], total: 0, hidden: { relocOnly: 0, inFlight: 0 } };
+    // Named parameters: the fragments below are combined in several queries.
+    const p = { $version: v.id, $maxScore: maxScore, $minSize: minSize };
+    const live = LIVE_STATES.map((s, i) => {
+      p[`$live${i}`] = s;
+      return `$live${i}`;
+    });
+    const where = [
+      `s.kind = 'function'`, `s.library = 0`, `s.skip_reason IS NULL`, `s.unit IS NOT NULL`,
+      `fs.status NOT IN ('exact', 'match_unresolved')`, `fs.score < $maxScore`, `COALESCE(a.size, 0) >= $minSize`,
+    ];
+    if (prefix) {
+      where.push(`s.unit LIKE $prefix ESCAPE '\\'`);
+      p.$prefix = prefix.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
+    }
+    const base = `FROM func_status fs JOIN symbols s ON s.id = fs.symbol_id
+         JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = $version
+         JOIN tasks t ON t.symbol_id = s.id
+        WHERE ${where.join(' AND ')}`;
+    const inFlight = `EXISTS (SELECT 1 FROM attempts x WHERE x.task_id = t.id AND x.state IN (${live.join(', ')}))`;
+    const hidden = this.store.get(`SELECT COALESCE(SUM(fs.reloc_only = 1 AND NOT ${inFlight}), 0) AS relocOnly, COALESCE(SUM(${inFlight}), 0) AS inFlight ${base}`, p);
+    const keep = `NOT ${inFlight}${includeRelocOnly ? '' : ' AND fs.reloc_only = 0'}`;
+    const paged = { ...p, $limit: Math.min(Math.max(limit, 1), 500), $offset: Math.max(offset, 0) };
+    const claimants = (unit) =>
+      this.store.all(
+        `SELECT DISTINCT u.name FROM region_claims r JOIN users u ON u.id = r.user_id WHERE r.kind = 'unit' AND r.key = ? AND r.expires_at > ? ORDER BY u.name`,
+        unit, now(),
+      ).map((r) => r.name);
+
+    if (by === 'unit') {
+      const order = { score: 'minScore ASC, below DESC, bytes DESC', gain: 'gain DESC, minScore ASC', size: 'bytes DESC, minScore ASC' }[sort] ?? 'minScore ASC, below DESC, bytes DESC';
+      const rows = this.store.all(
+        `SELECT s.unit AS unit, COUNT(*) AS below, MIN(fs.score) AS minScore, AVG(fs.score) AS avgScore,
+                SUM(COALESCE(a.size, 0)) AS bytes, CAST(ROUND(SUM(COALESCE(a.size, 0) * (1 - fs.score))) AS INTEGER) AS gain
+           ${base} AND ${keep} GROUP BY s.unit ORDER BY ${order}, s.unit ASC LIMIT $limit OFFSET $offset`,
+        paged,
+      );
+      const total = this.store.get(`SELECT COUNT(DISTINCT s.unit) AS n ${base} AND ${keep}`, p).n;
+      return { by, items: rows.map((r) => ({ ...r, minScore: round4(r.minScore), avgScore: round4(r.avgScore), claimedBy: claimants(r.unit) })), total, hidden };
+    }
+
+    const order = { score: 'fs.score ASC, a.size DESC', gain: 'gain DESC, fs.score ASC', size: 'a.size DESC, fs.score ASC' }[sort] ?? 'fs.score ASC, a.size DESC';
+    const rows = this.store.all(
+      `SELECT t.id AS taskId, s.id AS symbol, s.name, s.unit, a.addr, a.size, fs.score, fs.confirmed, fs.reloc_only AS relocOnly,
+              CAST(ROUND(COALESCE(a.size, 0) * (1 - fs.score)) AS INTEGER) AS gain
+         ${base} AND ${keep} ORDER BY ${order}, a.addr ASC LIMIT $limit OFFSET $offset`,
+      paged,
+    );
+    const total = this.store.get(`SELECT COUNT(*) AS n ${base} AND ${keep}`, p).n;
+    const byUnit = new Map();
+    const items = rows.map((r) => {
+      if (!byUnit.has(r.unit)) byUnit.set(r.unit, claimants(r.unit));
+      return { ...r, addr: r.addr != null ? '0x' + hex(r.addr) : null, confirmed: r.confirmed === 1, relocOnly: r.relocOnly === 1, claimedBy: byUnit.get(r.unit) };
+    });
+    return { by, items, total, hidden };
   }
 
   get(id) {
@@ -524,4 +590,8 @@ export function untrusted(text) {
 
 function formatTaskRow(r) {
   return { ...r, addr: r.addr != null ? '0x' + hex(r.addr) : null };
+}
+
+function round4(x) {
+  return x == null ? null : Math.round(x * 10000) / 10000;
 }

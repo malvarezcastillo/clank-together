@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { fixture, FN_ADDR, CALLEE_ADDR, GLOBAL_ADDR } from './helpers.js';
 import { openServer, createApp } from '../src/server/app.js';
 import { Store, now } from '../src/server/db.js';
-import { STATUS } from '../src/shared/compare.js';
+import { STATUS, NO_BASE_RELOC } from '../src/shared/compare.js';
 import { reviewerStats } from '../src/server/reviewers.js';
 import { inferUnits, groupFor } from '../src/server/grouping.js';
 import { Live } from '../src/server/live.js';
@@ -2175,5 +2175,68 @@ test('skip attempt details expose original identity without inventing a compiled
     assert.equal(response.body.feedback, null);
   } finally {
     ctx.store.run('DELETE FROM attempts WHERE id = ?', id);
+  }
+});
+
+test('improvable: merged functions that still differ, lowest score first; in-flight, reloc-only, skipped and tiny ones left out', async () => {
+  const token = await activeUser('impuser');
+  const v = ctx.store.currentVersion();
+  const unitA = 'src/imp/a.cpp';
+  const unitB = 'src/imp/b.cpp';
+  const mk = (addr, size, unit) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size, unit }).symbol.id;
+  const low = mk(0x415000, 400, unitA);
+  const lowSmall = mk(0x415200, 40, unitA);
+  const mid = mk(0x415300, 200, unitB);
+  const high = mk(0x415400, 200, unitB);
+  const exact = mk(0x415500, 200, unitB);
+  const tiny = mk(0x415600, 8, unitB);
+  const flying = mk(0x415700, 200, unitA);
+  const skipped = mk(0x415800, 200, unitA);
+  const relocOnlyFn = mk(0x415900, 200, unitB);
+  ctx.tasks.generate();
+  ctx.store.run(`UPDATE symbols SET skip_reason = 'compiler_generated' WHERE id = ?`, skipped);
+  const ann = (ids) => ids.map((id, i) => `// FUNCTION: ${id}\nint imp${id.slice(3)}_${i}() { return ${i}; }\n`).join('');
+  ctx.repo.commitFiles({ [unitA]: ann([low, lowSmall, flying, skipped]), [unitB]: ann([mid, high, exact, tiny, relocOnlyFn]) }, 'improvable fixture', 'test <test@example.invalid>');
+  const fn = (id, status, score, extra = {}) => ({ id, status, score, relocations: [], diffRegions: [], size: { ours: 8, original: 8 }, ...extra });
+  const noReloc = [{ offset: 2, symbol: '??_7X@@6B@', ok: false, reason: NO_BASE_RELOC }];
+  ctx.merger.applyCheckToDatabase({
+    units: [
+      { file: unitA, compiled: true, includes: [], bindings: {}, functions: [fn(low, STATUS.MISMATCH, 0.1), fn(lowSmall, STATUS.MISMATCH, 0.1), fn(flying, STATUS.MISMATCH, 0.05), fn(skipped, STATUS.MISMATCH, 0.01)] },
+      { file: unitB, compiled: true, includes: [], bindings: {}, functions: [fn(mid, STATUS.MISMATCH, 0.3), fn(high, STATUS.MISMATCH, 0.9), fn(exact, STATUS.EXACT, 1), fn(tiny, STATUS.MISMATCH, 0.2), fn(relocOnlyFn, STATUS.MISMATCH, 0.43, { relocations: noReloc })] },
+    ],
+  }, { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, ctx.repo.head(), null);
+  const taskOf = (sym) => ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id;
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id IN (?, ?, ?, ?, ?, ?, ?, ?)`, low, lowSmall, mid, high, exact, tiny, flying, relocOnlyFn);
+  const author = ctx.accounts.byName('impuser').id;
+  const batch = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at) VALUES (?, ?, '{}', 'open', ?)`, author, ctx.repo.head(), now()).lastInsertRowid);
+  ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, batch_id, created_at) VALUES (?, ?, ?, '{}', 'peer_review', ?, ?)`, taskOf(flying), author, ctx.repo.head(), batch, now());
+
+  const list = async (q) => {
+    const r = await call('GET', `/api/improvable?prefix=src/imp/&${q}`, null, token);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return r.body;
+  };
+  try {
+    const d = await list('');
+    assert.deepEqual(d.items.map((f) => f.symbol), [low, lowSmall, mid], 'lowest score first, the bigger of equal scores first; 90% and exact are above the default 60%');
+    assert.deepEqual(d.hidden, { relocOnly: 1, inFlight: 1 }, 'the candidate on its way and the reloc-only function are counted as not listed');
+    assert.equal(d.items[0].taskId, taskOf(low));
+    assert.ok(d.guidance, 'work responses carry the project policy');
+
+    assert.deepEqual((await list('maxScore=1&minSize=0')).items.map((f) => f.symbol), [low, lowSmall, tiny, mid, high], 'tiny functions only with minSize 0; exact never');
+    const all = await list('maxScore=1&includeRelocOnly=1');
+    assert.deepEqual(all.items.map((f) => f.symbol), [low, lowSmall, mid, relocOnlyFn, high], 'includeRelocOnly lists the matching-code function');
+    assert.equal(all.items.find((f) => f.symbol === relocOnlyFn).relocOnly, true);
+
+    const units = await list('by=unit&maxScore=1');
+    assert.deepEqual(units.items.map((u) => [u.unit, u.below]), [[unitA, 2], [unitB, 2]], 'files ordered by their lowest function');
+    assert.equal(units.items[0].minScore, 0.1);
+
+    assert.equal((await call('GET', '/api/improvable?maxScore=2', null, token)).status, 400);
+    assert.equal((await call('GET', '/api/improvable?sort=nope', null, token)).status, 400);
+    assert.equal((await call('GET', '/api/improvable', null, null)).status, 401);
+  } finally {
+    ctx.store.run('DELETE FROM attempts WHERE batch_id = ?', batch);
+    ctx.store.run('DELETE FROM batches WHERE id = ?', batch);
   }
 });

@@ -149,6 +149,21 @@ Work comes in batches: `td claim --unit <file>` takes every open function of a f
 them together. Byte-identical functions merge automatically; the others are peer-reviewed by three
 agents, then approved by a human with one click per batch.
 
+### Improving merged functions
+
+`td improvable` (MCP: `td_list_improvable`, API: `GET /api/improvable`) lists functions already on
+main that still differ from the original, lowest match score first. It leaves out functions with a
+candidate on its way to main, library and skipped functions, ones under `--min-size` bytes
+(default 16), and ones whose code already matches but whose only failing references point where the
+original has no base relocation (no source change fixes those; `--all` lists them). `--by-unit`
+groups the list per source file, `--max-score` sets the threshold in percent (default 60), and
+`--sort gain` ranks by bytes left to fix instead. To work on one: `td region claim <file>` (allowed
+when every function of it is done), `td check <file>`, improve, then submit the improved functions;
+they are peer reviewed as revisions, and main stays as it is if one goes back.
+
+Scores come from the last merge that compiled the unit, so a listed score can lag behind; `td check`
+gives the current one.
+
 ### Batch visibility
 
 `#/batches` lists all submissions, including failed and historical batches. The

@@ -13,6 +13,20 @@ export const STATUS = {
   NO_ADDRESS: 'no_address', // annotated ID has no address in the current target version
 };
 
+export const NO_BASE_RELOC = 'original has no absolute pointer at this offset';
+
+/**
+ * A mismatch no source change can fix: every byte matches and the only failing references are
+ * absolute pointers the original carries without a base relocation (packer-stripped tables).
+ */
+export function relocOnly(f) {
+  if (f.status !== STATUS.MISMATCH) return false;
+  if (f.size?.original != null && f.size.ours !== f.size.original) return false;
+  if (f.diffRegions?.length) return false;
+  const bad = (f.relocations ?? []).filter((r) => !r.ok);
+  return bad.length > 0 && bad.every((r) => r.reason === NO_BASE_RELOC);
+}
+
 // Above this size the similarity score (only a hint for size-mismatched functions) is per-offset.
 const MAX_LCS = 2048;
 const MAX_DIFF_REGIONS = 24;
@@ -284,7 +298,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     if (r.kind === 'abs') {
       if (!baseRelocs.has(addr + r.offset)) {
         ok = false;
-        reason = 'original has no absolute pointer at this offset';
+        reason = NO_BASE_RELOC;
       }
       const value = r.width === 8 ? Number(orig.readBigUInt64LE(r.offset)) : orig.readUInt32LE(r.offset);
       actual = wrap(value - addend);

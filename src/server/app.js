@@ -433,6 +433,34 @@ export function createApp(ctx) {
     return guided(tasks.context(intParam(params.id)));
   });
 
+  // Functions on main that still differ from the original, lowest score first (tasks.improvable).
+  router.on('GET', '/api/improvable', ({ req, query }) => {
+    auth(req);
+    const num = (name, fallback, min, max) => {
+      const raw = query.get(name);
+      if (raw == null || raw === '') return fallback;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < min || n > max) throw new HttpError(400, `${name} must be a number from ${min} to ${max}`);
+      return n;
+    };
+    const by = query.get('by') ?? 'function';
+    if (!['function', 'unit'].includes(by)) throw new HttpError(400, "by must be 'function' or 'unit'");
+    const sort = query.get('sort') ?? 'score';
+    if (!['score', 'gain', 'size'].includes(sort)) throw new HttpError(400, "sort must be 'score', 'gain' or 'size'");
+    const prefix = query.get('prefix') || null;
+    if (prefix && prefix.length > 300) throw new HttpError(400, 'prefix is too long');
+    return guided(tasks.improvable({
+      maxScore: num('maxScore', 0.6, 0, 1),
+      minSize: Math.trunc(num('minSize', 16, 0, 1 << 24)),
+      prefix,
+      by,
+      sort,
+      limit: Math.trunc(num('limit', 50, 1, 500)),
+      offset: Math.trunc(num('offset', 0, 0, 1 << 30)),
+      includeRelocOnly: query.get('includeRelocOnly') === '1',
+    }));
+  });
+
   // While the peer review queue is long, new work costs a few reviews first: verdicts are what
   // keeps finished work moving to main. Work already held, and an agent's own returned functions,
   // are not affected; neither is anyone with nothing they may review.
@@ -1462,7 +1490,7 @@ function withUpdateNote(req, result) {
       result.guidance +
       ` UPDATE NEEDED: your td is not the current build (${build ? build.slice(0, 12) : 'it does not report one'}; current ${current.map((h) => h.slice(0, 12)).join(' / ')}).` +
       ' Tell the user to restart the AI app (td updates itself when it starts) or to run "td update" and reconnect.' +
-      ' Older td lacks td_mark_no_decompile, td_place and bulk verdicts in td_submit_peer_review.',
+      ' Older td lacks td_mark_no_decompile, td_place, td_list_improvable and bulk verdicts in td_submit_peer_review.',
   };
 }
 

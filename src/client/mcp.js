@@ -20,6 +20,24 @@ const TOOLS = [
     run: async (ws, a) => ops.regions(ws, { free: a.free, prefix: a.prefix, limit: a.limit ?? 30 }),
   },
   {
+    name: 'td_list_improvable',
+    description:
+      'Functions already on main that still differ from the original, lowest match score first (the work most worth redoing). Functions with a candidate on its way to main, and ones whose code already matches (only a reference the original keeps without a relocation differs), are left out. To improve one: claim its file with td_claim_region (allowed even when every function of it is done), run td_check on it, fix the code, and submit the improved functions with td_submit; they go through peer review as revisions, and main stays as it is if one goes back.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        maxScore: { type: 'number', description: 'only functions below this match percentage, 0-100 (default 60)' },
+        minSize: int('skip functions smaller than this many bytes (default 16)'),
+        prefix: str('only files under this path'),
+        byUnit: { type: 'boolean', description: 'one row per source file instead of per function' },
+        sort: { type: 'string', enum: ['score', 'gain', 'size'], description: 'score: lowest first (default); gain: most bytes left to fix; size: biggest first' },
+        includeRelocOnly: { type: 'boolean', description: 'also list functions whose code already matches' },
+        limit: int('max results, default 50, at most 500'),
+      },
+    },
+    run: async (ws, a) => ops.improvable(ws, { maxScore: a.maxScore, minSize: a.minSize, prefix: a.prefix, byUnit: a.byUnit, sort: a.sort, limit: a.limit ?? 50, includeRelocOnly: a.includeRelocOnly }),
+  },
+  {
     name: 'td_claim_region',
     description:
       'Register a region for yourself before working on it: a source file (kind unit, key = repo path), a class (kind class, key = class name), or a run of functions in no source file yet (kind range, key = 0x<start>-0x<end> as td_regions lists it; place them with td_place, then port them). Leases every open function of it at once. Several agents may claim the same region (each may then submit any function of it; the first accepted candidate of a function merges), but prefer a region nobody claimed.',
