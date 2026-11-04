@@ -48,12 +48,12 @@ def setup():
     shutil.copyfile(os.path.join(SECRETS, "rodecomp_sync"), key)
     os.chmod(key, 0o600)
 
-    # Forgejo accepts an access token as the HTTP username.
-    forgejo_url = FORGEJO_URL.replace("://", f"://{FORGEJO_TOKEN}@", 1)
+    # Token as a header (scoped to the Forgejo host) survives Forgejo's redirects, unlike URL userinfo.
+    forgejo_host = FORGEJO_URL.split("/", 3)[:3]
 
     if not os.path.isdir(WORK):
         subprocess.run(["git", "init", "--bare", "-q", WORK], check=True)
-    for name, url in (("github", GITHUB_URL), ("forgejo", forgejo_url)):
+    for name, url in (("github", GITHUB_URL), ("forgejo", FORGEJO_URL)):
         if git("remote", "get-url", name, check=False).returncode:
             git("remote", "add", name, url)
         else:
@@ -62,6 +62,7 @@ def setup():
         git("config", "--replace-all", f"remote.{name}.fetch", f"+refs/heads/*:refs/sync/{name}/heads/*")
         git("config", "--add", f"remote.{name}.fetch", f"+refs/tags/*:refs/sync/{name}/tags/*")
         git("config", f"remote.{name}.tagOpt", "--no-tags")
+    git("config", f"http.{'/'.join(forgejo_host)}/.extraHeader", f"Authorization: token {FORGEJO_TOKEN}")
 
 
 def refs(remote, kind):
