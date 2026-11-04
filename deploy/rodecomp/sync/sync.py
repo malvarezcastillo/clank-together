@@ -143,8 +143,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(401)
             self.end_headers()
             return
-        event = self.headers.get("X-GitHub-Event") or self.headers.get("X-Forgejo-Event") or "?"
-        source = "github" if "X-GitHub-Event" in self.headers else "forgejo"
+        event = self.headers.get("X-Forgejo-Event") or self.headers.get("X-GitHub-Event") or "?"
+        # Forgejo also sends X-GitHub-Event for compatibility, so test its own header first.
+        source = "forgejo" if "X-Forgejo-Event" in self.headers else "github"
         log(f"event {event} from {source}")
         if event in ("push", "create"):
             _pending.set()
