@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { lintAnnotations } from '../shared/annotations.js';
 import { lintSubmission } from '../shared/lint.js';
 import { freeTextErrorsAcross, executionCharset, encodedLiteralRules, VIRTUALIZED_RE } from '../shared/freetext.js';
+import { offsetErrors } from '../shared/offsets.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal, resolvedEffectiveHash } from '../shared/compare.js';
@@ -447,13 +448,23 @@ export class Verifier {
    * annotations and markers, and strings of the original executable, are allowed (freetext.js).
    * What the submitted files held on the base may move between them (a definition moving to its
    * owner keeps its provenance), but every such line counts once.
+   * With `offsetAnnotations`, the OFFSET lines of the annotation blocks it adds or changes must
+   * match their IDs too (offsets.js).
    */
   freeTextGate(files, baseCommit) {
     const exe = this.getPe().buf;
     const inOriginal = (bytes) => exe.indexOf(bytes) !== -1;
     const baseFiles = Object.fromEntries(this.repo.showMany(baseCommit, Object.keys(files)));
     const charsetForFile = (file) => executionCharset(unitSettings(this.project, file).cflags);
-    return freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile, encoded: encodedLiteralRules(this.project.encodedLiterals) });
+    const errors = freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile, encoded: encodedLiteralRules(this.project.encodedLiterals) });
+    if (this.project.offsetAnnotations !== true) return errors;
+    const v = this.store.currentVersion();
+    const addressOf = (id) => this.store.get('SELECT addr FROM symbol_addresses WHERE symbol_id = ? AND version_id = ?', id, v.id)?.addr ?? null;
+    for (const [file, text] of Object.entries(files)) {
+      if (typeof text !== 'string') continue;
+      for (const e of offsetErrors(text, baseFiles[file] ?? null, addressOf)) errors.push({ file, ...e });
+    }
+    return errors;
   }
 
   /**

@@ -18,6 +18,8 @@ export const DEFAULT_PROJECT = {
   globalRules: false, // opt-in source storage/provenance checks; no symbol-database definition exemption
   // encodedLiterals: literals the original stores encoded, MACRO("text", key); see freetext.js.
   encodedLiterals: [],
+  // offsetAnnotations: every FUNCTION/STUB line has its // OFFSET: address right above it; see offsets.js.
+  offsetAnnotations: false,
   // reviewAt: 'exact' requires every relocation target to be a known symbol;
   // 'match_unresolved' also accepts byte matches that reference not-yet-known data
   // (those symbols are created automatically on merge).
