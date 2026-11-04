@@ -2,6 +2,7 @@
   "listen": { "host": "0.0.0.0", "port": 8080 },
   "publicUrl": "https://clank.rodecomp.online",
   "verifyConcurrency": 1,
+  "peerReviewFirstAt": 500,
   "remoteChecks": false,
   "buildTimeoutMs": 300000,
   "runners": {
