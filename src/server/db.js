@@ -240,6 +240,20 @@ CREATE TABLE IF NOT EXISTS events (
   data TEXT
 );
 
+-- Whole-binary byte match after each commit to main: score is the size-weighted match of the
+-- counted functions (sum of size x score over sum of size), exact the share of bytes in
+-- byte-identical functions. One row per commit; the home page charts it.
+CREATE TABLE IF NOT EXISTS match_history (
+  id INTEGER PRIMARY KEY,
+  at INTEGER NOT NULL,
+  commit_hash TEXT NOT NULL,
+  score REAL NOT NULL,
+  exact REAL NOT NULL,
+  functions INTEGER NOT NULL,
+  bytes INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS match_history_at ON match_history(at);
+
 -- A region (a source file or a class) an agent registered to work on as a whole. Several agents
 -- may hold the same region; each may then submit any of its functions, and the first accepted
 -- candidate of a function wins (the others are superseded).
@@ -499,6 +513,34 @@ export class Store {
 
   getMeta(key) {
     return this.get('SELECT value FROM meta WHERE key = ?', key)?.value ?? null;
+  }
+
+  /** The whole binary's byte match right now, over the functions progress counts. */
+  matchNow() {
+    const v = this.currentVersion();
+    if (!v) return null;
+    const r = this.get(
+      `SELECT COUNT(*) AS functions, COALESCE(SUM(a.size), 0) AS bytes,
+              COALESCE(SUM(a.size * COALESCE(fs.score, 0)), 0) AS weighted,
+              COALESCE(SUM(CASE WHEN fs.status IN ('exact', 'match_unresolved') THEN a.size ELSE 0 END), 0) AS exactBytes
+         FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ?
+         LEFT JOIN func_status fs ON fs.symbol_id = s.id
+        WHERE s.kind = 'function' AND s.library = 0 AND s.skip_reason IS NULL`,
+      v.id,
+    );
+    if (!r.bytes) return null;
+    return { score: r.weighted / r.bytes, exact: r.exactBytes / r.bytes, functions: r.functions, bytes: r.bytes };
+  }
+
+  /** One point of the match history for a commit to main (never fatal to the commit). */
+  recordMatch(commit, at = Date.now()) {
+    try {
+      const m = this.matchNow();
+      if (!m) return;
+      this.run('INSERT INTO match_history (at, commit_hash, score, exact, functions, bytes) VALUES (?, ?, ?, ?, ?, ?)', at, commit, m.score, m.exact, m.functions, m.bytes);
+    } catch {
+      // A missing point is better than a failed merge.
+    }
   }
   setMeta(key, value) {
     this.run('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, String(value));

@@ -307,6 +307,7 @@ setInterval(() => {
     loadProgress().catch(() => {});
     pollFeed().catch(() => {});
     loadMap().catch(() => {});
+    loadMatchHistory().catch(() => {});
   }
   if (me) api('/api/credits/me').then((w) => setCredits(w.balance)).catch(() => {});
 }, 30_000);
@@ -320,7 +321,7 @@ setInterval(() => {
 // --- home
 
 async function loadHome() {
-  await Promise.all([loadProgress(), loadFeed(), loadMap(), loadCrew(), loadBoard()]);
+  await Promise.all([loadProgress(), loadFeed(), loadMap(), loadCrew(), loadBoard(), loadMatchHistory()]);
 }
 
 async function loadProgress() {
@@ -700,6 +701,8 @@ function addFeed(items, live) {
     if (live && e.type === 'merged' && currentView === 'home') {
       const r = $('map-canvas').getBoundingClientRect();
       sparks(r.left + r.width / 2, r.top + 30, 10);
+      // The new commit's point is recorded as the merge finishes; give it a moment.
+      setTimeout(() => loadMatchHistory().catch(() => {}), 3_000);
     }
     if (live && e.type === 'game_win' && me && e.user === me.name) sparks(window.innerWidth - 80, 40, 18, ['🪙', '✨', '🎉']);
   }
@@ -902,9 +905,107 @@ $('map-by-match').addEventListener('change', (e) => {
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => currentView === 'home' && drawMap(), 150);
+  resizeTimer = setTimeout(() => currentView === 'home' && (drawMap(), drawMatchHistory()), 150);
 });
-window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => drawMap());
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => (drawMap(), drawMatchHistory()));
+
+// --- whole-binary byte match over time (/api/match-history, one point per commit, downsampled)
+
+const matchHistory = { points: [], current: null, commits: 0 };
+
+async function loadMatchHistory() {
+  const h = await api('/api/match-history?points=400');
+  matchHistory.points = h.points;
+  matchHistory.current = h.current;
+  matchHistory.commits = h.commits;
+  drawMatchHistory();
+}
+
+function drawMatchHistory() {
+  const svg = $('match-chart');
+  if (!svg) return;
+  const pts = matchHistory.points;
+  const now = matchHistory.current;
+  $('match-now').textContent = now ? `${(now.score * 100).toFixed(2)} %` : '';
+  const W = Math.max(320, $('match-chart-wrap').clientWidth || 600);
+  const H = 180;
+  const pad = { l: 46, r: 12, t: 10, b: 24 };
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
+  const NS = 'http://www.w3.org/2000/svg';
+  const node = (tag, attrs, text) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  svg.replaceChildren();
+  if (pts.length < 2) {
+    svg.append(node('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle', class: 'mh-empty' }, 'The curve starts with the next commit to main.'));
+    return;
+  }
+  const x0 = pts[0].at;
+  const x1 = Math.max(pts[pts.length - 1].at, x0 + 1);
+  // A tight y range shows small moves; never below 0 or above 100 %.
+  let lo = Math.min(...pts.map((p) => p.score));
+  let hi = Math.max(...pts.map((p) => p.score));
+  const span = Math.max(hi - lo, 0.002);
+  lo = Math.max(0, lo - span * 0.15);
+  hi = Math.min(1, hi + span * 0.15);
+  const sx = (t) => pad.l + ((t - x0) / (x1 - x0)) * (W - pad.l - pad.r);
+  const sy = (v) => pad.t + (1 - (v - lo) / (hi - lo)) * (H - pad.t - pad.b);
+
+  const digits = hi - lo < 0.02 ? 2 : hi - lo < 0.2 ? 1 : 0;
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + ((hi - lo) * i) / 4;
+    const y = sy(v);
+    svg.append(node('line', { x1: pad.l, x2: W - pad.r, y1: y, y2: y, class: 'mh-grid' }));
+    svg.append(node('text', { x: pad.l - 6, y: y + 4, 'text-anchor': 'end', class: 'mh-axis' }, `${(v * 100).toFixed(digits)}%`));
+  }
+  const days = (x1 - x0) / 86_400_000;
+  const label = (t) => new Date(t).toLocaleString(undefined, days < 2 ? { hour: '2-digit', minute: '2-digit' } : { month: 'short', day: 'numeric' });
+  for (let i = 0; i <= 4; i++) {
+    const t = x0 + ((x1 - x0) * i) / 4;
+    svg.append(node('text', { x: sx(t), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === 4 ? 'end' : 'middle', class: 'mh-axis' }, label(t)));
+  }
+
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${sx(p.at).toFixed(1)},${sy(p.score).toFixed(1)}`).join('');
+  const base = sy(lo).toFixed(1);
+  svg.append(node('path', { d: `${line}L${sx(x1).toFixed(1)},${base}L${sx(x0).toFixed(1)},${base}Z`, class: 'mh-area' }));
+  svg.append(node('path', { d: line, class: 'mh-line' }));
+  const last = pts[pts.length - 1];
+  svg.append(node('circle', { cx: sx(last.at), cy: sy(last.score), r: 3.5, class: 'mh-dot' }));
+
+  // Hover: the nearest point by date.
+  const cursor = node('line', { y1: pad.t, y2: H - pad.b, class: 'mh-cursor', visibility: 'hidden' });
+  const mark = node('circle', { r: 3.5, class: 'mh-dot', visibility: 'hidden' });
+  svg.append(cursor, mark);
+  const tip = $('match-tip');
+  svg.onmousemove = (ev) => {
+    const box = svg.getBoundingClientRect();
+    const t = x0 + ((ev.clientX - box.left) * (W / box.width) - pad.l) / (W - pad.l - pad.r) * (x1 - x0);
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(p.at - t) < Math.abs(best.at - t)) best = p;
+    const cx = sx(best.at);
+    cursor.setAttribute('x1', cx);
+    cursor.setAttribute('x2', cx);
+    mark.setAttribute('cx', cx);
+    mark.setAttribute('cy', sy(best.score));
+    cursor.setAttribute('visibility', 'visible');
+    mark.setAttribute('visibility', 'visible');
+    tip.replaceChildren(el('div', `${(best.score * 100).toFixed(3)} % byte match`), el('div', `${(best.exact * 100).toFixed(2)} % byte-identical`, 'muted'), el('div', date(best.at), 'muted'));
+    tip.hidden = false;
+    const wrap = $('match-chart-wrap').getBoundingClientRect();
+    tip.style.left = `${Math.min(ev.clientX - wrap.left + 14, wrap.width - 220)}px`;
+    tip.style.top = `${ev.clientY - wrap.top + 14}px`;
+  };
+  svg.onmouseleave = () => {
+    tip.hidden = true;
+    cursor.setAttribute('visibility', 'hidden');
+    mark.setAttribute('visibility', 'hidden');
+  };
+}
 
 // Crew and leaderboards
 

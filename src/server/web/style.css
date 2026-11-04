@@ -659,6 +659,19 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .map-legend .sw::before { content: ""; display: inline-block; width: 11px; height: 11px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: var(--c); }
 .map-legend .n { font-family: var(--font-mono); color: var(--muted); margin-left: 4px; }
 .map-tools { display: flex; align-items: center; gap: 12px; }
+.match-history { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+.match-history-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.match-history-head h3 { margin: 0; font-size: 14px; }
+.match-now { font: 600 18px var(--font-mono); color: var(--accent-ink); }
+.match-chart-wrap { position: relative; margin-top: 8px; }
+#match-chart { display: block; width: 100%; height: auto; }
+#match-chart .mh-grid { stroke: var(--line); stroke-width: 1; }
+#match-chart .mh-axis { fill: var(--muted); font: 11px var(--font-mono); }
+#match-chart .mh-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+#match-chart .mh-area { fill: var(--accent); opacity: 0.12; }
+#match-chart .mh-dot { fill: var(--accent); }
+#match-chart .mh-cursor { stroke: var(--muted); stroke-dasharray: 3 3; }
+#match-chart .mh-empty { fill: var(--muted); font: 13px var(--font-mono); }
 .map-tools input[type="search"] { min-width: 260px; }
 .map-toggle input { transition: background 0.15s, border-color 0.15s; }
 .map-toggle input::before { transition: transform 0.15s; }

@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>Clank Together</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=matchmap4-20261103">
+  <link rel="stylesheet" href="/style.css?v=matchhistory-20261104">
 </head>
 <body>
   <header class="topbar">
@@ -92,6 +92,17 @@
         </div>
         <div class="map-legend" id="map-legend"></div>
         <div id="map-detail" class="map-detail" hidden></div>
+        <div class="match-history">
+          <div class="match-history-head">
+            <h3>Whole binary, byte match over time</h3>
+            <span id="match-now" class="match-now"></span>
+          </div>
+          <div class="match-chart-wrap" id="match-chart-wrap">
+            <svg id="match-chart" role="img" aria-label="Whole-binary byte match percentage by date"></svg>
+            <div id="match-tip" class="map-tip" hidden></div>
+          </div>
+          <p class="hint">Size-weighted byte match of every counted function after each commit to main.</p>
+        </div>
       </section>
 
       <div class="home-grid">
@@ -469,6 +480,6 @@
     <div class="hazard thin" aria-hidden="true"></div>
     <p>Clank Together · source is open: <code id="clone-cmd">git clone https://clank.rodecomp.online/git/clank/game-decomp.git</code></p>
   </footer>
-  <script src="/app.js?v=matchmap4-20261103"></script>
+  <script src="/app.js?v=matchhistory-20261104"></script>
 </body>
 </html>

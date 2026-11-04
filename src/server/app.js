@@ -31,6 +31,7 @@ import { Trust } from './trust.js';
 import { PEImage } from '../shared/pe.js';
 import { compileProgress } from './compile-progress.js';
 import { snapshot as boardSnapshot } from './board.js';
+import { lttb } from './downsample.js';
 import { loadProject, loadToolchainLock } from '../shared/project.js';
 import { DEFAULT_LIMITS, lintSubmission } from '../shared/lint.js';
 import { hex } from '../shared/annotations.js';
@@ -330,6 +331,20 @@ export function createApp(ctx) {
       ).n;
     const merges = { lastHour: mergedSince(3600_000), perHourDay: mergedSince(24 * 3600_000) / 24, bytesLastHour: bytesSince(3600_000), bytesPerHourDay: bytesSince(24 * 3600_000) / 24 };
     return { functions: total.n, bytes: total.bytes, byStatus, confirmed, peerQueue, byTaskState, contributors, merges };
+  });
+
+  // Whole-binary byte match over time (match_history: one row per commit), reduced to at most
+  // `points` with LTTB so the chart stays light; the last point is the value right now.
+  router.on('GET', '/api/match-history', ({ query }) => {
+    const want = Math.min(Math.max(Number.parseInt(query.get('points') ?? '400', 10) || 400, 10), 2000);
+    return cached(`match-history-${want}`, 20_000, () => {
+      const rows = store.all('SELECT at, score, exact FROM match_history ORDER BY at, id');
+      const current = store.matchNow();
+      if (current) rows.push({ at: Date.now(), score: current.score, exact: current.exact });
+      const round = (x) => Math.round(x * 1e6) / 1e6;
+      const points = lttb(rows.map((r) => [r.at, r.score, r.exact]), want).map(([at, score, exact]) => ({ at, score: round(score), exact: round(exact) }));
+      return { commits: rows.length - (current ? 1 : 0), points, current: current ? { score: round(current.score), exact: round(current.exact) } : null };
+    });
   });
 
   // --- accounts

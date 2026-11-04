@@ -2251,3 +2251,29 @@ test('improvable: merged functions that still differ, lowest score first; in-fli
     ctx.store.run('DELETE FROM batches WHERE id = ?', batch);
   }
 });
+
+test('match history: a point per commit, size-weighted over counted functions, public and downsampled', async () => {
+  ctx.store.run('DELETE FROM match_history');
+  const m = ctx.store.matchNow();
+  assert.ok(m && m.bytes > 0);
+  const expect = ctx.store.get(
+    `SELECT SUM(a.size * COALESCE(fs.score, 0)) * 1.0 / SUM(a.size) AS w FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id JOIN versions v ON v.id = a.version_id AND v.is_current = 1
+       LEFT JOIN func_status fs ON fs.symbol_id = s.id WHERE s.kind = 'function' AND s.library = 0 AND s.skip_reason IS NULL`,
+  ).w;
+  assert.ok(Math.abs(m.score - expect) < 1e-9, 'size-weighted score of the counted functions');
+
+  ctx.merger.afterCommit(ctx.repo.head());
+  assert.equal(ctx.store.get('SELECT COUNT(*) AS n FROM match_history').n, 1, 'every commit to main records a point');
+  const t0 = Date.now() - 10 * 86_400_000;
+  ctx.store.tx(() => {
+    for (let i = 0; i < 3000; i++) ctx.store.run('INSERT INTO match_history (at, commit_hash, score, exact, functions, bytes) VALUES (?, ?, ?, ?, 1, 1)', t0 + i * 60_000, 'x', 0.3 + i * 1e-5, 0.01);
+  });
+
+  const r = await call('GET', '/api/match-history?points=100', null, null);
+  assert.equal(r.status, 200, 'public, like the progress bar');
+  assert.ok(r.body.commits >= 3001, 'every recorded commit is counted (a background merge may add its own)');
+  assert.equal(r.body.points.length, 100, 'reduced to the requested budget');
+  assert.ok(r.body.points.every((p, i, a) => i === 0 || p.at >= a[i - 1].at), 'in date order');
+  assert.ok(Math.abs(r.body.points.at(-1).score - ctx.store.matchNow().score) < 1e-6, 'the last point is the value right now');
+  ctx.store.run('DELETE FROM match_history');
+});

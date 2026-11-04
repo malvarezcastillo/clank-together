@@ -530,6 +530,7 @@ export class Merger {
   /** What follows every commit to main: new tasks, the push to the mirror, listeners. */
   afterCommit(commit) {
     this.tasks.generate();
+    this.store.recordMatch(commit);
     if (this.config.pushRemote) {
       try {
         this.repo.push(this.config.pushRemote);
