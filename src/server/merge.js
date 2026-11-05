@@ -3,7 +3,7 @@
 import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hasRole } from './accounts.js';
-import { STATUS, relocOnly, resolvedEffectiveHash } from '../shared/compare.js';
+import { STATUS, relocOnly, resolvedEffectiveHash, isCompilerGenerated } from '../shared/compare.js';
 import { reconcile } from '../shared/reconcile.js';
 import { returnBatch, batchAttempts, settleBatch, retireSentBack, LIVE_STATES, holdFor } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
@@ -651,7 +651,9 @@ export class Merger {
         this.store.event('address_learned', userId, { id: l.id, version: v.id, addr: l.addr });
       }
     }
-    for (const u of rec.unknown) {
+    // EH handlers, unwind funclets and deleting destructors are made by the compiler from the
+    // function that uses them: a symbol for one would be a task nobody can port.
+    for (const u of rec.unknown.filter((x) => !isCompilerGenerated(x.decorated))) {
       const kind = u.decorated.startsWith('??_C@') ? 'string' : u.decorated.startsWith('??_7') ? 'vtable' : pe.isCode(u.addr) ? 'function' : 'global';
       const { symbol } = this.store.ensureSymbol({ kind, versionId: v.id, addr: u.addr, userId });
       this.store.run('UPDATE symbols SET decorated = ? WHERE id = ? AND decorated IS NULL', u.decorated, symbol.id);

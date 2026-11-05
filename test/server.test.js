@@ -524,6 +524,25 @@ test('a byte-identical function that main no longer builds exactly stays done', 
   assert.equal(row().confirmed, 0, 'byte-identical again: counted as identical, not twice');
 });
 
+// A reference to an unnamed address becomes a new symbol on merge, but not when the compiler made
+// the target from the referencing function (EH handler, unwind funclet): that would be a task.
+test('merging learns unknown references as symbols, except compiler-generated ones', () => {
+  const v = ctx.store.currentVersion();
+  const at = (addr) => ctx.store.get('SELECT s.id, s.decorated FROM symbol_addresses a JOIN symbols s ON s.id = a.symbol_id WHERE a.version_id = ? AND a.addr = ?', v.id, addr);
+  const rec = {
+    conflicts: [], learned: [], learnedAddresses: [],
+    unknown: [
+      { decorated: '?Helper@@YAXXZ', addr: 0x401d00 },
+      { decorated: '__ehhandler$?Helper@@YAXXZ', addr: 0x401d10 },
+      { decorated: '__unwindfunclet$?Helper@@YAXXZ$0', addr: 0x401d20 },
+    ],
+  };
+  ctx.merger.applyCheckToDatabase({ units: [] }, rec, ctx.repo.head(), null);
+  assert.equal(at(0x401d00)?.decorated, '?Helper@@YAXXZ', 'an ordinary function is learned');
+  assert.equal(at(0x401d10), undefined, 'no symbol for its EH handler');
+  assert.equal(at(0x401d20), undefined, 'nor for its unwind funclet');
+});
+
 test('a function main no longer has loses its status and its done task reopens; kept, moved or failed-unit ones stay', () => {
   const v = ctx.store.currentVersion();
   const sym = (addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 8 }).symbol.id;

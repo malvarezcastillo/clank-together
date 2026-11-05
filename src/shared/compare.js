@@ -209,8 +209,11 @@ function procText(proc) {
   return proc.insns.slice(0, 4000).map((i) => `${i.offset.toString(16).padStart(4, '0')}  ${i.text}`).join('\n');
 }
 
-function isCompilerGenerated(name) {
-  // scalar/vector deleting destructors, thunks, CRT helpers
+/**
+ * Compiler-made code that has no source line of its own: scalar/vector deleting destructors,
+ * thunks, EH handlers and funclets (__ehhandler$, __unwindfunclet$, __catch$), CRT helpers.
+ */
+export function isCompilerGenerated(name) {
   return /^\?\?_[GEH]|^__|^\$|^_\$E/.test(name);
 }
 
