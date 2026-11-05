@@ -165,16 +165,24 @@ export function writeEditorCompileDb(ws) {
 /**
  * Fast-forwards the clone to the server's main and refreshes the symbol snapshot. Only a clean
  * working tree moves: in a shared checkout, uncommitted files may be someone's unfinished work.
+ * When main was rewritten (same changes, new commit IDs), the clone's own commits no longer lie on
+ * it and a fast-forward is impossible; if each of them is on main by content, nothing would be lost,
+ * so the clone is moved to main. A local commit main does not have keeps the clone where it is.
  */
 export async function sync(ws) {
   ws.git('fetch', '-q', 'origin');
   const changed = ws.changedFiles();
   let pulled = !changed.length;
+  let rewritten = false;
   if (pulled) {
     try {
       ws.git('merge', '-q', '--ff-only', '@{u}');
     } catch {
       pulled = false;
+      if (localCommitsOnUpstream(ws)) {
+        ws.git('reset', '-q', '--keep', '@{u}');
+        pulled = rewritten = true;
+      }
     }
   }
   const snap = await refreshSymbols(ws);
@@ -188,7 +196,23 @@ export async function sync(ws) {
     ? `not fast-forwarded: ${changed.length} uncommitted files (${changed.slice(0, 5).join(', ')}); submit or set them aside first`
     : 'could not fast-forward (local commits or conflicting changes); merge origin/main yourself';
   writeEditorCompileDb(ws);
-  return { head: ws.head(), fastForwarded: pulled, symbols: snap.symbols.length, ghidra, note: pulled ? null : note };
+  return { head: ws.head(), fastForwarded: pulled, ...(rewritten && { rewrittenMain: true }), symbols: snap.symbols.length, ghidra, note: pulled ? null : note };
+}
+
+/**
+ * Whether every commit the clone has that its upstream lacks is on the upstream all the same: the
+ * same change (git's patch-id, as `--cherry-pick` compares them), as after the server rewrote
+ * main's history. Merge commits carry no patch of their own; one counts when its tree is on the
+ * upstream too.
+ */
+export function localCommitsOnUpstream(ws) {
+  const list = (...args) => ws.git(...args).split('\n').filter(Boolean);
+  // --cherry-pick drops a commit whose change is also on the other side; --left-only keeps ours.
+  if (list('rev-list', '--no-merges', '--left-only', '--cherry-pick', 'HEAD...@{u}').length) return false;
+  const merges = list('rev-list', '--merges', '@{u}..HEAD');
+  if (!merges.length) return true;
+  const trees = new Set(list('log', '--format=%T', `${ws.git('merge-base', 'HEAD', '@{u}')}..@{u}`));
+  return merges.every((m) => trees.has(ws.git('rev-parse', `${m}^{tree}`)));
 }
 
 /**
