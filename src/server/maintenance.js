@@ -143,10 +143,36 @@ export class Maintenance {
     if (before.units.some((u) => !u.compiled || u.timedOut)) throw new BuildRetryError(before, 'maintenance-baseline');
     const was = new Map([...bestResults(before)].map(([id, b]) => [id, b.f]));
     // A reference is compared by the address it reaches: a function the change renames is bound
-    // under its new name here and its old one on main, which is the same code.
+    // under its new name here and its old one on main, which is the same code. Two kinds of names
+    // have no binding: the function's own helpers (its __ehhandler$<name>, local statics, lambdas),
+    // which count as reaching where the original points from that reference; and a declared-only
+    // callee, placed at the function the database knows by that plain name, or by the address a
+    // placeholder name (sub_6468C0) spells.
     const symbols = this.store.symbolMap(this.store.currentVersion().id);
     const addressNow = boundAddresses(check, symbols);
     const addressBefore = boundAddresses(before, symbols);
+    const byName = new Map();
+    const starts = new Set();
+    for (const s of symbols.values()) {
+      if (s.addr == null || s.kind !== 'function') continue;
+      starts.add(s.addr);
+      if (s.name && !byName.has(s.name)) byName.set(s.name, s.addr);
+    }
+    const plain = (name) => /^\?([A-Za-z_]\w*)@@/.exec(name)?.[1];
+    const callee = (name) => {
+      const p = plain(name);
+      if (!p) return null;
+      if (byName.has(p)) return byName.get(p);
+      const placeholder = /^sub_([0-9A-F]{6,8})$/.exec(p);
+      const at = placeholder ? Number.parseInt(placeholder[1], 16) : null;
+      return at != null && starts.has(at) ? at : null;
+    };
+    const own = (f, name) => {
+      const key = /^\?([^@?]+@(?:[^@?]+@)*@)/.exec(f.symbol ?? '')?.[1];
+      return !!key && name !== f.symbol && name.includes(key);
+    };
+    const original = (f, name) => f.relocations?.find((r) => r.symbol === name && r.actual != null)?.actual ?? null;
+    const effective = (f, bound) => resolvedEffectiveHash(f, (name) => bound(name) ?? (own(f, name) ? original(f, name) : callee(name)));
     const out = [];
     for (const [id, { f, unit }] of bestResults(check)) {
       const old = was.get(id);
@@ -154,7 +180,7 @@ export class Maintenance {
         out.push({ id, file: unit, why: 'not compiled on main' });
         continue;
       }
-      if (resolvedEffectiveHash(old, addressBefore) !== resolvedEffectiveHash(f, addressNow)) out.push({ id, file: unit, why: 'compiled code changed' });
+      if (effective(old, addressBefore) !== effective(f, addressNow)) out.push({ id, file: unit, why: 'compiled code changed' });
     }
     return out;
   }

@@ -123,23 +123,31 @@ test('maintenance timeout queues work and baseline failure cannot appear as chan
   await assert.rejects(m.changedFunctions(analysis(true), files, 'head'), (e) => e instanceof BuildRetryError && e.diagnostic.stage === 'maintenance-baseline');
 });
 
-test('maintenance: renaming a called function is not a code change; calling another one is', async (t) => {
+test('maintenance: renaming a function, its own helpers and a declared-only callee is not a code change; calling another one is', async (t) => {
   const f = fixture(t);
   f.store.currentVersion = () => ({ id: 1 });
-  f.store.symbolMap = () => new Map([['fn_00001', { addr: 0x401000 }], ['fn_00002', { addr: 0x401100 }], ['fn_00003', { addr: 0x401200 }]]);
+  // fn_00002 (at 0x401100) is declared-only in the source: no binding, known to the database by name.
+  f.store.symbolMap = () => new Map([
+    ['fn_00001', { kind: 'function', addr: 0x401000 }],
+    ['fn_00002', { kind: 'function', addr: 0x401100, name: 'FillRange' }],
+    ['fn_00003', { kind: 'function', addr: 0x401200, name: 'Other' }],
+  ]);
   const m = new Maintenance({ ...f, project: f.verifier.project, log: f.verifier.log });
   const { effectiveHash } = await import('../src/shared/compare.js');
-  // A caller (fn_00001) whose only reference is to a symbol the database has no decorated name for yet.
-  const caller = (name) => {
-    const effective = [`1:rel:?${name}+-4`];
-    const parts = { bytesHash: 'b', effective, unresolvedRefs: [{ index: 0, name, addend: -4, prefix: '1:rel:' }], is64: false };
-    return { id: 'fn_00001', status: 'mismatch', score: 0.5, effectiveHash: effectiveHash(Buffer.from([0xe8]), [0], effective), effectiveParts: parts };
+  // fn_00001 as compiled under `self`: its exception handler (named after it) and a call to `callee`.
+  const fn = (self, callee) => {
+    const handler = `__ehhandler$${self}`;
+    const refs = [[handler, 6, 'abs', 0], [callee, 37, 'rel', -4]];
+    const effective = refs.map(([n, at, kind, add]) => `${at}:${kind}:?${n}+${add}`);
+    const parts = { bytesHash: 'b', effective, unresolvedRefs: refs.map(([n, at, kind, add], index) => ({ index, name: n, addend: add, prefix: `${at}:${kind}:` })), is64: false };
+    const relocations = [{ offset: 6, symbol: handler, ok: true, unresolved: true, actual: 0xeee000 }, { offset: 37, symbol: callee, ok: true, unresolved: true, actual: 0x401100 }];
+    return { id: 'fn_00001', symbol: self, status: 'mismatch', score: 0.5, effectiveHash: effectiveHash(Buffer.from([0]), [0], effective), effectiveParts: parts, relocations };
   };
-  const unit = (name, callee) => ({ file: 'src/a.cpp', compiled: true, functions: [caller(callee), { id: callee === '?g@@YAHXZ' || callee === '?h@@YAHXZ' ? 'fn_00002' : 'fn_00003', symbol: callee, status: 'exact', score: 1, addr: callee === '?k@@YAHXZ' ? 0x401200 : 0x401100 }], bindings: { [callee]: callee === '?k@@YAHXZ' ? 'fn_00003' : 'fn_00002' }, lintErrors: [], unannotated: [] });
-  f.verifier.check = async () => ({ check: { units: [unit('main', '?g@@YAHXZ')] } });
-  assert.deepEqual(await m.changedFunctions({ units: [unit('new', '?h@@YAHXZ')] }, files, 'head'), [], 'g renamed to h: same address, same code');
-  const changed = await m.changedFunctions({ units: [unit('new', '?k@@YAHXZ')] }, files, 'head');
-  assert.deepEqual(changed.filter((c) => c.why === 'compiled code changed').map((c) => c.id), ['fn_00001'], 'now calling a different function');
+  const unit = (self, callee) => ({ file: 'src/a.cpp', compiled: true, functions: [fn(self, callee)], bindings: { [self]: 'fn_00001' }, lintErrors: [], unannotated: [] });
+  f.verifier.check = async () => ({ check: { units: [unit('?sub_401000@@YAXXZ', '?sub_401100@@YAXPAX0PBX@Z')] } });
+  const changed = async (self, callee) => (await m.changedFunctions({ units: [unit(self, callee)] }, files, 'head')).map((c) => c.id);
+  assert.deepEqual(await changed('?Load@@YAXXZ', '?FillRange@@YAXPAX0PBX@Z'), [], 'only names changed');
+  assert.deepEqual(await changed('?Load@@YAXXZ', '?Other@@YAXPAX0PBX@Z'), ['fn_00001'], 'now calling a different function');
 });
 
 test('a batch that edits a unit outside its tasks merges whole: one function sent back returns it all', async (t) => {
