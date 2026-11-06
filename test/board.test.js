@@ -67,6 +67,28 @@ test('each unfinished function sits in its stage; finished ones are not on the b
   assert.deepEqual(b.builds, [{ job: `batch-${building}`, lane: 'verify', batch: building, done: 3, total: 4, startedAt: '2026-11-02T12:00:00.000Z', author: 'ann' }], 'a stale job folder is not a running build');
 });
 
+test('a merged function submitted again is staged by its new attempt until that one finishes', (t) => {
+  const { s, user, task, batch, attempt } = fixture(t);
+  const ann = user('ann');
+  const queued = task('done');
+  attempt(queued, ann, batch(ann, 'merged'), 'merged');
+  attempt(queued, ann, batch(ann, 'queued'), 'queued');
+  const building = task('done');
+  attempt(building, ann, batch(ann, 'verifying'), 'verifying');
+  const review = task('done');
+  attempt(review, ann, batch(ann, 'open'), 'peer_review');
+  const approved = task('done');
+  attempt(approved, ann, batch(ann, 'merging'), 'approved');
+  const returned = task('done');
+  attempt(returned, ann, batch(ann, 'returned'), 'needs_cleanup');
+  const merged = task('done');
+  attempt(merged, ann, batch(ann, 'queued'), 'queued');
+  attempt(merged, ann, batch(ann, 'merged'), 'merged');
+
+  const at = Object.fromEntries(snapshot(s).functions.map((f) => [f.task, f.stage]));
+  assert.deepEqual(at, { [queued]: 'queued', [building]: 'compiling', [review]: 'review', [approved]: 'merging' });
+});
+
 test('a running maintenance batch holds the queue; a build retry says until when', (t) => {
   const { s, user, task, batch, attempt } = fixture(t);
   const ann = user('ann');

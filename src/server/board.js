@@ -30,6 +30,18 @@ const TASK_STAGE = {
 };
 const LIVE = Object.keys(TASK_STAGE);
 
+// A merged function can be submitted again (an improvement or a revision): its task stays done and
+// the attempt carries the state, so those rows are staged by the attempt instead.
+const ATTEMPT_STAGE = {
+  queued: 'queued',
+  verifying: 'queued',
+  peer_review: 'review',
+  in_review: 'review',
+  approved: 'merging',
+  merging: 'merging',
+};
+const IMPROVING = Object.keys(ATTEMPT_STAGE);
+
 /** The first two folders of a unit (Source/UI/Chat/X.cpp -> Source/UI): the board's grouping key. */
 export function folderOf(unit) {
   if (!unit) return '(unplaced)';
@@ -39,7 +51,7 @@ export function folderOf(unit) {
 
 /** A submitted task is queued until the verifier picks up its batch. */
 export function stageOf(row) {
-  const stage = TASK_STAGE[row.state] ?? null;
+  const stage = (row.state === 'done' ? ATTEMPT_STAGE[row.attempt_state] : TASK_STAGE[row.state]) ?? null;
   return stage === 'queued' && row.batch_state === 'verifying' ? 'compiling' : stage;
 }
 
@@ -81,10 +93,11 @@ export function maintenanceOf(store, progress) {
 /** The board, for signed-in viewers. `builds` is compileProgress() of the job folders. */
 export function snapshot(store, { builds = [], now = Date.now(), cap = ROW_CAP } = {}) {
   builds = builds.filter((b) => b.active && b.lane !== 'check');
-  const ph = LIVE.map(() => '?').join(',');
+  const live = LIVE.map(() => '?').join(',');
+  const improving = IMPROVING.map(() => '?').join(',');
   const rows = store.all(
     `SELECT t.id AS task, t.symbol_id AS symbol, t.state, t.updated_at, t.preferred_until, t.cleanup_cycles,
-            s.name, s.unit, lu.name AS holder,
+            s.name, s.unit, lu.name AS holder, a.state AS attempt_state,
             a.created_at AS submitted_at, json_extract(a.result_json, '$.feedback.summary') AS summary,
             b.id AS batch_id, b.state AS batch_state, au.name AS author,
             json_extract(b.result_json, '$.buildRetry.retryAt') AS build_retry_at,
@@ -95,8 +108,9 @@ export function snapshot(store, { builds = [], now = Date.now(), cap = ROW_CAP }
        LEFT JOIN attempts a ON a.id = (SELECT MAX(x.id) FROM attempts x WHERE x.task_id = t.id)
        LEFT JOIN batches b ON b.id = a.batch_id
        LEFT JOIN users au ON au.id = a.user_id
-      WHERE t.state IN (${ph})`,
+      WHERE t.state IN (${live}) OR (t.state = 'done' AND a.state IN (${improving}))`,
     ...LIVE,
+    ...IMPROVING,
   );
   const maintenance = store.get(`SELECT id FROM batches WHERE kind = 'maintenance' AND state = 'verifying' ORDER BY id LIMIT 1`)?.id ?? null;
   const ctx = { now, maintenance };
