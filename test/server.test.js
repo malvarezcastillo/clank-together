@@ -944,6 +944,44 @@ test('"no decompile" claims are peer reviewed; accepted ones are skipped and not
   assert.ok(before >= 1);
 });
 
+test('maintainers claim dead functions already on main as unreferenced; the task stays done until accepted', async () => {
+  delete ctx.merger.pump;
+  const maintainer = await activeUser('ndmaint', 'maintainer');
+  const contributor = await activeUser('ndcontrib');
+  const peers = [];
+  for (let i = 1; i <= 5; i++) peers.push(await activeUser(`ndmpeer${i}`));
+  const v = ctx.store.currentVersion();
+  const mk = (addr) => ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr, size: 3, unit: 'src/ndmain.cpp' }).symbol.id;
+  const dead = mk(0x416000);
+  const kept = mk(0x416010);
+  const open = mk(0x416020);
+  ctx.tasks.generate();
+  const taskOf = (sym) => ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id;
+  for (const sym of [dead, kept]) ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, sym);
+  const item = (sym) => ({ taskId: taskOf(sym), category: 'unreferenced', reason: 'mov al,1; ret with no xref, pointer or call anywhere in the image' });
+
+  assert.equal((await call('POST', '/api/tasks/no-decompile', { onMain: true, items: [item(dead)] }, contributor)).status, 403);
+  assert.equal((await call('POST', '/api/tasks/no-decompile', { items: [item(dead)] }, maintainer)).status, 409, 'without onMain a done task is not held');
+  assert.equal((await call('POST', '/api/tasks/no-decompile', { onMain: true, items: [item(open)] }, maintainer)).status, 409, 'onMain covers only functions on main');
+
+  const r = await call('POST', '/api/tasks/no-decompile', { onMain: true, items: [item(dead), item(kept)] }, maintainer);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const [da, ka] = r.body.claims.map((c) => c.attemptId);
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', dead).state, 'done', 'still on main while under review');
+
+  const verdict = async (attempt, token, v) => {
+    await call('POST', '/api/peer-reviews/claim', { attemptId: attempt }, token);
+    return (await call('POST', `/api/peer-reviews/${attempt}/verdict`, { verdict: v, reason: v === 'same' ? 'nothing in the binary references this stub' : 'a vtable slot points at this function' }, token)).body;
+  };
+  for (const t of peers) await verdict(da, t, 'same');
+  for (const t of peers.slice(0, 3)) await verdict(ka, t, 'different');
+  await ctx.merger.pump();
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', dead).state, 'skipped');
+  assert.equal(ctx.store.get('SELECT skip_reason FROM symbols WHERE id = ?', dead).skip_reason, 'unreferenced');
+  assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', kept).state, 'done', 'a rejected claim leaves merged code on main');
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, open);
+});
+
 test('verification: unwritten functions stay claimed, failing ones go back alone, neighbours may change', async () => {
   delete ctx.merger.pump;
   const author = await activeUser('pvauthor');

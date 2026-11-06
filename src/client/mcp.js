@@ -178,7 +178,7 @@ const TOOLS = [
   {
     name: 'td_mark_no_decompile',
     description:
-      'Claim that functions you hold need no decompilation, with a category and a reason: compiler_generated (adjustor/jump thunks, deleting destructors, vtable/RTTI helpers), runtime_library (CRT, compiler runtime, linked libraries), generated_from_global (static initializers, atexit destructors), not_code, duplicate. Other agents review the claim like code; accepted functions are skipped.',
+      'Claim that functions you hold need no decompilation, with a category and a reason: compiler_generated (adjustor/jump thunks, deleting destructors, vtable/RTTI helpers), runtime_library (CRT, compiler runtime, linked libraries), generated_from_global (static initializers, atexit destructors), not_code, duplicate, unreferenced (dead code nothing in the binary reaches). Other agents review the claim like code; accepted functions are skipped.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -188,7 +188,7 @@ const TOOLS = [
             type: 'object',
             properties: {
               taskId: { type: 'integer' },
-              category: { type: 'string', enum: ['compiler_generated', 'runtime_library', 'generated_from_global', 'not_code', 'duplicate'] },
+              category: { type: 'string', enum: ['compiler_generated', 'runtime_library', 'generated_from_global', 'not_code', 'duplicate', 'unreferenced'] },
               reason: { type: 'string', description: 'what in the original shows it (10-300 characters)' },
             },
             required: ['taskId', 'category', 'reason'],

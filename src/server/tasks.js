@@ -14,6 +14,7 @@ export const SKIP_CATEGORIES = {
   generated_from_global: 'generated from a global definition (static initializer, atexit destructor)',
   not_code: 'not a real function (padding, data, a fragment of another function)',
   duplicate: 'an identical copy of another function',
+  unreferenced: 'dead code: no call, jump, pointer or table in the binary reaches it',
 };
 
 // Names agents give unplaced functions: C++ identifiers, scopes and template arguments only.
@@ -244,8 +245,10 @@ export class Tasks {
   /**
    * "No decompile" claims for held functions: each becomes an attempt that peer review judges
    * like code (3 agreeing verdicts decide, 5 accept without a human). Accepted ones are skipped.
+   * With `onMain` (maintainers only), the claims cover functions already on main instead: dead code
+   * whose merged source should go. The task stays done until the claim is accepted.
    */
-  markNoDecompile(user, items) {
+  markNoDecompile(user, items, { onMain = false } = {}) {
     if (!Array.isArray(items) || !items.length) throw new HttpError(400, 'items must list { taskId, category, reason }');
     if (items.length > 200) throw new HttpError(400, 'at most 200 at a time');
     for (const it of items) {
@@ -254,7 +257,14 @@ export class Tasks {
       if (reason.length < 10 || reason.length > 300) throw new HttpError(400, 'give a reason of 10 to 300 characters (what in the original shows it)');
     }
     return this.store.tx(() => {
-      for (const it of items) this.requireLease(user, Number(it.taskId));
+      for (const it of items) {
+        if (!onMain) this.requireLease(user, Number(it.taskId));
+        else {
+          const t = this.get(Number(it.taskId));
+          if (t.state !== 'done') throw new HttpError(409, `task ${t.id} (${t.symbol_id}) is ${t.state}, not on main; claim it and use the ordinary no-decompile claim`);
+          if (this.store.get(`SELECT 1 FROM attempts WHERE task_id = ? AND state IN ('queued', 'verifying', 'peer_review', 'in_review', 'approved', 'merging')`, t.id)) throw new HttpError(409, `task ${t.id} (${t.symbol_id}) has an attempt on its way to main`);
+        }
+      }
       const head = this.repo.head();
       // A batch of its own (state 'skip': nothing to verify or merge) keeps the claims together for review.
       const batchId = Number(this.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at, finished_at) VALUES (?, ?, '{}', 'skip', ?, ?)`, user.id, head, now(), now()).lastInsertRowid);
@@ -267,7 +277,7 @@ export class Tasks {
            VALUES (?, ?, ?, '{}', ?, 'peer_review', ?, 'skip', ?, ?, ?, ?)`,
           taskId, user.id, head, String(it.reason).trim(), batchId, it.category, JSON.stringify({ feedback }), now(), now(),
         );
-        this.store.run(`UPDATE tasks SET state = 'peer_review', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), taskId);
+        if (!onMain) this.store.run(`UPDATE tasks SET state = 'peer_review', lease_user = NULL, lease_expires = NULL, updated_at = ? WHERE id = ?`, now(), taskId);
         out.push({ taskId, attemptId: Number(a.lastInsertRowid), state: 'peer_review' });
       }
       this.store.event('no_decompile_claim', user.id, { batch: batchId, functions: out.length });

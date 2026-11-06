@@ -523,10 +523,12 @@ export function createApp(ctx) {
   };
 
   // "No decompile": held functions claimed to need no source; peer reviewed like code.
+  // `onMain: true` (maintainers): functions already on main that turn out to be dead code.
   router.on('POST', '/api/tasks/no-decompile', async ({ req }) => {
     const user = work(req);
     const body = await readJson(req, 128 * 1024);
-    return guided(tasks.markNoDecompile(user, body.items));
+    if (body.onMain === true && !hasRole(user, 'maintainer')) throw new HttpError(403, 'claiming functions already on main needs a maintainer');
+    return guided(tasks.markNoDecompile(user, body.items, { onMain: body.onMain === true }));
   });
 
   // Organize before porting: put held functions that are in no source file yet into files.
