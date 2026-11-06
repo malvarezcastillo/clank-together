@@ -10,7 +10,8 @@ import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { lintSubmission } from '../shared/lint.js';
 import { isUnit, addUnitsToCompileCommands, removeUnitsFromCompileCommands } from '../shared/project.js';
-import { bestResults, BuildRetryError, deferBuild, clearBuildRetry } from './verify.js';
+import { bestResults, BuildRetryError, deferBuild, clearBuildRetry, boundAddresses } from './verify.js';
+import { resolvedEffectiveHash } from '../shared/compare.js';
 
 export class Maintenance {
   constructor({ store, repo, project, verifier, merger, log = console }) {
@@ -141,6 +142,11 @@ export class Maintenance {
     const before = touched.length ? (await this.verifier.check({}, `maintenance-base-${head.slice(0, 10)}`, { onlyUnits: touched, lint: false })).check : { units: [] };
     if (before.units.some((u) => !u.compiled || u.timedOut)) throw new BuildRetryError(before, 'maintenance-baseline');
     const was = new Map([...bestResults(before)].map(([id, b]) => [id, b.f]));
+    // A reference is compared by the address it reaches: a function the change renames is bound
+    // under its new name here and its old one on main, which is the same code.
+    const symbols = this.store.symbolMap(this.store.currentVersion().id);
+    const addressNow = boundAddresses(check, symbols);
+    const addressBefore = boundAddresses(before, symbols);
     const out = [];
     for (const [id, { f, unit }] of bestResults(check)) {
       const old = was.get(id);
@@ -148,7 +154,7 @@ export class Maintenance {
         out.push({ id, file: unit, why: 'not compiled on main' });
         continue;
       }
-      if (old.effectiveHash !== f.effectiveHash) out.push({ id, file: unit, why: 'compiled code changed' });
+      if (resolvedEffectiveHash(old, addressBefore) !== resolvedEffectiveHash(f, addressNow)) out.push({ id, file: unit, why: 'compiled code changed' });
     }
     return out;
   }
