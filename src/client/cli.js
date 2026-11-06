@@ -34,6 +34,8 @@ Work (a region: a source file, a class, or a run of unplaced functions, done as 
   td place <taskId>=<file.cpp>[:Class::Method] ...  put held functions that are in no source file into one
   td check [files...] [--includers]           compile + compare on this machine; named files over a clean HEAD
                                               (--includers: every unit that includes a changed header)
+  td compile [--out DIR] [--jobs N] [--link-only]   build the whole program on this machine with the
+                                              project's exeBuild command (data/decomp.json); incremental
   td submit [--notes T]                       submit the region's work as one batch
   td tasks [--state S] [--limit N]            list claimable tasks
   td improvable [--max-score 60] [--min-size 16]   merged functions that still differ, lowest % first:
@@ -202,6 +204,9 @@ async function main() {
       sort: { type: 'string' },
       'by-unit': { type: 'boolean', default: false },
       all: { type: 'boolean', default: false },
+      out: { type: 'string' },
+      jobs: { type: 'string' },
+      'link-only': { type: 'boolean', default: false },
     },
   });
   const [cmd, ...args] = positionals;
@@ -299,6 +304,15 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
     case 'check': {
       const r = await ops.check(ws, args.map((f) => ops.relPath(ws, f)), { includers: values.includers });
       return values.json ? print(r) : printCheck(r);
+    }
+    case 'compile': {
+      const command = ws.project.exeBuild;
+      if (!Array.isArray(command) || !command.length) throw new Error('this project has no exeBuild command in data/decomp.json');
+      const extra = [...(values.out ? ['--out', values.out] : []), ...(values.jobs ? ['--jobs', values.jobs] : []), ...(values['link-only'] ? ['--link-only'] : [])];
+      const r = spawnSync(command[0], [...command.slice(1), ...extra, ...args], { cwd: ws.dir, stdio: 'inherit', shell: process.platform === 'win32' });
+      if (r.error) throw r.error;
+      process.exitCode = r.status ?? 1;
+      return;
     }
     case 'submit': {
       // td submit                 everything you hold, as one batch
