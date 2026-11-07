@@ -630,7 +630,7 @@ export function createApp(ctx) {
   // like any batch; merged only when no function's compiled code changes.
   router.on('POST', '/api/maintenance', async ({ req }) => {
     const user = auth(req, { role: 'maintainer' });
-    const body = await readJson(req, 8 * 1024 * 1024);
+    const body = await readJson(req, 16 * 1024 * 1024);
     if (typeof body.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(body.baseCommit)) throw new HttpError(400, 'baseCommit must be a full commit hash');
     if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
     if (body.force === true && !hasRole(user, 'admin')) throw new HttpError(403, 'only admins can force a maintenance batch past lower scores or changed code');
