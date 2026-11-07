@@ -70,3 +70,10 @@ test('only definitions a submission adds or changes are checked', () => {
   const annotated = '// OFFSET: 0x00AE97D0\n// FUNCTION: fn_00001\nvoid A::f() {\n}\n';
   assert.equal(unannotatedErrors('void A::f() {\n}\n', annotated).length, 1, 'an annotation the submission removes');
 });
+
+test('a definition main has that is only renamed stays exempt; changing its signature does not', () => {
+  const main = 'class A {\npublic:\n  virtual bool Slot00() {\n    return false;\n  }\n};\n';
+  assert.deepEqual(unannotatedErrors(main.replace('Slot00', 'IsSupport'), main), [], 'renamed in place');
+  assert.equal(unannotatedErrors(main.replace('bool Slot00()', 'int IsSupport(int x)'), main).length, 1, 'a different signature is a new definition');
+  assert.equal(unannotatedErrors(`${main}class B {\n  virtual bool Other() {\n    return true;\n  }\n};\n`, main).length, 1, 'a second, new definition');
+});

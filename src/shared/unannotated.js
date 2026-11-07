@@ -58,7 +58,11 @@ function annotated(lines, i) {
   return false;
 }
 
-/** Function definitions (by their first line's text) that `text` has without any annotation. */
+/**
+ * Function definitions `text` has without any annotation. `key` is the definition's first line with
+ * the function's own name masked: a definition main already has that was only renamed is the same
+ * code, and stays exempt like any other definition already on main.
+ */
 function unannotatedDefinitions(text) {
   const lines = text.split(/\r?\n/);
   const out = [];
@@ -72,7 +76,12 @@ function unannotatedDefinitions(text) {
       inBlockComment = true;
       continue;
     }
-    if (definitionAt(lines, i) && !annotated(lines, i)) out.push({ line: i + 1, key: lines[i].trim() });
+    if (definitionAt(lines, i) && !annotated(lines, i)) {
+      const line = lines[i].trim();
+      const name = /([~\w][\w:<>~]*)\s*\(/.exec(line.replace(/__declspec\s*\([^()]*\)|\[\[[^\]]*\]\]/g, ' '))?.[1]?.split('::').pop();
+      const key = name && /^\w+$/.test(name) ? line.replace(new RegExp(`\\b${name}(?=\\s*\\()`), '\u0000') : line;
+      out.push({ line: i + 1, key });
+    }
   }
   return out;
 }
