@@ -5,7 +5,9 @@
 // Stages, left to right:
 //   open       nobody holds it                leased     an agent holds it (region claim or fix)
 //   queued     submitted, waiting for a lane  compiling  the verifier is building its batch
-//   review     waiting for peer/human votes   merging    approved; in or waiting for the merge lane
+//   review     waiting for peer/human votes   waiting    approved, but its batch merges only as a
+//                                                        whole and other functions of it are not
+//   merging    approved; being merged, or the merge lane can take it now
 //   back       sent back to its author (needs_cleanup), or failed too often (hard)
 //
 // Open functions go out as counts per folder only, and any other column over ROW_CAP as well, so
@@ -14,7 +16,7 @@
 // Maintenance batches carry no function tasks, so they are listed apart (`maintenance`): every
 // one that is queued or verifying, oldest first, which is the order the verifier runs them in.
 
-export const STAGES = ['open', 'leased', 'queued', 'compiling', 'review', 'merging', 'back'];
+export const STAGES = ['open', 'leased', 'queued', 'compiling', 'review', 'waiting', 'merging', 'back'];
 export const ROW_CAP = 2000;
 
 const TASK_STAGE = {
@@ -49,10 +51,16 @@ export function folderOf(unit) {
   return dirs.length ? dirs.slice(0, 2).join('/') : unit;
 }
 
-/** A submitted task is queued until the verifier picks up its batch. */
+/**
+ * A submitted task is queued until the verifier picks up its batch. An approved one is merging when
+ * the merge lane runs its batch or can take it now (merge.js next(): all of the batch approved, or
+ * its approved part may merge alone); otherwise it waits for the rest of its batch.
+ */
 export function stageOf(row) {
   const stage = (row.state === 'done' ? ATTEMPT_STAGE[row.attempt_state] : TASK_STAGE[row.state]) ?? null;
-  return stage === 'queued' && row.batch_state === 'verifying' ? 'compiling' : stage;
+  if (stage === 'queued' && row.batch_state === 'verifying') return 'compiling';
+  if (stage === 'merging' && row.batch_state !== 'merging' && row.batch_pending > 0 && row.batch_no_split != null) return 'waiting';
+  return stage;
 }
 
 /** Why a function does not move on, from what the database knows. Null when nothing holds it. */
@@ -66,6 +74,7 @@ export function blockerOf(row, ctx) {
     if (row.build_retry_at > ctx.now) return { kind: 'retry', until: row.build_retry_at };
     if (ctx.maintenance && row.batch_id !== ctx.maintenance) return { kind: 'maintenance', batch: ctx.maintenance };
   }
+  if (row.stage === 'waiting') return { kind: 'batch', pending: row.batch_pending, reason: row.batch_no_split };
   return null;
 }
 
@@ -101,6 +110,8 @@ export function snapshot(store, { builds = [], now = Date.now(), cap = ROW_CAP }
             a.created_at AS submitted_at, json_extract(a.result_json, '$.feedback.summary') AS summary,
             b.id AS batch_id, b.state AS batch_state, au.name AS author,
             json_extract(b.result_json, '$.buildRetry.retryAt') AS build_retry_at,
+            json_extract(b.result_json, '$.noSplit') AS batch_no_split,
+            (SELECT COUNT(*) FROM attempts y WHERE y.batch_id = b.id AND y.state IN ('queued', 'verifying', 'peer_review', 'in_review')) AS batch_pending,
             (SELECT COALESCE(SUM(CASE WHEN p.verdict = 'same' THEN p.weight END), 0) FROM peer_reviews p WHERE p.attempt_id = a.id) AS same,
             (SELECT COALESCE(SUM(CASE WHEN p.verdict = 'different' THEN p.weight END), 0) FROM peer_reviews p WHERE p.attempt_id = a.id) AS different
        FROM tasks t JOIN symbols s ON s.id = t.symbol_id

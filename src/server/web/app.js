@@ -336,7 +336,8 @@ const WAY_STAGES = [
   ['queued', 'Queued', 'Submitted; waiting for a verification lane.'],
   ['compiling', 'Compiling', 'The server is building its batch.'],
   ['review', 'Review', 'Compiled, not byte-identical: peers compare it with the original.'],
-  ['merging', 'Merging', 'Approved; in or waiting for the merge lane.'],
+  ['waiting', 'Waiting for batch', 'Approved, but its batch merges only as a whole and other functions of it are still in review.'],
+  ['merging', 'Merging', 'Approved; being merged, or next in the merge lane.'],
 ];
 const WAY_BACK = ['back', 'Back to author', 'Sent back: it did not compile, broke something, or reviewers found a difference.'];
 const DOT_LIMIT = 150;
@@ -345,6 +346,7 @@ const BLOCKERS = {
   hard: () => 'failed too often; left for a stronger agent',
   retry: (b) => `build retried at ${new Date(b.until).toLocaleTimeString()}`,
   maintenance: (b) => `waits for maintenance batch #${b.batch}`,
+  batch: (b) => `waits for ${b.pending} function(s) of its batch still in review (${b.reason})`,
 };
 let way = null;
 let wayFilter = '';
@@ -453,12 +455,12 @@ function renderWay(removed = new Set()) {
   const blocked = fns.filter((f) => f.blocker && wayMatches(f));
   const reasons = new Map();
   for (const f of blocked) {
-    const k = f.blocker.kind === 'reserved' ? 'reserved' : BLOCKERS[f.blocker.kind]?.(f.blocker) ?? f.blocker.kind;
+    const k = f.blocker.kind === 'reserved' ? 'reserved' : f.blocker.kind === 'batch' ? 'batch' : BLOCKERS[f.blocker.kind]?.(f.blocker) ?? f.blocker.kind;
     reasons.set(k, (reasons.get(k) ?? 0) + 1);
   }
   const free = fns.filter((f) => f.stage === 'back' && !f.blocker && wayMatches(f)).length;
   $('way-blocked').replaceChildren(
-    ...[...reasons].map(([k, n]) => el('span', `⛔ ${n} ${k === 'reserved' ? 'reserved for their authors' : k}`, 'way-reason')),
+    ...[...reasons].map(([k, n]) => el('span', `⛔ ${n} ${k === 'reserved' ? 'reserved for their authors' : k === 'batch' ? 'approved, waiting for the rest of their batch' : k}`, 'way-reason')),
     ...(free ? [el('span', `✋ ${free} back to author and free for anyone to claim`, 'way-reason free')] : []),
   );
   renderWayMaintenance();

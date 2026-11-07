@@ -51,7 +51,7 @@ test('each unfinished function sits in its stage; finished ones are not on the b
 
   const b = snapshot(s, { builds: [{ job: `batch-${building}`, lane: 'verify', batch: building, done: 3, total: 4, startedAt: '2026-11-02T12:00:00.000Z', active: true }, { job: 'batch-1', lane: 'verify', batch: 1, done: 9, total: 9, active: false }] });
   const at = Object.fromEntries(b.functions.map((f) => [f.task, f]));
-  assert.deepEqual(b.counts, { open: 1, leased: 1, queued: 1, compiling: 1, review: 1, merging: 1, back: 1 });
+  assert.deepEqual(b.counts, { open: 1, leased: 1, queued: 1, compiling: 1, review: 1, waiting: 0, merging: 1, back: 1 });
   assert.equal(at[open], undefined, 'open functions are counted per folder, not listed');
   assert.deepEqual(b.folders.open, { 'Source/UI': 1 });
   assert.equal(at[done], undefined, 'merged functions leave the board');
@@ -103,6 +103,46 @@ test('a running maintenance batch holds the queue; a build retry says until when
   const at = Object.fromEntries(b.functions.map((f) => [f.task, f]));
   assert.deepEqual(at[waiting].blocker, { kind: 'maintenance', batch: maint });
   assert.equal(at[retried].blocker.kind, 'retry');
+});
+
+test('an approved function is merging only when the merge lane can take its batch', (t) => {
+  const { s, user, task, batch, attempt } = fixture(t);
+  const ann = user('ann');
+  const noSplit = (id, reason) => s.run(`UPDATE batches SET result_json = json_object('noSplit', ?) WHERE id = ?`, reason, id);
+  // Whole batch approved: the lane takes it as a whole.
+  const whole = batch(ann, 'open');
+  const allApproved = task('approved');
+  attempt(allApproved, ann, whole, 'approved');
+  // Approved part with a function still in review, split allowed: the approved part merges alone.
+  const splittable = batch(ann, 'open');
+  const splitApproved = task('approved');
+  attempt(splitApproved, ann, splittable, 'approved');
+  attempt(task('peer_review'), ann, splittable, 'peer_review');
+  // Same, but the batch merges only as a whole: it waits for the review.
+  const held = batch(ann, 'open');
+  noSplit(held, 'cross-unit refactor: it merges as a whole');
+  const heldApproved = task('approved');
+  attempt(heldApproved, ann, held, 'approved');
+  attempt(task('peer_review'), ann, held, 'peer_review');
+  // A revision of a merged function in such a batch waits the same way.
+  const revision = task('done');
+  attempt(revision, ann, held, 'approved');
+  // A batch being merged right now merges, whatever its other functions do.
+  const running = batch(ann, 'merging');
+  noSplit(running, 'cross-unit refactor: it merges as a whole');
+  const runningApproved = task('merging');
+  attempt(runningApproved, ann, running, 'approved');
+
+  const b = snapshot(s);
+  const at = Object.fromEntries(b.functions.map((f) => [f.task, f]));
+  assert.equal(at[allApproved].stage, 'merging');
+  assert.equal(at[splitApproved].stage, 'merging');
+  assert.equal(at[runningApproved].stage, 'merging');
+  assert.equal(at[heldApproved].stage, 'waiting');
+  assert.equal(at[revision].stage, 'waiting');
+  assert.deepEqual(at[heldApproved].blocker, { kind: 'batch', pending: 1, reason: 'cross-unit refactor: it merges as a whole' });
+  assert.equal(b.counts.merging, 3);
+  assert.equal(b.counts.waiting, 2);
 });
 
 test('the live diff sends moves and removals only, and nothing when the board is still', (t) => {

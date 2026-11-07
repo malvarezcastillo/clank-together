@@ -828,7 +828,7 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .way-tools input { min-width: 260px; }
 .way-summary { margin: 4px 0 12px; font: 13px var(--font-mono); color: var(--muted); }
 .way { display: flex; flex-direction: column; gap: 14px; }
-.way-flow { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.way-flow { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
 .way-col { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 150px; border: 1px solid var(--plate-edge); border-radius: 4px; background: var(--well); }
 .way-flow > .way-col:not(:last-child)::after { content: "▸"; position: absolute; right: -10px; top: 9px; color: var(--muted); font-size: 12px; }
 .way-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding: 7px 9px; border-bottom: 1px solid var(--line); cursor: help; }
@@ -848,6 +848,7 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .way-dot.queued { --c: var(--steel); }
 .way-dot.compiling { --c: var(--accent); background: conic-gradient(var(--accent) var(--build, 0%), color-mix(in srgb, var(--accent) 30%, transparent) 0); animation: way-pulse 1.4s ease-in-out infinite; }
 .way-dot.review { --c: #b48ef0; }
+.way-dot.waiting { --c: color-mix(in srgb, var(--ok) 45%, var(--muted)); }
 .way-dot.merging { --c: var(--ok); }
 .way-dot.back { --c: var(--danger); }
 .way-dot.back.free { --c: #f08a24; }
@@ -869,6 +870,6 @@ details.fold-plate[open] > summary { margin-bottom: 12px; }
 .way-maintenance .maint-row.verifying .maint-state { color: var(--accent-ink); }
 .way-maintenance .maint-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 #way-tip .tip-title { font-weight: 700; color: var(--fg); }
-@media (max-width: 1100px) { .way-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); } .way-flow > .way-col::after { display: none; } }
+@media (max-width: 1100px) { .way-flow { grid-template-columns: repeat(4, minmax(0, 1fr)); } .way-flow > .way-col::after { display: none; } }
 @media (max-width: 600px) { .way-flow { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .way-dot.compiling { animation: none; } }
