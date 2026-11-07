@@ -1272,6 +1272,59 @@ test('split: the approved part of a batch merges while the rest waits for review
   ctx.verifier.check = realCheck;
 });
 
+test('split: a batch whose approved part changes a function outside the batch goes back at once', async () => {
+  const author = await activeUser('soauthor');
+  delete ctx.merger.pump;
+  const v = ctx.store.currentVersion();
+  const unit = 'src/splitout.cpp';
+  const c = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x417000, size: 8, unit }).symbol.id;
+  const d = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x417040, size: 8, unit }).symbol.id;
+  const other = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x417080, size: 8, unit }).symbol.id;
+  ctx.tasks.generate();
+  // `other` is on main already (done), held by nobody in this batch.
+  ctx.store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, other);
+  ctx.store.run(`INSERT OR REPLACE INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, code_hash) VALUES (?, ?, 'mismatch', 0.5, ?, ?, 'other-main')`, other, unit, ctx.repo.head(), Date.now());
+
+  // C byte-identical, D not; once the merge lane rechecks, `other` compiles to different code.
+  let merging = false;
+  const realCheck = ctx.verifier.check;
+  ctx.verifier.check = async (files) => {
+    const text = files[unit] ?? '';
+    const functions = [{ id: other, status: STATUS.MISMATCH, score: 0.5, file: unit, codeHash: merging ? 'other-changed' : 'other-main', relocations: [], size: { ours: 8, original: 8 } }];
+    if (text.includes('int fc()')) functions.push({ id: c, status: STATUS.EXACT, score: 1, file: unit, codeHash: 'hash-c', relocations: [], size: { ours: 8, original: 8 } });
+    if (text.includes('int fd()')) functions.push({ id: d, status: STATUS.MISMATCH, score: 0.9, file: unit, codeHash: 'hash-d', relocations: [], size: { ours: 8, original: 8 } });
+    return {
+      check: { annotationErrors: [], units: [{ file: unit, compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions }] },
+      rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] },
+      changedHeaders: [],
+      units: [unit],
+    };
+  };
+  try {
+    await call('POST', '/api/tasks/claim-batch', { unit }, author);
+    const taskIds = [c, d].map((sym) => ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', sym).id);
+    for (const id of taskIds) assert.equal(ctx.store.get('SELECT state FROM tasks WHERE id = ?', id).state, 'leased', 'both functions are held for the batch');
+    const source = `#include "x.h"\n\n// FUNCTION: ${c}\nint fc() {\n  return 1;\n}\n\n// FUNCTION: ${d}\nint fd() {\n  if (x) { return 2; }\n  return 3;\n}\n`;
+    const s = await call('POST', '/api/batches', { taskIds, baseCommit: ctx.repo.head(), files: { [unit]: source } }, author);
+    assert.equal(s.status, 200, JSON.stringify(s.body));
+    await waitFor(() => !['queued', 'verifying'].includes(ctx.store.get('SELECT state FROM batches WHERE id = ?', s.body.batchId).state));
+    const verified = Object.fromEntries(ctx.store.all('SELECT t.symbol_id s, a.state FROM attempts a JOIN tasks t ON t.id = a.task_id WHERE a.batch_id = ?', s.body.batchId).map((r) => [r.s, r.state]));
+    assert.deepEqual(verified, { [c]: 'approved', [d]: 'peer_review' }, JSON.stringify(ctx.store.get('SELECT result_json FROM batches WHERE id = ?', s.body.batchId)));
+
+    merging = true;
+    const head = ctx.repo.head();
+    await ctx.merger.pump();
+    const b = ctx.store.get('SELECT state, result_json FROM batches WHERE id = ?', s.body.batchId);
+    assert.equal(b.state, 'returned', 'it cannot merge as a whole either: back to its author now');
+    assert.match(JSON.parse(b.result_json).returned, /changes functions it does not hold/);
+    assert.equal(ctx.repo.head(), head, 'nothing merged');
+    for (const sym of [c, d]) assert.equal(ctx.store.get('SELECT state FROM tasks WHERE symbol_id = ?', sym).state, 'needs_cleanup');
+  } finally {
+    ctx.verifier.check = realCheck;
+    for (const sym of [c, d, other]) ctx.store.run(`UPDATE tasks SET state = 'done', lease_user = NULL WHERE symbol_id = ?`, sym);
+  }
+});
+
 test('batches: one compile, auto-approval, peer review, one function sent back, carry-over', async () => {
   const author = await activeUser('bauthor');
   const peers = [];

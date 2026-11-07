@@ -367,6 +367,16 @@ export class Merger {
 
     const bounce = (summary, details) => {
       if (split) {
+        // Changing functions that belong to no task of the batch fails the whole submission the
+        // same way however its reviews end: only its author can fix that, so it goes back now.
+        const parentIds = new Set(batchAttempts(this.store, split.parent.id).map((a) => a.symbol_id));
+        const foreign = (details?.feedback?.changedOutside ?? []).filter((o) => !parentIds.has(o.id));
+        if (foreign.length) {
+          this.undoSplit(split.parent, batch, attempts, summary);
+          returnBatch(this.store, split.parent.id, `${summary}; this cannot pass as a whole either: claim those functions or undo the changes, then resubmit`);
+          this.log.info(`batch ${split.parent.id} returned: it changes functions outside the batch (${foreign.map((o) => o.id).join(', ')})`);
+          return;
+        }
         this.undoSplit(split.parent, batch, attempts, summary);
         return;
       }
