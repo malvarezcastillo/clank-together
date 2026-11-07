@@ -89,3 +89,11 @@ test('annotation edits cannot be hidden by unchanged declaration text or whitesp
   assert.deepEqual(rules({ 'a.cpp': 'int g_count;' }, { before: () => original }), ['g_count:unannotated-global']);
   assert.deepEqual(rules({ 'a.cpp': '// GLOBAL: gl_00001\n\n int\n g_count;' }, { before: () => original }), []);
 });
+
+test('an internal static annotated with its dynamic initializer needs no data ID; external storage still does', () => {
+  const registration = '// OFFSET: 0x00494730\n// FUNCTION: fn_45545\nstatic bool s_registered = (Get()->Register(10014, Create), true);';
+  assert.deepEqual(rules({ 'a.cpp': registration }), []);
+  assert.deepEqual(rules({ 'a.cpp': '// FUNCTION: fn_45545\nbool g_registered = (Get()->Register(10014, Create), true);' }), ['g_registered:unannotated-global'], 'external linkage is addressable data');
+  assert.deepEqual(rules({ 'a.cpp': 'static bool s_registered = (Get()->Register(10014, Create), true);' }), ['s_registered:unannotated-global']);
+  assert.deepEqual(rules({ 'a.cpp': 'void f() {\n  // FUNCTION: fn_45545\n  static bool s_once = Init();\n}' }), ['f::s_once:unannotated-global'], 'a local static keeps a guard and storage');
+});

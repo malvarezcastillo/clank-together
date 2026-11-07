@@ -186,6 +186,10 @@ export function scanVariables(text, file = '<input>') {
   for (const r of out) {
     const ann = annotations.find((a) => a.targetLine === r.line && ['GLOBAL', 'STRING', 'VTABLE'].includes(a.kind));
     r.annotation = ann ? `${ann.kind}:${ann.id}` : null;
+    // An internal-linkage static whose only trace in the original is its dynamic initializer
+    // (a registration whose storage the optimizer removed) carries that initializer's FUNCTION ID.
+    const initializer = annotations.find((a) => a.targetLine === r.line && a.kind === 'FUNCTION');
+    r.initializer = !ann && r.internal && !r.local && r.definition && initializer ? initializer.id : null;
   }
   return out;
 }
@@ -235,7 +239,7 @@ export function globalViolations(files, { before = () => null, repository = {}, 
         if (added && v.annotation) report('annotated-extern', `${v.name}: put the stable ID on its definition, not on this extern declaration`);
         if (added && /\.(c|cc|cpp|cxx)$/i.test(file) && !v.imported) report('extern-in-unit', `${v.name}: include its owner's header instead of declaring an extern variable in a source unit`);
         if (!v.imported && !definitions.has(v.name)) report('undefined-extern', `${v.name}: no external definition exists in main plus this payload; a symbol ID or another extern is not a definition`);
-      } else if (added && v.definition && !v.folded && !v.annotation) {
+      } else if (added && v.definition && !v.folded && !v.annotation && !v.initializer) {
         report('unannotated-global', `${v.name}: static-storage definitions need a stable GLOBAL ID (or the appropriate STRING/VTABLE ID)`);
       }
     }
