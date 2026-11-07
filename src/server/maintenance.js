@@ -168,11 +168,26 @@ export class Maintenance {
       return at != null && starts.has(at) ? at : null;
     };
     const own = (f, name) => {
-      const key = /^\?([^@?]+@(?:[^@?]+@)*@)/.exec(f.symbol ?? '')?.[1];
-      return !!key && name !== f.symbol && name.includes(key);
+      if (!f.symbol || name === f.symbol) return false;
+      // Compiler helpers spelled after the function itself: __ehhandler$<symbol> and
+      // __unwindfunclet$<symbol>$N, and its local statics, lambdas and their std::function vtables,
+      // whose names nest the function's symbol after a scope marker (`@?1??Name@Class@@...`).
+      return name.includes(`$${f.symbol}`) || name.includes(`?${f.symbol}`);
     };
     const original = (f, name) => f.relocations?.find((r) => r.symbol === name && r.actual != null)?.actual ?? null;
-    const effective = (f, bound) => resolvedEffectiveHash(f, (name) => bound(name) ?? (own(f, name) ? original(f, name) : callee(name)));
+    const byDecorated = new Map();
+    for (const s of symbols.values()) if (s.addr != null && s.decorated && !byDecorated.has(s.decorated)) byDecorated.set(s.decorated, s.addr);
+    // A helper named after a renamed function is main's helper under the old spelling: it reaches
+    // what the database places under that spelling, as it did on main.
+    const helper = (f, old, name) => {
+      if (!own(f, name)) return null;
+      if (old && old.symbol !== f.symbol) {
+        const at = byDecorated.get(name.split(f.symbol).join(old.symbol));
+        if (at != null) return at;
+      }
+      return original(f, name);
+    };
+    const effective = (f, bound, old) => resolvedEffectiveHash(f, (name) => bound(name) ?? helper(f, old, name) ?? callee(name));
     const out = [];
     for (const [id, { f, unit }] of bestResults(check)) {
       const old = was.get(id);
@@ -180,7 +195,7 @@ export class Maintenance {
         out.push({ id, file: unit, why: 'not compiled on main' });
         continue;
       }
-      if (effective(old, addressBefore) !== effective(f, addressNow)) out.push({ id, file: unit, why: 'compiled code changed' });
+      if (effective(old, addressBefore) !== effective(f, addressNow, old)) out.push({ id, file: unit, why: 'compiled code changed' });
     }
     return out;
   }

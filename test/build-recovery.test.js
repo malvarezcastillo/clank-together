@@ -150,6 +150,30 @@ test('maintenance: renaming a function, its own helpers and a declared-only call
   assert.deepEqual(await changed('?Load@@YAXXZ', '?Other@@YAXPAX0PBX@Z'), ['fn_00001'], 'now calling a different function');
 });
 
+test('maintenance: a lambda inside a renamed method keeps its exception handler', async (t) => {
+  const f = fixture(t);
+  f.store.currentVersion = () => ({ id: 1 });
+  // Main resolved its handler through the database, under the old spelling; the renamed one is not
+  // known yet, and the original's relocation at that spot reaches a different address.
+  const oldSelf = '??R<lambda_1>@?1??Slot11@CSkill@@UAEXH@Z@QBE@H@Z';
+  const newSelf = '??R<lambda_1>@?1??OnSkillEffect@CSkill@@UAEXH@Z@QBE@H@Z';
+  f.store.symbolMap = () => new Map([['fn_00001', { kind: 'function', addr: 0x401000 }], ['gl_00001', { kind: 'global', addr: 0xeee000, decorated: `__ehhandler$${oldSelf}` }]]);
+  const m = new Maintenance({ ...f, project: f.verifier.project, log: f.verifier.log });
+  const { effectiveHash } = await import('../src/shared/compare.js');
+  const before = { id: 'fn_00001', symbol: oldSelf, status: 'exact', score: 1, effectiveHash: effectiveHash(Buffer.from([0]), [0], [`6:abs:${0xeee000}`]), relocations: [] };
+  const handler = `__ehhandler$${newSelf}`;
+  const effective = [`6:abs:?${handler}+0`];
+  // Same masked bytes on both sides (effectiveHash hashes the zeroed bytes with sha1).
+  const { createHash } = await import('node:crypto');
+  const bytesHash = createHash('sha1').update(Buffer.from([0])).digest('hex');
+  const after = { id: 'fn_00001', symbol: newSelf, status: 'exact', score: 1, effectiveHash: effectiveHash(Buffer.from([0]), [0], effective),
+    effectiveParts: { bytesHash, effective, unresolvedRefs: [{ index: 0, name: handler, addend: 0, prefix: '6:abs:' }], is64: false },
+    relocations: [{ offset: 6, symbol: handler, ok: true, unresolved: true, actual: 0xddd000 }] };
+  const unit = (fn) => ({ file: 'src/a.cpp', compiled: true, functions: [fn], bindings: { [fn.symbol]: 'fn_00001' }, lintErrors: [], unannotated: [] });
+  f.verifier.check = async () => ({ check: { units: [unit(before)] } });
+  assert.deepEqual((await m.changedFunctions({ units: [unit(after)] }, files, 'head')).map((c) => c.id), []);
+});
+
 test('a batch that edits a unit outside its tasks merges whole: one function sent back returns it all', async (t) => {
   const f = fixture(t);
   const refactor = { ...files, 'src/caller.cpp': 'int g() { return f(); }\n' };
