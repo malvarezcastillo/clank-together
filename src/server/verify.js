@@ -256,6 +256,12 @@ export class Verifier {
     // before fetch belongs to this synchronization; later submissions may name a newer base.
     const syncedThrough = this.store.get(`SELECT COALESCE(MAX(id), 0) AS id FROM batches WHERE state = 'queued' AND kind IN ('code', 'maintenance')`).id;
     const result = this.repo.sync(this.config.pushRemote);
+    if (result.state === 'merged') {
+      // Publish the join now so the remote stops diverging from the server's history.
+      this.repo.push(this.config.pushRemote);
+      this.log.info(`repository diverged from ${result.remote} ${result.branch}; merged disjoint remote ${result.remoteHead} into ${result.before} as ${result.head}`);
+      this.store.event('repository_auto_merge', null, { before: result.before, remote: result.remoteHead, head: result.head });
+    }
     this.refreshProject();
     this.store.setMeta('repository_project_head', result.head);
     this.syncError = null;

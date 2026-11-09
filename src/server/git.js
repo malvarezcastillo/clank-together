@@ -172,15 +172,40 @@ export class Repo {
       }
       if (local === upstream) return { ...result, state: 'current' };
       if (this.ancestorOf(upstream, local)) return { ...result, state: 'ahead' };
-      if (!this.ancestorOf(local, upstream)) {
-        throw new Error(`diverged: local HEAD ${local}, remote ${upstream}; a maintainer must reconcile these histories explicitly and retry; no reset, rebase or merge was performed`);
-      }
+      if (!this.ancestorOf(local, upstream)) return this.mergeDiverged(local, upstream, result);
       // --no-overwrite-ignore also preserves ignored local files that become tracked upstream.
       this.git(['-c', 'merge.autoStash=false', 'merge', '--ff-only', '--no-autostash', '--no-overwrite-ignore', upstream]);
       return { ...result, state: 'fast-forward', head: this.head() };
     } catch (e) {
       throw new Error(`repository sync from ${target} failed (local HEAD ${local}): ${e.message}`, { cause: e });
     }
+  }
+
+  /**
+   * Joins a remote branch that diverged (someone pushed to it directly) when the two sides
+   * changed disjoint files: a merge commit keeping both histories. Any file changed on both
+   * sides, or a merge Git cannot complete cleanly, leaves everything as it was.
+   */
+  mergeDiverged(local, upstream, result) {
+    const base = this.git(['merge-base', local, upstream]).trim();
+    const changed = (commit) => new Set(this.git(['diff', '--name-only', '-z', '--no-renames', base, commit]).split('\0').filter(Boolean));
+    const ours = changed(local);
+    const overlap = [...changed(upstream)].filter((file) => ours.has(file));
+    if (overlap.length) {
+      throw new Error(`diverged: local HEAD ${local}, remote ${upstream}; both changed ${overlap.slice(0, 10).join(', ')}${overlap.length > 10 ? ` and ${overlap.length - 10} more` : ''}; a maintainer must reconcile these histories explicitly and retry; no reset, rebase or merge was performed`);
+    }
+    const name = process.env.TD_GIT_AUTHOR_NAME;
+    const email = process.env.TD_GIT_AUTHOR_EMAIL;
+    if (Boolean(name) !== Boolean(email)) throw new Error('set both TD_GIT_AUTHOR_NAME and TD_GIT_AUTHOR_EMAIL');
+    const identity = ['-c', `user.name=${name ?? 'Clank Together'}`, '-c', `user.email=${email ?? 'bot@clank-together.invalid'}`];
+    try {
+      this.git([...identity, '-c', 'merge.autoStash=false', 'merge', '--no-ff', '--no-edit', '--no-autostash', '--no-overwrite-ignore',
+        '-m', `Merge ${result.remote} ${result.branch.replace(/^refs\/heads\//, '')} (pushed directly) into server history`, upstream]);
+    } catch (e) {
+      try { this.git(['merge', '--abort']); } catch {}
+      throw new Error(`diverged: local HEAD ${local}, remote ${upstream}; automatic merge of disjoint changes failed (${e.message}); no reset or rebase was performed`, { cause: e });
+    }
+    return { ...result, state: 'merged', head: this.head() };
   }
 
   /**

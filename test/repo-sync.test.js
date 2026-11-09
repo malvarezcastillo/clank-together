@@ -92,15 +92,30 @@ test('sync fetches pushRemote and fast-forwards its current branch, preserving l
   assert.equal(r.repo.show('HEAD', 'src/local.cpp'), 'int local_value;\n');
 });
 
-test('divergence gives both commits and leaves both histories and worktree intact', (t) => {
+test('divergence touching the same file gives both commits and leaves both histories and worktree intact', (t) => {
+  const r = repositories(t);
+  const local = r.commit(r.local, { 'src/base.cpp': 'int local_value;\n' });
+  const remote = r.advance({ 'src/base.cpp': 'int base_value;\nint remote_value;\n' });
+  assert.throws(() => r.repo.sync('publish'), (e) => /diverged/.test(e.message) && e.message.includes(local) && e.message.includes(remote) && e.message.includes('src/base.cpp') && /maintainer.*reconcile/.test(e.message));
+  assert.equal(r.repo.head(), local);
+  assert.equal(r.repo.show('HEAD', 'src/base.cpp'), 'int local_value;\n');
+  assert.equal(r.repo.isClean(), true);
+});
+
+test('divergence over disjoint files is joined by a merge commit keeping both histories', (t) => {
   const r = repositories(t);
   const local = r.commit(r.local, { 'src/local.cpp': 'int local_value;\n' });
-  const remote = r.advance({ 'src/remote.cpp': 'int remote_value;\n' });
-  assert.throws(() => r.repo.sync('publish'), (e) => /diverged/.test(e.message) && e.message.includes(local) && e.message.includes(remote) && /maintainer.*reconcile/.test(e.message));
-  assert.equal(r.repo.head(), local);
+  const remote = r.advance({ 'README.md': 'docs\n' });
+  const result = r.repo.sync('publish');
+  assert.equal(result.state, 'merged');
+  assert.equal(result.before, local);
+  assert.equal(result.remoteHead, remote);
+  assert.deepEqual(r.git(r.local, 'log', '-1', '--format=%P').split(' '), [local, remote]);
   assert.equal(r.repo.show('HEAD', 'src/local.cpp'), 'int local_value;\n');
-  assert.equal(r.repo.show(remote, 'src/remote.cpp'), 'int remote_value;\n');
+  assert.equal(r.repo.show('HEAD', 'README.md'), 'docs\n');
   assert.equal(r.repo.isClean(), true);
+  r.repo.push('publish');
+  assert.equal(r.repo.sync('publish').state, 'current');
 });
 
 test('dirty tracked, staged and untracked files are preserved, as are ignored files upstream would track', (t) => {
@@ -178,8 +193,8 @@ test('sync failure blocks new merge/check work and an operator reconciliation re
   ctx.store.run(`UPDATE batches SET state = 'open' WHERE id = ?`, approved);
   ctx.store.run(`UPDATE attempts SET state = 'approved' WHERE batch_id = ?`, approved);
   const checkId = Number(ctx.store.run(`INSERT INTO check_jobs (user_id, files_hash, files_json, state, created_at) VALUES (?, 'test', '{}', 'queued', ?)`, user, now()).lastInsertRowid);
-  const local = r.commit(r.local, { 'src/local.cpp': 'int local_value;\n' });
-  const remote = r.advance({ 'src/remote.cpp': 'int remote_value;\n' });
+  const local = r.commit(r.local, { 'src/local.cpp': 'int local_value;\n', 'src/base.cpp': 'int local_base;\n' });
+  const remote = r.advance({ 'src/remote.cpp': 'int remote_value;\n', 'src/base.cpp': 'int remote_base;\n' });
   ctx.verifier.pump();
   const error = JSON.parse(ctx.store.get('SELECT result_json FROM batches WHERE id = ?', queued).result_json).repositorySync.error;
   assert.ok(error.includes(local) && error.includes(remote));
@@ -190,7 +205,9 @@ test('sync failure blocks new merge/check work and an operator reconciliation re
   assert.equal(r.repo.head(), local);
   // Deliberate operator reconciliation, not an automatic reset/rebase by sync.
   r.git(r.producer, 'fetch', '-q', r.local, 'main');
-  r.git(r.producer, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'merge', '-q', '--no-edit', 'FETCH_HEAD');
+  r.git(r.producer, 'merge', '-q', '--no-edit', '-s', 'ours', '--no-commit', 'FETCH_HEAD');
+  r.git(r.producer, 'checkout', 'FETCH_HEAD', '--', 'src/local.cpp');
+  r.git(r.producer, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '--no-edit');
   r.git(r.producer, 'push', '-q', 'origin', 'HEAD');
   ctx.verifier.pump();
   await drained(ctx.verifier);
