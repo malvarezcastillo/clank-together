@@ -65,15 +65,16 @@ export function inferShape(project, file) {
 }
 
 /**
- * The build list with new units added (each with its inferred shape), as the text the repository
- * stores it in, or null when nothing is new. `text` is the list as it is on main.
+ * The build list with new units added (each with its inferred shape, or the one `shapes` gives: a
+ * moved unit keeps its own), as the text the repository stores it in, or null when nothing is new.
+ * `text` is the list as it is on main.
  */
-export function addUnitsToCompileCommands(project, text, files) {
+export function addUnitsToCompileCommands(project, text, files, shapes = new Map()) {
   if (!project.compile?.units || text === null) return null;
   const doc = JSON.parse(text);
   const added = files.filter((f) => isUnit(f) && doc.units[f] === undefined && !/(^|\/)Win32\//.test(f));
   if (!added.length) return null;
-  for (const f of added) doc.units[f] = inferShape({ compile: doc }, f);
+  for (const f of added) doc.units[f] = shapes.has(f) ? shapes.get(f) : inferShape({ compile: doc }, f);
   doc.units = Object.fromEntries(Object.entries(doc.units).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   return { text: JSON.stringify(doc, null, 1), added, units: doc.units };
 }
@@ -86,6 +87,39 @@ export function removeUnitsFromCompileCommands(project, text, files) {
   if (!removed.length) return null;
   for (const f of removed) delete doc.units[f];
   return { text: JSON.stringify(doc, null, 1), removed, units: doc.units };
+}
+
+/**
+ * Units a batch moves: a listed unit it deletes and exactly one new unit (not listed yet) of the same
+ * file name it adds elsewhere. A moved unit keeps the command shape it had, instead of the one its new
+ * folder would infer (a move changes paths, not how a unit compiles). new path -> old path.
+ */
+export function movedUnits(units, files) {
+  if (!units) return new Map();
+  const name = (f) => f.slice(f.lastIndexOf('/') + 1).toLowerCase();
+  const deleted = new Map();
+  const added = new Map();
+  for (const [f, text] of Object.entries(files)) {
+    if (!isUnit(f)) continue;
+    const list = text === null ? (units[f] !== undefined ? deleted : null) : (units[f] === undefined ? added : null);
+    if (!list) continue;
+    if (!list.has(name(f))) list.set(name(f), []);
+    list.get(name(f)).push(f);
+  }
+  const out = new Map();
+  for (const [n, from] of deleted) {
+    const to = added.get(n);
+    if (from.length === 1 && to?.length === 1) out.set(to[0], from[0]);
+  }
+  return out;
+}
+
+/** `units` with every moved unit listed under its new path with its old shape (a copy). */
+export function withMovedUnits(units, moves) {
+  if (!units || !moves.size) return units;
+  const out = { ...units };
+  for (const [to, from] of moves) out[to] = units[from];
+  return out;
 }
 
 export function loadToolchainLock(repoDir, readFile = (file) => readProjectFile(repoDir, file)) {

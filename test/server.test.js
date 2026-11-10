@@ -15,6 +15,7 @@ import { STATUS, NO_BASE_RELOC } from '../src/shared/compare.js';
 import { reviewerStats } from '../src/server/reviewers.js';
 import { inferUnits, groupFor } from '../src/server/grouping.js';
 import { Live } from '../src/server/live.js';
+import { unitSettings } from '../src/shared/project.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 let dataDir, ctx, server, base;
@@ -1770,6 +1771,59 @@ test('maintenance batches: maintainers only; merge when no compiled code changes
     ctx.store.run('UPDATE symbols SET skip_reason = NULL WHERE id = ?', fid);
   } finally {
     ctx.verifier.check = realCheck;
+  }
+});
+
+test('maintenance: a moved unit keeps its compile flags, functions and claims; the build list follows', async () => {
+  const maintainer = await activeUser('mvmaint', 'maintainer');
+  const from = 'src/old/mover.cpp';
+  const to = 'src/neu/mover.cpp';
+  const v = ctx.store.currentVersion();
+  const fid = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x402a00, size: 8, unit: from }).symbol.id;
+  ctx.tasks.generate();
+  const text = `// FUNCTION: ${fid}\nint mv() { return 1; }\n`;
+  ctx.repo.commitFiles({ [from]: text, 'src/neu/other.cpp': 'int other;\n' }, 'seed mover', 'x <x@y.invalid>');
+  ctx.store.run(`INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash) VALUES (?, ?, 'exact', 1, 'x', ?, 0, 'mv')`, fid, from, now());
+  const claimant = ctx.accounts.byName('mvmaint');
+  ctx.store.run(`INSERT INTO region_claims (user_id, kind, key, created_at, expires_at) VALUES (?, 'unit', ?, ?, ?)`, claimant.id, from, now(), now() + 3600_000);
+
+  // A build list in which the unit's folder uses shape 0 and its new folder shape 1.
+  const listFile = 'data/compile.json';
+  const list = { shapes: [['/flags-old'], ['/flags-new']], units: { [from]: 0, 'src/neu/other.cpp': 1 } };
+  ctx.repo.commitFiles({ [listFile]: JSON.stringify(list, null, 1) }, 'build list', 'x <x@y.invalid>');
+  const saved = { compileCommands: ctx.project.compileCommands, compile: ctx.project.compile };
+  ctx.project.compileCommands = listFile;
+  ctx.project.compile = JSON.parse(JSON.stringify(list));
+
+  // Stubbed compiler: records the flags each unit compiled with; the function is exact either way.
+  const seen = new Map();
+  const realCheck = ctx.verifier.check;
+  ctx.verifier.check = async (files, job, { onlyUnits = null } = {}) => {
+    const names = onlyUnits ?? Object.keys(files).filter((f) => f.endsWith('.cpp') && files[f] !== null);
+    const units = names.map((file) => {
+      seen.set(file, unitSettings(ctx.project, file).cflags);
+      const body = files[file] ?? ctx.repo.show('HEAD', file) ?? '';
+      const functions = body.includes(fid) ? [{ id: fid, status: STATUS.EXACT, score: 1, file, codeHash: 'mv', effectiveHash: 'mv', relocations: [], size: { ours: 8, original: 8 } }] : [];
+      return { file, compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], functions };
+    });
+    return { check: { annotationErrors: [], units }, rec: { conflicts: [], unknown: [], learned: [], learnedAddresses: [] }, changedHeaders: [], units: names };
+  };
+  try {
+    const r = await call('POST', '/api/maintenance', { baseCommit: ctx.repo.head(), files: { [from]: null, [to]: text }, notes: 'move mover.cpp' }, maintainer);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const done = await waitFor(async () => { const st = (await call('GET', `/api/batches/${r.body.batchId}`, null, maintainer)).body; return !['queued', 'verifying'].includes(st.state) && st; });
+    assert.equal(done.state, 'merged', JSON.stringify(done));
+    assert.deepEqual(seen.get(to), ['/flags-old'], 'checked with the flags it had, not its new folder\'s');
+    const listed = JSON.parse(ctx.repo.show('HEAD', listFile)).units;
+    assert.equal(listed[to], 0, 'listed under its new path with its old shape');
+    assert.equal(listed[from], undefined, 'the old path left the list');
+    assert.equal(ctx.store.get('SELECT unit FROM symbols WHERE id = ?', fid).unit, to, 'its functions belong to the new path');
+    assert.ok(ctx.store.get(`SELECT 1 AS x FROM region_claims WHERE kind = 'unit' AND key = ?`, to), 'a file claim follows the file');
+    assert.equal(ctx.store.get(`SELECT 1 AS x FROM region_claims WHERE kind = 'unit' AND key = ?`, from), undefined);
+  } finally {
+    ctx.verifier.check = realCheck;
+    Object.assign(ctx.project, saved);
+    ctx.store.run(`DELETE FROM region_claims WHERE user_id = ?`, claimant.id);
   }
 });
 

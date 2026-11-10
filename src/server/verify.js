@@ -705,10 +705,11 @@ export class Verifier {
     return changed;
   }
 
-  /** Functions that match on main but would no longer match with this change. */
-  regressions(check, files = {}) {
+  /** Functions that match on main but would no longer match with this change. `moves` (new path ->
+   * old path) counts a moved unit's functions, still recorded under the old path, as compiled. */
+  regressions(check, files = {}, moves = new Map()) {
     const results = new Map([...bestResults(check)].map(([id, b]) => [id, b.f]));
-    const compiledFiles = new Set(check.units.map((u) => u.file));
+    const compiledFiles = new Set(check.units.flatMap((u) => (moves.has(u.file) ? [u.file, moves.get(u.file)] : [u.file])));
     const out = [];
     // An accepted "no decompile" claim retires the function: removing its old annotation is the fix.
     for (const row of this.store.all(`SELECT * FROM func_status WHERE (status IN ('exact', 'match_unresolved') OR confirmed = 1) AND symbol_id NOT IN (SELECT symbol_id FROM tasks WHERE state = 'skipped')`)) {

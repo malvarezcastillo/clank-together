@@ -9,7 +9,7 @@ import { HttpError } from './http.js';
 import { now } from './db.js';
 import { hasRole } from './accounts.js';
 import { lintSubmission } from '../shared/lint.js';
-import { isUnit, addUnitsToCompileCommands, removeUnitsFromCompileCommands } from '../shared/project.js';
+import { isUnit, addUnitsToCompileCommands, removeUnitsFromCompileCommands, movedUnits, withMovedUnits } from '../shared/project.js';
 import { bestResults, BuildRetryError, deferBuild, clearBuildRetry, boundAddresses } from './verify.js';
 import { resolvedEffectiveHash, resolvedEffectiveParts, hashEffectiveParts } from '../shared/compare.js';
 
@@ -97,8 +97,20 @@ export class Maintenance {
     const globalErrors = this.verifier.globalsGate(merged.files, startHead);
     if (globalErrors.length) return back('global variable rules (see globalErrors)', { globalErrors });
 
-    // Every unit the change can affect: the submitted ones, and every includer of a changed header.
-    const { check, rec, changedHeaders } = await this.verifier.check(merged.files, `maintenance-${batch.id}`, { dependents: true });
+    // A moved unit (deleted here, added under another folder with the same file name) compiles with
+    // the shape it had, not the one its new folder would infer: listed under its new path while this
+    // batch is checked, and written to the build list with it on merge.
+    const moves = movedUnits(this.project.compile?.units, merged.files);
+    const listedBefore = this.project.compile?.units;
+    if (moves.size) this.project.compile.units = withMovedUnits(listedBefore, moves);
+    let checked;
+    try {
+      // Every unit the change can affect: the submitted ones, and every includer of a changed header.
+      checked = await this.verifier.check(merged.files, `maintenance-${batch.id}`, { dependents: true });
+    } finally {
+      if (moves.size) this.project.compile.units = listedBefore;
+    }
+    const { check, rec, changedHeaders } = checked;
     if (check.units.some((u) => u.timedOut)) throw new BuildRetryError(check, 'maintenance');
     const failed = check.units.filter((u) => !u.compiled);
     if (failed.length) return back('compilation failed', { compileErrors: failed.map((u) => ({ file: u.file, log: u.log })) });
@@ -109,9 +121,9 @@ export class Maintenance {
     if (lint.length) return back('banned constructs found after preprocessing', { lintErrors: lint });
     await this.verifier.refreshBaselines(check, merged.files, `maintenance-${batch.id}`);
     const forced = JSON.parse(batch.result_json ?? '{}').forced === true;
-    const regressions = this.verifier.regressions(check, merged.files);
+    const regressions = this.verifier.regressions(check, merged.files, moves);
     if (regressions.length && !forced) return back(`breaks ${regressions.length} function(s) that matched before`, { regressions });
-    const changed = await this.changedFunctions(check, merged.files, startHead);
+    const changed = await this.changedFunctions(check, merged.files, startHead, moves);
     if (changed.length && !forced) {
       return back(`changes the compiled code of ${changed.length} function(s): that is function work; submit those functions with their tasks`, { changedFunctions: changed.slice(0, 200) });
     }
@@ -124,7 +136,8 @@ export class Maintenance {
     const listFile = this.project.compileCommands ?? null;
     const deletedUnits = Object.keys(merged.files).filter((f) => isUnit(f) && merged.files[f] === null);
     const shrunk = listFile && deletedUnits.length ? removeUnitsFromCompileCommands(this.project, this.repo.show(startHead, listFile), deletedUnits) : null;
-    const grown = listFile ? addUnitsToCompileCommands(this.project, shrunk?.text ?? this.repo.show(startHead, listFile), Object.keys(merged.files).filter((f) => isUnit(f) && merged.files[f] !== null)) : null;
+    const movedShapes = new Map([...moves].map(([to, from]) => [to, listedBefore[from]]));
+    const grown = listFile ? addUnitsToCompileCommands(this.project, shrunk?.text ?? this.repo.show(startHead, listFile), Object.keys(merged.files).filter((f) => isUnit(f) && merged.files[f] !== null), movedShapes) : null;
     const listed = grown ?? shrunk;
     const filesToCommit = listed ? { ...merged.files, [listFile]: listed.text } : merged.files;
     const summary = String(batch.notes ?? '').split('\n')[0].slice(0, 120) || `${Object.keys(files).length} file(s)`;
@@ -135,7 +148,17 @@ export class Maintenance {
     const commit = this.repo.commitFiles(filesToCommit, message, `${author} <${author.replace(/[^A-Za-z0-9_.-]/g, '_')}@users.clank-together.invalid>`);
     if (listed) this.project.compile.units = listed.units;
     for (const unit of deletedUnits) this.store.run('DELETE FROM unit_deps WHERE unit = ?', unit);
-    this.store.tx(() => this.merger.applyCheckToDatabase(check, rec, commit, batch.user_id));
+    // A moved unit takes what is recorded under its old path along: the functions that belong to it
+    // (their tasks and regions follow symbols.unit) and file region claims.
+    this.store.tx(() => {
+      for (const [to, from] of moves) {
+        this.store.run('UPDATE symbols SET unit = ? WHERE unit = ?', to, from);
+        this.store.run(`UPDATE OR IGNORE region_claims SET key = ? WHERE kind = 'unit' AND key = ?`, to, from);
+        this.store.run(`DELETE FROM region_claims WHERE kind = 'unit' AND key = ?`, from);
+      }
+      this.merger.applyCheckToDatabase(check, rec, commit, batch.user_id);
+    });
+    if (moves.size) this.store.event('units_moved', batch.user_id, { batch: batch.id, moves: Object.fromEntries(moves) });
     if (forced) this.store.event('maintenance_forced', batch.user_id, { batch: batch.id, commit, regressions: regressions.map((r) => r.id), changed: changed.map((c) => c.id ?? c) });
     this.merger.afterCommit(commit);
     this.log.info(`merged maintenance batch ${batch.id} as ${commit.slice(0, 10)}${forced ? ' (forced)' : ''}`);
@@ -148,8 +171,9 @@ export class Maintenance {
    * (effectiveHash): moving a global, renaming it, or reaching a member through its object's symbol
    * changes names, not code.
    */
-  async changedFunctions(check, files, head) {
-    const touched = check.units.map((u) => u.file).filter((f) => this.repo.show(head, f) !== null);
+  async changedFunctions(check, files, head, moves = new Map()) {
+    // Main's version of every unit the change compiled; a moved unit is compared with its old path.
+    const touched = [...new Set(check.units.map((u) => moves.get(u.file) ?? u.file))].filter((f) => this.repo.show(head, f) !== null);
     const before = touched.length ? (await this.verifier.check({}, `maintenance-base-${head.slice(0, 10)}`, { onlyUnits: touched, lint: false })).check : { units: [] };
     if (before.units.some((u) => !u.compiled || u.timedOut)) throw new BuildRetryError(before, 'maintenance-baseline');
     const was = new Map([...bestResults(before)].map(([id, b]) => [id, b.f]));
