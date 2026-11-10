@@ -46,6 +46,16 @@ test('a deletion merges onto an unchanged head and conflicts when main edited th
   assert.deepEqual(repo.mergeOntoHead(base, { 'src/old.h': null }).conflicts, ['src/old.h']);
 });
 
+test('a moved file takes along what main changed at its old path', (t) => {
+  const { dir, repo, git } = repository(t);
+  const base = repo.head();
+  fs.writeFileSync(path.join(dir, 'src', 'b.cpp'), 'int b;\nint newer;\n');
+  git('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-am', 'edit');
+  const moved = repo.mergeOntoHead(base, { 'src/b.cpp': null, 'src/x/b.cpp': '#include "y.h"\nint b;\n' });
+  assert.deepEqual(moved, { files: { 'src/b.cpp': null, 'src/x/b.cpp': '#include "y.h"\nint b;\nint newer;\n' }, conflicts: [] });
+  assert.deepEqual(repo.mergeOntoHead(base, { 'src/b.cpp': null }).conflicts, ['src/b.cpp'], 'a plain deletion still conflicts');
+});
+
 test('only maintenance lint accepts a deletion, and only of a tracked file', () => {
   const opts = { allowedPaths: ['src/**'], trackedPaths: ['src/old.h'] };
   assert.match(lintSubmission({ 'src/old.h': null }, opts)[0].message, /content must be a string/);

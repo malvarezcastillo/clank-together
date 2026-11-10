@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { plainDeclaration, FORWARD } from './affected.js';
+import { movedFrom } from '../shared/lint.js';
 
 const MARK = 31; // conflict-marker width that ordinary source never contains
 const HEADER = /\.(h|hh|hpp|hxx|inl)$/i;
@@ -210,19 +211,23 @@ export class Repo {
 
   /**
    * Three-way merges submitted files (written against `base`) onto HEAD.
+   * A moved file (lint.js movedFrom) takes along what main changed at its old path since `base`.
    * @returns {{files: Record<string,string>, conflicts: string[]}}
    */
   mergeOntoHead(base, files) {
     const head = this.head();
     const out = {};
     const conflicts = [];
+    const moved = movedFrom(files, (f) => this.show(base, f) === null && this.show(head, f) === null);
+    const movedSources = new Set(moved.values());
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'td-merge-'));
     try {
       for (const [file, theirs] of Object.entries(files)) {
-        const baseText = this.show(base, file);
-        const headText = this.show(head, file);
+        const source = moved.get(file);
+        const baseText = this.show(base, source ?? file);
+        const headText = this.show(head, source ?? file);
         if (theirs === null) {
-          if (baseText === headText) out[file] = null;
+          if (baseText === headText || (movedSources.has(file) && headText !== null)) out[file] = null;
           else conflicts.push(file);
           continue;
         }
