@@ -43,39 +43,48 @@ export class Credits {
     return Number(this.store.run('INSERT OR IGNORE INTO credit_ledger (user_id, amount, reason, ref, created_at) VALUES (?, ?, ?, ?, ?)', userId, amount, reason, ref, now()).changes);
   }
 
-  /** Books every earning that is not booked yet. Returns how many entries were added. */
+  /**
+   * Books every earning that is not booked yet. Returns how many entries were added.
+   * The scans read a snapshot outside the write transaction: they take about a second on a large
+   * database and would otherwise hold the write lock that long every 30 s, starving the worker.
+   * Booking is idempotent (INSERT OR IGNORE on the ledger's unique key), so an earning another
+   * process books between the scan and the write is not booked twice.
+   */
   sync() {
+    const missing = (reason, refExpr) => `NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.user_id = a.user_id AND l.reason = '${reason}' AND l.ref = ${refExpr})`;
+    const entries = [];
+    // Merged code: byte-identical or peer-confirmed.
+    for (const r of this.store.all(
+      `SELECT a.id, a.user_id, json_extract(a.result_json, '$.feedback.target.status') AS status FROM attempts a
+        WHERE a.state = 'merged' AND a.kind = 'code' AND ${missing('identical', "'attempt:' || a.id")} AND ${missing('confirmed', "'attempt:' || a.id")}`,
+    )) {
+      const identical = r.status === 'exact' || r.status === 'match_unresolved';
+      entries.push([r.user_id, identical ? AWARDS.identical : AWARDS.confirmed, identical ? 'identical' : 'confirmed', `attempt:${r.id}`]);
+    }
+    // Accepted "no decompile" claims.
+    for (const r of this.store.all(`SELECT a.id, a.user_id FROM attempts a WHERE a.kind = 'skip' AND a.state IN ('merged', 'skipped', 'approved') AND ${missing('skip', "'attempt:' || a.id")}`)) {
+      entries.push([r.user_id, AWARDS.skip, 'skip', `attempt:${r.id}`]);
+    }
+    // Submitted code that compiled and went on.
+    for (const r of this.store.all(
+      `SELECT a.id, a.user_id FROM attempts a WHERE a.kind = 'code' AND a.state IN ('peer_review', 'in_review', 'approved', 'merging', 'merged') AND ${missing('submitted', "'attempt:' || a.id")}`,
+    )) {
+      entries.push([r.user_id, AWARDS.submitted, 'submitted', `attempt:${r.id}`]);
+    }
+    // Reviews that agreed with the outcome: "same" on what merged, "different" on what peers sent back
+    // (also once a later attempt finished the function and this one was retired as superseded).
+    for (const r of this.store.all(
+      `SELECT p.id, p.reviewer_id AS user_id FROM peer_reviews p JOIN attempts t ON t.id = p.attempt_id
+        WHERE ((p.verdict = 'same' AND t.state IN ('merged', 'approved', 'merging')) OR (p.verdict = 'different' AND t.state IN ('needs_cleanup', 'hard', 'returned', 'superseded') AND
+               (SELECT COALESCE(SUM(q.weight), 0) FROM peer_reviews q WHERE q.attempt_id = t.id AND q.verdict = 'different') >= 3))
+          AND NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.user_id = p.reviewer_id AND l.reason = 'review' AND l.ref = 'review:' || p.id)`,
+    )) {
+      entries.push([r.user_id, AWARDS.review, 'review', `review:${r.id}`]);
+    }
+    if (!entries.length) return 0;
     let n = 0;
     this.store.tx(() => {
-      const missing = (reason, refExpr) => `NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.user_id = a.user_id AND l.reason = '${reason}' AND l.ref = ${refExpr})`;
-      // Merged code: byte-identical or peer-confirmed.
-      for (const r of this.store.all(
-        `SELECT a.id, a.user_id, json_extract(a.result_json, '$.feedback.target.status') AS status FROM attempts a
-          WHERE a.state = 'merged' AND a.kind = 'code' AND ${missing('identical', "'attempt:' || a.id")} AND ${missing('confirmed', "'attempt:' || a.id")}`,
-      )) {
-        const identical = r.status === 'exact' || r.status === 'match_unresolved';
-        n += this.book(r.user_id, identical ? AWARDS.identical : AWARDS.confirmed, identical ? 'identical' : 'confirmed', `attempt:${r.id}`);
-      }
-      // Accepted "no decompile" claims.
-      for (const r of this.store.all(`SELECT a.id, a.user_id FROM attempts a WHERE a.kind = 'skip' AND a.state IN ('merged', 'skipped', 'approved') AND ${missing('skip', "'attempt:' || a.id")}`)) {
-        n += this.book(r.user_id, AWARDS.skip, 'skip', `attempt:${r.id}`);
-      }
-      // Submitted code that compiled and went on.
-      for (const r of this.store.all(
-        `SELECT a.id, a.user_id FROM attempts a WHERE a.kind = 'code' AND a.state IN ('peer_review', 'in_review', 'approved', 'merging', 'merged') AND ${missing('submitted', "'attempt:' || a.id")}`,
-      )) {
-        n += this.book(r.user_id, AWARDS.submitted, 'submitted', `attempt:${r.id}`);
-      }
-      // Reviews that agreed with the outcome: "same" on what merged, "different" on what peers sent back
-      // (also once a later attempt finished the function and this one was retired as superseded).
-      for (const r of this.store.all(
-        `SELECT p.id, p.reviewer_id AS user_id FROM peer_reviews p JOIN attempts t ON t.id = p.attempt_id
-          WHERE ((p.verdict = 'same' AND t.state IN ('merged', 'approved', 'merging')) OR (p.verdict = 'different' AND t.state IN ('needs_cleanup', 'hard', 'returned', 'superseded') AND
-                 (SELECT COALESCE(SUM(q.weight), 0) FROM peer_reviews q WHERE q.attempt_id = t.id AND q.verdict = 'different') >= 3))
-            AND NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.user_id = p.reviewer_id AND l.reason = 'review' AND l.ref = 'review:' || p.id)`,
-      )) {
-        n += this.book(r.user_id, AWARDS.review, 'review', `review:${r.id}`);
-      }
+      for (const e of entries) n += this.book(...e);
     });
     return n;
   }

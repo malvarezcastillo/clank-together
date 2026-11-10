@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { lintAnnotations } from '../shared/annotations.js';
 import { lintSubmission } from '../shared/lint.js';
 import { freeTextErrorsAcross, executionCharset, encodedLiteralRules, VIRTUALIZED_RE } from '../shared/freetext.js';
@@ -27,6 +28,14 @@ import { analyzeInWorkers } from './analyze.js';
 export const BIG_BATCH = 20;
 
 export const BUILD_READY = "COALESCE(json_extract(result_json, '$.buildRetry.retryAt'), 0) <= ?";
+
+/**
+ * batch_checks.check_json is stored gzipped: a broad header change makes it tens of megabytes of
+ * JSON, and writing that uncompressed held the database write lock long enough to starve the
+ * other process. Rows written before this are plain JSON text and still read.
+ */
+export const encodeCheck = (value) => gzipSync(JSON.stringify(value), { level: 6 });
+export const decodeCheck = (stored) => JSON.parse(typeof stored === 'string' ? stored : gunzipSync(stored).toString('utf8'));
 
 export class BuildRetryError extends Error {
   constructor(check, stage) {
@@ -573,7 +582,7 @@ export class Verifier {
       units: check.units.map((u) => ({ ...u, functions: u.functions.map(({ asm, diffRegions, ...f }) => f) })),
     };
     this.store.run('INSERT OR REPLACE INTO batch_checks (batch_id, head, check_json) VALUES (?, ?, ?)', batchId, cacheSnapshot.head,
-      JSON.stringify({ check: compact, rec, changedHeaders, cacheSnapshot }));
+      encodeCheck({ check: compact, rec, changedHeaders, cacheSnapshot }));
   }
 
   /** Prefer a child's expanded retry evidence; a parent's verification is only a fallback. */
@@ -584,7 +593,7 @@ export class Verifier {
       const row = this.store.get('SELECT head, check_json FROM batch_checks WHERE batch_id = ?', id);
       if (!row) continue;
       try {
-        const candidate = JSON.parse(row.check_json);
+        const candidate = decodeCheck(row.check_json);
         const s = candidate.cacheSnapshot;
         if (s?.format === 2 && s.head === row.head && s.context === snapshot.context && s.overrides && candidate.check?.units) {
           saved = candidate;
@@ -986,9 +995,12 @@ export class Verifier {
       if (ev.state === 'needs_cleanup' || ev.state === 'rejected') failed++;
       this.finish(a, ev.state, ev.score, ev.feedback);
     }
+    // mergedFiles only when the merge onto main changed the submission: otherwise readers fall back
+    // to files_json (attemptFiles), and storing the same files twice doubled every large write.
+    const mergedFiles = JSON.stringify(merged.files) === batch.files_json ? undefined : merged.files;
     this.store.run(
       `UPDATE batches SET state = 'open', finished_at = ?, result_json = json_patch(COALESCE(result_json, '{}'), ?) WHERE id = ?`,
-      now(), JSON.stringify({ mergedFiles: merged.files, check: summarizeCheck(check), changedHeaders, outside }), batch.id,
+      now(), JSON.stringify({ ...(mergedFiles && { mergedFiles }), check: summarizeCheck(check), changedHeaders, outside }), batch.id,
     );
     this.rememberCheck(batch.id, { check, rec, changedHeaders, cacheSnapshot });
     // Failing functions went back one by one (finish); the rest of the batch carries on and its

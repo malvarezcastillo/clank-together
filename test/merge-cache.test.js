@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Repo } from '../src/server/git.js';
-import { Verifier } from '../src/server/verify.js';
+import { Verifier, encodeCheck, decodeCheck } from '../src/server/verify.js';
 
 // Real git/source snapshots; the compile seam records work and returns deterministic analysis.
 function fixture(t) {
@@ -94,8 +94,8 @@ test('split children retain their own retries without overwriting parent provena
   const childFiles = { ...f.files, 'src/a.cpp': '#include "shared.h"\nint child;\n' };
   assert.equal((await f.verifier.mergeCheck({ id: 2 }, childFiles, { id: 1 })).compiled, 1);
   assert.equal((await f.verifier.mergeCheck({ id: 2 }, childFiles, { id: 1 })).compiled, 0);
-  assert.equal(f.rows.get(1).check_json, parent);
-  assert.deepEqual(JSON.parse(f.rows.get(2).check_json).cacheSnapshot.overrides, childFiles);
+  assert.deepEqual(f.rows.get(1).check_json, parent);
+  assert.deepEqual(decodeCheck(f.rows.get(2).check_json).cacheSnapshot.overrides, childFiles);
 });
 
 test('failed units retry and legacy or unknown provenance never becomes a hit', async (t) => {
@@ -104,9 +104,9 @@ test('failed units retry and legacy or unknown provenance never becomes a hit', 
   await f.verifier.mergeCheck({ id: 1 }, f.files);
   f.failures.clear();
   assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 1);
-  const saved = JSON.parse(f.rows.get(1).check_json);
+  const saved = decodeCheck(f.rows.get(1).check_json);
   delete saved.cacheSnapshot;
-  f.rows.set(1, { head: f.verifier.repo.head(), check_json: JSON.stringify(saved) });
+  f.rows.set(1, { head: f.verifier.repo.head(), check_json: encodeCheck(saved) });
   assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 2);
 });
 
@@ -151,9 +151,9 @@ test('reconciliation starts from comparison status rather than cached approvals'
   const f = fixture(t);
   await f.verifier.mergeCheck({ id: 1 }, f.files);
   const row = f.rows.get(1);
-  const saved = JSON.parse(row.check_json);
+  const saved = decodeCheck(row.check_json);
   saved.check.units[0].functions[0].status = 'exact';
-  row.check_json = JSON.stringify(saved);
+  row.check_json = encodeCheck(saved);
   const retry = await f.verifier.mergeCheck({ id: 1 }, f.files);
   assert.equal(retry.compiled, 0);
   assert.equal(retry.check.units[0].functions[0].status, 'mismatch');
@@ -177,7 +177,7 @@ test('GLOBAL fallback crossing HEAD requests new coverage instead of certifying 
   });
   const retry = await f.verifier.mergeCheck({ id: 1 }, f.files);
   assert.equal(retry.retryRequired, true);
-  assert.equal(f.rows.get(1).check_json, original, 'old coverage is not relabeled with the newer HEAD');
+  assert.deepEqual(f.rows.get(1).check_json, original, 'old coverage is not relabeled with the newer HEAD');
   const checked = await f.verifier.mergeCheck({ id: 1 }, f.files);
   assert.equal(checked.retryRequired, undefined);
   assert.ok(checked.check.units.some((u) => u.file === 'src/c.cpp'), 'next attempt discovers the new includer');
