@@ -1753,9 +1753,16 @@ test('maintenance batches: maintainers only; merge when no compiled code changes
     assert.equal(ctx.repo.show('HEAD', unit), changedText);
     assert.match(ctx.repo.git(['log', '-1', '--format=%B']), /forced by an admin/);
 
-    // Removing a function's annotation is refused before compiling.
+    // Removing a function's annotation is refused before compiling...
     const dropped = await submit(maintainer, { [unit]: 'int mf() { return 1; }\n' });
     assert.match((await settle(dropped.body.batchId, maintainer)).result.returned, new RegExp(`removes the annotation of ${fid}`));
+
+    // ...unless the function was accepted as needing no source (dead code claimed with no-decompile).
+    ctx.store.run(`UPDATE symbols SET skip_reason = 'unreferenced' WHERE id = ?`, fid);
+    const deadRemoved = await submit(maintainer, { [unit]: 'int mf() { return 1; }\n' });
+    const deadBack = await settle(deadRemoved.body.batchId, maintainer);
+    assert.doesNotMatch(deadBack.result?.returned ?? '', /removes the annotation/, JSON.stringify(deadBack));
+    ctx.store.run('UPDATE symbols SET skip_reason = NULL WHERE id = ?', fid);
   } finally {
     ctx.verifier.check = realCheck;
   }

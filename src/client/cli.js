@@ -64,6 +64,10 @@ Maintenance (maintainers: structural changes with no function tasks)
        [--decorated N | --swap-decorated-with ID]   correct a decorated name or atomically swap two
   td maintenance task <taskId> --close --batch B --reason T   admins: mark a task done whose code reached main
                                               through merged maintenance batch B
+  td maintenance no-decompile <id|taskId>... --category C --reason T   claim functions already on main need
+                                              no source (category: unreferenced, compiler_generated,
+                                              runtime_library, generated_from_global, not_code, duplicate);
+                                              peer review decides, then a maintenance batch may delete them
 
 Peer review (attempts that are not byte-identical; judge by reading, not by tools)
   td peer list                                attempts waiting for review
@@ -184,6 +188,7 @@ async function main() {
       files: { type: 'string' },
       delete: { type: 'string' },
       reason: { type: 'string' },
+      category: { type: 'string' },
       size: { type: 'string' },
       decorated: { type: 'string' },
       'swap-decorated-with': { type: 'string' },
@@ -345,7 +350,13 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
         if (!/^\d+$/.test(id ?? '') || !values.close || !values.batch || !values.reason) throw new Error('usage: td maintenance task <taskId> --close --batch <maintenanceBatchId> --reason "why"');
         return print(await client.post(`/api/admin/tasks/${id}`, { state: 'done', batch: Number(values.batch), reason: values.reason }));
       }
-      throw new Error('usage: td maintenance submit|symbol|task ...');
+      if (sub === 'no-decompile') {
+        const targets = args.slice(1);
+        if (!targets.length || !values.category || !values.reason) throw new Error('usage: td maintenance no-decompile <fn_id|taskId>... --category unreferenced|compiler_generated|runtime_library|generated_from_global|not_code|duplicate --reason "what in the original shows it"');
+        const items = targets.map((t) => ({ ...(/^\d+$/.test(t) ? { taskId: Number(t) } : { symbolId: t }), category: values.category, reason: values.reason }));
+        return print(await client.post('/api/tasks/no-decompile', { onMain: true, items }));
+      }
+      throw new Error('usage: td maintenance submit|symbol|task|no-decompile ...');
     }
     case 'result': {
       const r = await client.get(`/api/attempts/${args[0]}`);

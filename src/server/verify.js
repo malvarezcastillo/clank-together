@@ -479,7 +479,8 @@ export class Verifier {
   /**
    * Annotations of functions of the current version that the submission removes although it does
    * not hold them (not in the batch, not leased, not in a claimed region). Removing a duplicate is
-   * fine: the function stays annotated elsewhere on main.
+   * fine: the function stays annotated elsewhere on main, and so is removing a function accepted as
+   * needing no decompilation (skip_reason set: dead code, compiler generated, ...).
    */
   droppedAnnotations(files, baseCommit, attempts, userId) {
     const ANN = /\/\/\s*(?:FUNCTION|STUB)\s*:\s*(fn_\d+)/g;
@@ -496,6 +497,7 @@ export class Verifier {
     for (const id of before) {
       if (after.has(id) || held.has(id)) continue;
       if (!this.store.get('SELECT 1 FROM symbol_addresses WHERE symbol_id = ? AND version_id = ?', id, v.id)) continue; // not in this build
+      if (this.store.get('SELECT 1 FROM symbols WHERE id = ? AND skip_reason IS NOT NULL', id)) continue; // accepted as needing no source
       const t = this.store.get('SELECT * FROM tasks WHERE symbol_id = ?', id);
       if (t && ((t.state === 'leased' && t.lease_user === userId) || this.regions?.covers({ id: userId }, t))) continue;
       try {

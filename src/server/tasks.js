@@ -249,12 +249,17 @@ export class Tasks {
    * whose merged source should go. The task stays done until the claim is accepted.
    */
   markNoDecompile(user, items, { onMain = false } = {}) {
-    if (!Array.isArray(items) || !items.length) throw new HttpError(400, 'items must list { taskId, category, reason }');
+    if (!Array.isArray(items) || !items.length) throw new HttpError(400, 'items must list { taskId | symbolId, category, reason }');
     if (items.length > 200) throw new HttpError(400, 'at most 200 at a time');
     for (const it of items) {
       if (!SKIP_CATEGORIES[it.category]) throw new HttpError(400, `category must be one of ${Object.keys(SKIP_CATEGORIES).join(', ')}`);
       const reason = String(it.reason ?? '').trim();
       if (reason.length < 10 || reason.length > 300) throw new HttpError(400, 'give a reason of 10 to 300 characters (what in the original shows it)');
+      if (it.taskId === undefined && it.symbolId !== undefined) {
+        const t = this.store.get('SELECT id FROM tasks WHERE symbol_id = ?', String(it.symbolId));
+        if (!t) throw new HttpError(404, `${it.symbolId} has no task`);
+        it.taskId = t.id;
+      }
     }
     return this.store.tx(() => {
       for (const it of items) {
