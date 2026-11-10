@@ -534,7 +534,8 @@ export class Verifier {
         return false; // git grep exits 1 when nothing matches
       }
     };
-    return undefinedDeclarations(files, { before: (f) => this.repo.show(baseCommit, f), existsElsewhere, known });
+    const moved = movedFrom(files, (f) => this.repo.show(baseCommit, f) === null);
+    return undefinedDeclarations(files, { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), existsElsewhere, known });
   }
 
   /** Definitions come from the effective source tree, never from symbol metadata or pending work. */
