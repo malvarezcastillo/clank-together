@@ -550,7 +550,8 @@ export class Verifier {
         .map((f) => [f, fs.readFileSync(path.join(this.repo.dir, f), 'utf8')]));
       this.globalSourceHead = head;
     }
-    return globalViolations(files, { before: (f) => this.repo.show(baseCommit, f), repository: this.globalSources });
+    const moved = movedFrom(files, (f) => this.repo.show(baseCommit, f) === null);
+    return globalViolations(files, { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), repository: this.globalSources });
   }
 
   /** Capture before compilation: comparison inputs are as important as source dependencies. */
