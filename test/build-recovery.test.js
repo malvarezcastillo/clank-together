@@ -174,6 +174,26 @@ test('maintenance: a lambda inside a renamed method keeps its exception handler'
   assert.deepEqual((await m.changedFunctions({ units: [unit(after)] }, files, 'head')).map((c) => c.id), []);
 });
 
+test('maintenance: a callee no symbol knows, respelled from C to C++ linkage, is not a code change; another identifier is', async (t) => {
+  const f = fixture(t);
+  f.store.currentVersion = () => ({ id: 1 });
+  f.store.symbolMap = () => new Map([['fn_00001', { kind: 'function', addr: 0x401000 }]]);
+  const m = new Maintenance({ ...f, project: f.verifier.project, log: f.verifier.log });
+  const { effectiveHash } = await import('../src/shared/compare.js');
+  const self = '?FindShopId@@YAHXZ';
+  const fn = (callee) => {
+    const effective = [`37:rel:?${callee}+-4`];
+    const parts = { bytesHash: 'b', effective, unresolvedRefs: [{ index: 0, name: callee, addend: -4, prefix: '37:rel:' }], is64: false };
+    return { id: 'fn_00001', symbol: self, status: 'mismatch', score: 0.5, effectiveHash: effectiveHash(Buffer.from([0]), [0], effective), effectiveParts: parts,
+      relocations: [{ offset: 37, symbol: callee, ok: true, unresolved: true, actual: 0x4e5b50 }] };
+  };
+  const unit = (callee) => ({ file: 'src/a.cpp', compiled: true, functions: [fn(callee)], bindings: { [self]: 'fn_00001' }, lintErrors: [], unannotated: [] });
+  f.verifier.check = async () => ({ check: { units: [unit('__Traits_compare')] } });
+  const changed = async (callee) => (await m.changedFunctions({ units: [unit(callee)] }, files, 'head')).map((c) => c.id);
+  assert.deepEqual(await changed('??$_Traits_compare@U?$char_traits@D@std@@@std@@YAHPBDI0I@Z'), [], 'same identifier, C++ linkage');
+  assert.deepEqual(await changed('??$_Traits_equal@U?$char_traits@D@std@@@std@@YA_NPBDI0I@Z'), ['fn_00001'], 'a different function');
+});
+
 test('a batch that edits a unit outside its tasks merges whole: one function sent back returns it all', async (t) => {
   const f = fixture(t);
   const refactor = { ...files, 'src/caller.cpp': 'int g() { return f(); }\n' };

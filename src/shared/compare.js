@@ -539,13 +539,30 @@ function effectiveFingerprint(bytes, masked, effective, unresolvedRefs, is64) {
  * e.g. the bindings of every unit a check compiled. Without effectiveParts it is effectiveHash.
  */
 export function resolvedEffectiveHash(f, addressOf) {
+  const parts = resolvedEffectiveParts(f, addressOf);
+  return parts ? effectiveFromParts(parts.bytesHash, parts.effective) : f.effectiveHash ?? null;
+}
+
+/**
+ * The pieces resolvedEffectiveHash hashes, with the names still unresolved by entry index; null
+ * without effectiveParts (every reference was resolved when the function was compared).
+ */
+export function resolvedEffectiveParts(f, addressOf) {
   const parts = f.effectiveParts;
-  if (!parts) return f.effectiveHash ?? null;
+  if (!parts) return null;
   const effective = [...parts.effective];
+  const unresolved = new Map();
   for (const u of parts.unresolvedRefs) {
     const addr = addressOf(u.name);
-    if (addr == null) continue;
+    if (addr == null) {
+      unresolved.set(u.index, u.name);
+      continue;
+    }
     effective[u.index] = `${u.prefix}${parts.is64 ? addr + u.addend : (addr + u.addend) >>> 0}`;
   }
-  return effectiveFromParts(parts.bytesHash, effective);
+  return { bytesHash: parts.bytesHash, effective, unresolved };
+}
+
+export function hashEffectiveParts(parts) {
+  return effectiveFromParts(parts.bytesHash, parts.effective);
 }

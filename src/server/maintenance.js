@@ -11,7 +11,18 @@ import { hasRole } from './accounts.js';
 import { lintSubmission } from '../shared/lint.js';
 import { isUnit, addUnitsToCompileCommands, removeUnitsFromCompileCommands } from '../shared/project.js';
 import { bestResults, BuildRetryError, deferBuild, clearBuildRetry, boundAddresses } from './verify.js';
-import { resolvedEffectiveHash } from '../shared/compare.js';
+import { resolvedEffectiveHash, resolvedEffectiveParts, hashEffectiveParts } from '../shared/compare.js';
+
+/**
+ * The identifier a linker name spells, without its linkage: `?Load@@YAXXZ` and `??$Load@H@@YAXXZ`
+ * (C++), `_Load`, `_Load@4` and `@Load@4` (x86 C, stdcall, fastcall) are all `Load`.
+ */
+export function plainIdentifier(name) {
+  const cpp = /^\?(?:\?\$)?([A-Za-z_]\w*)@/.exec(name);
+  if (cpp) return cpp[1];
+  const c = /^[_@]([A-Za-z_]\w*?)(?:@\d+)?$/.exec(name);
+  return c ? c[1] : null;
+}
 
 export class Maintenance {
   constructor({ store, repo, project, verifier, merger, log = console }) {
@@ -188,6 +199,27 @@ export class Maintenance {
       return original(f, name);
     };
     const effective = (f, bound, old) => resolvedEffectiveHash(f, (name) => bound(name) ?? helper(f, old, name) ?? callee(name));
+    // Neither side's name is known anywhere, yet both spell the same identifier and reach the same
+    // place in the original: the same function under another linkage spelling (a declaration
+    // moved out of an `extern "C"` block names `?_Traits_compare@...` instead of `__Traits_compare`).
+    const respelled = (old, f) => {
+      const was = resolvedEffectiveParts(old, (name) => addressBefore(name) ?? helper(old, null, name) ?? callee(name));
+      const is = resolvedEffectiveParts(f, (name) => addressNow(name) ?? helper(f, old, name) ?? callee(name));
+      if (!was || !is || was.bytesHash !== is.bytesHash || was.effective.length !== is.effective.length) return false;
+      let renamed = 0;
+      for (let i = 0; i < is.effective.length; i++) {
+        if (was.effective[i] === is.effective[i]) continue;
+        const a = was.unresolved.get(i), b = is.unresolved.get(i);
+        if (a == null || b == null || plainIdentifier(a) == null || plainIdentifier(a) !== plainIdentifier(b)) return false;
+        const at = Number(is.effective[i].split(':')[0]);
+        const reaches = (fn, name) => fn.relocations?.find((r) => r.offset === at && r.symbol === name)?.actual ?? null;
+        const target = reaches(old, a);
+        if (target == null || target !== reaches(f, b)) return false;
+        is.effective[i] = was.effective[i];
+        renamed++;
+      }
+      return renamed > 0 && hashEffectiveParts(was) === hashEffectiveParts(is);
+    };
     const out = [];
     for (const [id, { f, unit }] of bestResults(check)) {
       const old = was.get(id);
@@ -195,7 +227,7 @@ export class Maintenance {
         out.push({ id, file: unit, why: 'not compiled on main' });
         continue;
       }
-      if (effective(old, addressBefore) !== effective(f, addressNow, old)) out.push({ id, file: unit, why: 'compiled code changed' });
+      if (effective(old, addressBefore) !== effective(f, addressNow, old) && !respelled(old, f)) out.push({ id, file: unit, why: 'compiled code changed' });
     }
     return out;
   }
