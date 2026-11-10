@@ -642,6 +642,11 @@ test('header includers come from the sources too, also for units no merge has co
   try {
     assert.deepEqual(ctx.verifier.includersOf(['src/deep.h']).filter((u) => u.startsWith('src/user') || u.startsWith('src/other')), ['src/user.cpp'], 'a transitive includer, found though no merge recorded it');
     assert.deepEqual(ctx.verifier.includersOf(['src/deep.h'], { 'src/user.cpp': 'int u() { return 0; }\n' }).filter((u) => u === 'src/user.cpp'), [], 'as the submission changes it');
+    // A unit the submission deletes includes nothing, also when a compile recorded it (unit_deps):
+    // deleting a unit with its own header must not compile the deleted unit as the header's includer.
+    ctx.store.run('INSERT OR IGNORE INTO unit_deps (unit, header) VALUES (?, ?)', 'src/user.cpp', 'src/mid.h');
+    assert.deepEqual(ctx.verifier.includersOf(['src/mid.h'], { 'src/user.cpp': null, 'src/mid.h': null }).filter((u) => u === 'src/user.cpp'), [], 'a deleted unit is no includer');
+    ctx.store.run(`DELETE FROM unit_deps WHERE unit = 'src/user.cpp' AND header = 'src/mid.h'`);
   } finally {
     if (units) for (const u of ['src/user.cpp', 'src/other.cpp']) delete units[u];
   }

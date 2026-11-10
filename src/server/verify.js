@@ -349,11 +349,12 @@ export class Verifier {
   /**
    * Units that include any of `headers`: what compiles recorded (unit_deps: the compiler's own
    * include list), plus what the sources say (includers.js), which also covers units no merge has
-   * compiled yet. As `files` change them.
+   * compiled yet. As `files` change them; a unit `files` deletes (null) includes nothing any more.
    */
   includersOf(headers, files = {}) {
     const out = new Set(sourceIncluders(this.repo, this.project, headers, files));
     for (const h of headers) for (const r of this.store.all('SELECT unit FROM unit_deps WHERE header = ?', h)) out.add(r.unit);
+    for (const [f, text] of Object.entries(files)) if (text === null) out.delete(f);
     return [...out].sort();
   }
 
