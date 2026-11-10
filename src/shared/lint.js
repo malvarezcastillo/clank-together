@@ -134,6 +134,33 @@ export function lintSource(file, text, { allowedPragmas = DEFAULT_PRAGMAS, maxIn
 }
 
 /**
+ * Files a submission moves: an added file whose name (without directory) matches exactly one file
+ * the submission deletes. A moved file is judged against the file it replaces, like an edit of it.
+ * @param {Record<string,string|null>} files  path -> content (null: deleted)
+ * @param {(path: string) => boolean} isNew   whether main does not hold the path
+ * @returns {Map<string,string>}  added path -> deleted path
+ */
+export function movedFrom(files, isNew) {
+  const fileName = (p) => p.slice(p.lastIndexOf('/') + 1).toLowerCase();
+  const deleted = new Map();
+  for (const [p, content] of Object.entries(files ?? {})) {
+    if (content !== null) continue;
+    const n = normalizeRepoPath(p);
+    if (!n) continue;
+    const k = fileName(n);
+    deleted.set(k, deleted.has(k) ? null : n); // two deletions of one name: ambiguous
+  }
+  const out = new Map();
+  for (const [p, content] of Object.entries(files ?? {})) {
+    if (typeof content !== 'string') continue;
+    const n = normalizeRepoPath(p);
+    const from = n && deleted.get(fileName(n));
+    if (from && isNew(n)) out.set(n, from);
+  }
+  return out;
+}
+
+/**
  * Checks a submission's shape and content.
  * @param {Record<string,string>} files   path -> content
  * @param {{allowedPaths: string[], limits?: object, allowedPragmas?: string[], baseSize?: (path: string) => number | null, trackedPaths?: Iterable<string>}} opts
@@ -153,19 +180,7 @@ export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragma
   const byFold = new Map();
   for (const t of trackedPaths) byFold.set(t.toLowerCase(), t);
   const submittedFold = new Map();
-  // A moved file (deleted here and added elsewhere under the same file name) adds nothing new: it
-  // counts against the size of the file it replaces, like an edit of that file would.
-  const fileName = (p) => p.slice(p.lastIndexOf('/') + 1).toLowerCase();
-  const deletedByName = new Map();
-  if (allowDeletions) {
-    for (const [p, content] of entries) {
-      if (content !== null) continue;
-      const n = normalizeRepoPath(p);
-      if (!n) continue;
-      const k = fileName(n);
-      deletedByName.set(k, deletedByName.has(k) ? null : n); // two deletions of one name: ambiguous
-    }
-  }
+  const moved = allowDeletions ? movedFrom(files, (f) => baseSize(f) === null) : new Map();
   let total = 0;
   for (const [p, content] of entries) {
     const n = normalizeRepoPath(p);
@@ -190,8 +205,7 @@ export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragma
       continue;
     }
     const bytes = Buffer.byteLength(content, 'utf8');
-    const movedFrom = baseSize(n) === null ? deletedByName.get(fileName(n)) : null;
-    const base = baseSize(n) ?? (movedFrom ? baseSize(movedFrom) : null) ?? 0;
+    const base = baseSize(n) ?? (moved.has(n) ? baseSize(moved.get(n)) : null) ?? 0;
     total += Math.max(0, bytes - base);
     if (content.includes('\0')) errors.push({ file: n, message: 'file contains NUL bytes' });
     errors.push(...lintSource(n, content, { allowedPragmas, maxInitializerNumbers: L.maxInitializerNumbers }));

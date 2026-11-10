@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseAnnotations, lintAnnotations, declaredName } from '../src/shared/annotations.js';
-import { lintSubmission, lintPreprocessed, normalizeRepoPath, globToRegExp } from '../src/shared/lint.js';
+import { lintSubmission, lintPreprocessed, normalizeRepoPath, globToRegExp, movedFrom } from '../src/shared/lint.js';
 
 test('annotations bind to the next code line and use stable IDs', () => {
   const src = ['// FUNCTION: fn_00012', '// comment', '', 'void Foo::Bar()', '{', '}', '// GLOBAL: gl_00003', 'static int g_count = 0;', '// SIZE: 0x24', '// VTABLE: vt_00001', 'class Foo {'].join('\n');
@@ -110,6 +110,12 @@ test('a moved file counts against the file it replaces, not as new bytes', () =>
   assert.equal(tooLarge({ 'src/a/unit.cpp': big(1300), 'src/unit.cpp': null }, { 'src/unit.cpp': 1300 * 1024 }).length, 0, 'moved, same size');
   assert.equal(tooLarge({ 'src/a/unit.cpp': big(1300), 'src/other.cpp': null }, { 'src/other.cpp': 1300 * 1024 }).length, 1, 'a different name is new code');
   assert.equal(tooLarge({ 'src/a/unit.cpp': big(1300), 'src/b/unit.cpp': null, 'src/c/unit.cpp': null }, { 'src/b/unit.cpp': 1300 * 1024, 'src/c/unit.cpp': 1300 * 1024 }).length, 1, 'ambiguous source counts as new');
+});
+
+test('movedFrom pairs an added file with the one deletion of the same name', () => {
+  const isNew = (f) => !['src/u.cpp', 'src/b/v.h', 'src/c/v.h', 'src/keep.cpp'].includes(f);
+  const files = { 'src/a/u.cpp': 'x', 'src/u.cpp': null, 'src/a/v.h': 'x', 'src/b/v.h': null, 'src/c/v.h': null, 'src/keep.cpp': 'x', 'src/a/w.cpp': 'x' };
+  assert.deepEqual([...movedFrom(files, isNew)], [['src/a/u.cpp', 'src/u.cpp']]);
 });
 
 test('preprocessed output catches asm hidden behind macros, ignoring compiler headers', () => {

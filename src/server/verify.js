@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { lintAnnotations } from '../shared/annotations.js';
-import { lintSubmission } from '../shared/lint.js';
+import { lintSubmission, movedFrom } from '../shared/lint.js';
 import { freeTextErrorsAcross, executionCharset, encodedLiteralRules, VIRTUALIZED_RE } from '../shared/freetext.js';
 import { offsetErrors } from '../shared/offsets.js';
 import { unannotatedErrors } from '../shared/unannotated.js';
@@ -464,7 +464,8 @@ export class Verifier {
    * Comments and strings a submission adds that could carry instructions to other agents: only
    * annotations and markers, and strings of the original executable, are allowed (freetext.js).
    * What the submitted files held on the base may move between them (a definition moving to its
-   * owner keeps its provenance), but every such line counts once.
+   * owner keeps its provenance), but every such line counts once. A moved file (lint.js movedFrom)
+   * is compared with the file it replaces.
    * With `offsetAnnotations`, the OFFSET lines of the annotation blocks it adds or changes must
    * match their IDs too (offsets.js), and every function definition it adds or changes must carry
    * FUNCTION/STUB or INLINED (unannotated.js).
@@ -475,6 +476,7 @@ export class Verifier {
     const baseFiles = Object.fromEntries(this.repo.showMany(baseCommit, Object.keys(files)));
     const charsetForFile = (file) => executionCharset(unitSettings(this.project, file).cflags);
     const errors = freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile, encoded: encodedLiteralRules(this.project.encodedLiterals) });
+    for (const [to, from] of movedFrom(files, (f) => baseFiles[f] == null)) baseFiles[to] = baseFiles[from];
     if (this.project.offsetAnnotations !== true) return errors;
     const v = this.store.currentVersion();
     const addressOf = (id) => this.store.get('SELECT addr FROM symbol_addresses WHERE symbol_id = ? AND version_id = ?', id, v.id)?.addr ?? null;
