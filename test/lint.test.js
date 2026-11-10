@@ -103,6 +103,15 @@ test('single files have no size limit; only what a submission adds beyond main c
   assert.equal(tooLarge({ 'src/unit.cpp': big(800), 'src/player.cpp': big(500) }, { 'src/unit.cpp': 800 * 1024, 'src/player.cpp': 500 * 1024 }).length, 0, 'two big files count only what they add');
 });
 
+test('a moved file counts against the file it replaces, not as new bytes', () => {
+  const big = (kb) => 'int x;\n'.repeat(Math.ceil((kb * 1024) / 7));
+  const opts = (sizes) => ({ ...allowed, allowDeletions: true, trackedPaths: Object.keys(sizes), baseSize: (f) => sizes[f] ?? null });
+  const tooLarge = (files, sizes) => lintSubmission(files, opts(sizes)).filter((e) => /too large/.test(e.message));
+  assert.equal(tooLarge({ 'src/a/unit.cpp': big(1300), 'src/unit.cpp': null }, { 'src/unit.cpp': 1300 * 1024 }).length, 0, 'moved, same size');
+  assert.equal(tooLarge({ 'src/a/unit.cpp': big(1300), 'src/other.cpp': null }, { 'src/other.cpp': 1300 * 1024 }).length, 1, 'a different name is new code');
+  assert.equal(tooLarge({ 'src/a/unit.cpp': big(1300), 'src/b/unit.cpp': null, 'src/c/unit.cpp': null }, { 'src/b/unit.cpp': 1300 * 1024, 'src/c/unit.cpp': 1300 * 1024 }).length, 1, 'ambiguous source counts as new');
+});
+
 test('preprocessed output catches asm hidden behind macros, ignoring compiler headers', () => {
   const pre = ['#line 1 "C:\\\\vc\\\\include\\\\intrin.h"', 'void sys() { __asm int 3 }', '#line 1 "z:\\\\job\\\\src\\\\player.cpp"', 'void f() { __asm { nop } }'].join('\n');
   const errors = lintPreprocessed(pre, (f) => f.includes('/src/'));

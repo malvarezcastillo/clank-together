@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // `td` - contributor CLI for Clank Together.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
@@ -60,6 +61,7 @@ Maintenance (maintainers: structural changes with no function tasks)
                                               function's compiled code changes (--force, admins: merge
                                               despite lower scores or changed code; every other gate still runs)
        [--delete c.h,d.cpp]                   also remove these tracked files (units leave the build list)
+                                              --files/--delete @list.txt read one path per line (large changes)
   td maintenance symbol <id> [--size N] [--name N] [--retire] --reason T   correct the symbol database
        [--decorated N | --swap-decorated-with ID]   correct a decorated name or atomically swap two
   td maintenance task <taskId> --close --batch B --reason T   admins: mark a task done whose code reached main
@@ -329,9 +331,11 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
     case 'maintenance': {
       const [sub, id] = args;
       if (sub === 'submit') {
-        if (!values.files && !values.delete) throw new Error('usage: td maintenance submit [--files a.cpp,b.h] [--delete c.h] --notes "what and why" [--force]');
-        const files = values.files ? values.files.split(',').map((f) => ops.relPath(ws, f)) : [];
-        const deleted = values.delete ? values.delete.split(',').map((f) => ops.relPath(ws, f)) : [];
+        if (!values.files && !values.delete) throw new Error('usage: td maintenance submit [--files a.cpp,b.h | --files @list.txt] [--delete c.h | --delete @list.txt] --notes "what and why" [--force]');
+        // @file: one path per line (or comma-separated), for changes too large for a command line.
+        const list = (v) => (v.startsWith('@') ? fs.readFileSync(v.slice(1), 'utf8') : v).split(/[\r\n,]+/).map((f) => f.trim()).filter(Boolean);
+        const files = values.files ? list(values.files).map((f) => ops.relPath(ws, f)) : [];
+        const deleted = values.delete ? list(values.delete).map((f) => ops.relPath(ws, f)) : [];
         return print(await ops.submitMaintenance(ws, files, { notes: values.notes, force: values.force, deleted }));
       }
       if (sub === 'symbol') {

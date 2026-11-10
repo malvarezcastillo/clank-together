@@ -153,6 +153,19 @@ export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragma
   const byFold = new Map();
   for (const t of trackedPaths) byFold.set(t.toLowerCase(), t);
   const submittedFold = new Map();
+  // A moved file (deleted here and added elsewhere under the same file name) adds nothing new: it
+  // counts against the size of the file it replaces, like an edit of that file would.
+  const fileName = (p) => p.slice(p.lastIndexOf('/') + 1).toLowerCase();
+  const deletedByName = new Map();
+  if (allowDeletions) {
+    for (const [p, content] of entries) {
+      if (content !== null) continue;
+      const n = normalizeRepoPath(p);
+      if (!n) continue;
+      const k = fileName(n);
+      deletedByName.set(k, deletedByName.has(k) ? null : n); // two deletions of one name: ambiguous
+    }
+  }
   let total = 0;
   for (const [p, content] of entries) {
     const n = normalizeRepoPath(p);
@@ -177,7 +190,8 @@ export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragma
       continue;
     }
     const bytes = Buffer.byteLength(content, 'utf8');
-    const base = baseSize(n) ?? 0;
+    const movedFrom = baseSize(n) === null ? deletedByName.get(fileName(n)) : null;
+    const base = baseSize(n) ?? (movedFrom ? baseSize(movedFrom) : null) ?? 0;
     total += Math.max(0, bytes - base);
     if (content.includes('\0')) errors.push({ file: n, message: 'file contains NUL bytes' });
     errors.push(...lintSource(n, content, { allowedPragmas, maxInitializerNumbers: L.maxInitializerNumbers }));
