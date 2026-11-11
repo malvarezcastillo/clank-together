@@ -6,6 +6,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Repo } from '../src/server/git.js';
 import { lintSubmission } from '../src/shared/lint.js';
+import { withMovedObjects } from '../src/server/maintenance.js';
+import { hashEffectiveParts } from '../src/shared/compare.js';
 import { prepareJobDir } from '../src/shared/build.js';
 import { removeUnitsFromCompileCommands, scanAnnotations } from '../src/shared/project.js';
 import { sourceIncluders } from '../src/server/includers.js';
@@ -54,6 +56,16 @@ test('a moved file takes along what main changed at its old path', (t) => {
   const moved = repo.mergeOntoHead(base, { 'src/b.cpp': null, 'src/x/b.cpp': '#include "y.h"\nint b;\n' });
   assert.deepEqual(moved, { files: { 'src/b.cpp': null, 'src/x/b.cpp': '#include "y.h"\nint b;\nint newer;\n' }, conflicts: [] });
   assert.deepEqual(repo.mergeOntoHead(base, { 'src/b.cpp': null }).conflicts, ['src/b.cpp'], 'a plain deletion still conflicts');
+});
+
+test("main's references to a moved unit's statics read under its new object path", () => {
+  const parts = (obj) => ({ bytesHash: 'b', is64: false, effective: [`4:abs:?${obj}|?kSecret@@3QBEB+0`, '9:rel:4198400'], unresolvedRefs: [{ index: 0, name: `${obj}|?kSecret@@3QBEB`, addend: 0, prefix: '4:abs:' }] });
+  const fn = (obj) => ({ effectiveParts: parts(obj), effectiveHash: hashEffectiveParts(parts(obj)), relocations: [{ offset: 4, symbol: `${obj}|?kSecret@@3QBEB`, actual: 1234 }] });
+  const moves = new Map([['src/a/u.cpp', 'src/u.cpp']]);
+  const moved = withMovedObjects(fn('src/u.obj'), moves);
+  assert.equal(moved.effectiveHash, fn('src/a/u.obj').effectiveHash);
+  assert.equal(moved.relocations[0].symbol, 'src/a/u.obj|?kSecret@@3QBEB');
+  assert.equal(withMovedObjects(fn('src/other.obj'), moves).effectiveHash, fn('src/other.obj').effectiveHash, 'another unit keeps its names');
 });
 
 test('only maintenance lint accepts a deletion, and only of a tracked file', () => {

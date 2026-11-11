@@ -14,6 +14,27 @@ import { bestResults, BuildRetryError, deferBuild, clearBuildRetry, boundAddress
 import { resolvedEffectiveHash, resolvedEffectiveParts, hashEffectiveParts } from '../shared/compare.js';
 
 /**
+ * A unit's unbound file-local statics are named after its object (Dir/Unit.obj|kSecret): main's
+ * function `f` of a moved unit, with those references read under the object path it has now.
+ * @param {Map<string,string>} moves  new path -> old path
+ */
+export function withMovedObjects(f, moves) {
+  const parts = f?.effectiveParts;
+  if (!parts || !moves.size) return f;
+  const objOf = (file) => file.replace(/\.[^./\\]+$/, '') + '.obj';
+  const renamed = [...moves].map(([to, from]) => [`${objOf(from)}|`, `${objOf(to)}|`]);
+  const rename = (s) => {
+    for (const [a, b] of renamed) if (s.includes(a)) return s.split(a).join(b);
+    return s;
+  };
+  const effective = parts.effective.map(rename);
+  if (effective.every((s, i) => s === parts.effective[i])) return f;
+  const unresolvedRefs = parts.unresolvedRefs.map((u) => ({ ...u, name: rename(u.name) }));
+  const relocations = f.relocations?.map((r) => (typeof r.symbol === 'string' ? { ...r, symbol: rename(r.symbol) } : r));
+  return { ...f, ...(relocations && { relocations }), effectiveHash: hashEffectiveParts({ bytesHash: parts.bytesHash, effective }), effectiveParts: { ...parts, effective, unresolvedRefs } };
+}
+
+/**
  * The identifier a linker name spells, without its linkage: `?Load@@YAXXZ` and `??$Load@H@@YAXXZ`
  * (C++), `_Load`, `_Load@4` and `@Load@4` (x86 C, stdcall, fastcall) are all `Load`.
  */
@@ -222,7 +243,15 @@ export class Maintenance {
       }
       return original(f, name);
     };
-    const effective = (f, bound, old) => resolvedEffectiveHash(f, (name) => bound(name) ?? helper(f, old, name) ?? callee(name));
+    // A moved unit's file-local statics are keyed by object path (Dir/Unit.obj|name, in the database
+    // and in the bindings): until this merge renames them, they resolve under the old path.
+    const objOf = (file) => file.replace(/\.[^./\\]+$/, '') + '.obj';
+    const oldKey = new Map([...moves].map(([to, from]) => [`${objOf(to)}|`, `${objOf(from)}|`]));
+    const byOldObject = (name) => {
+      for (const [now, was] of oldKey) if (name.startsWith(now)) return addressBefore(was + name.slice(now.length)) ?? byDecorated.get(was + name.slice(now.length)) ?? null;
+      return null;
+    };
+    const effective = (f, bound, old) => resolvedEffectiveHash(f, (name) => bound(name) ?? byOldObject(name) ?? helper(f, old, name) ?? callee(name));
     // Neither side's name is known anywhere, yet both spell the same identifier and reach the same
     // place in the original: the same function under another linkage spelling (a declaration
     // moved out of an `extern "C"` block names `?_Traits_compare@...` instead of `__Traits_compare`).
@@ -246,7 +275,7 @@ export class Maintenance {
     };
     const out = [];
     for (const [id, { f, unit }] of bestResults(check)) {
-      const old = was.get(id);
+      const old = withMovedObjects(was.get(id), moves);
       if (!old) {
         out.push({ id, file: unit, why: 'not compiled on main' });
         continue;
