@@ -8,6 +8,9 @@ import { spawn, execFileSync } from 'node:child_process';
 import { plainDeclaration, FORWARD } from './affected.js';
 import { movedFrom } from '../shared/lint.js';
 
+// `git merge-file -p` prints the whole merged file: the largest units exceed execFileSync's 1 MB default.
+const MERGE_OPTS = { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 };
+
 const MARK = 31; // conflict-marker width that ordinary source never contains
 const HEADER = /\.(h|hh|hpp|hxx|inl)$/i;
 
@@ -210,8 +213,31 @@ export class Repo {
   }
 
   /**
+   * Files main renamed since `base` (old path -> new path). Renames are read commit by commit, as
+   * each commit made them, so a file that changed a lot elsewhere since `base` still follows its
+   * move; a path renamed twice ends at its latest place.
+   */
+  renamesSince(base, head = this.head()) {
+    const out = new Map();
+    let log = '';
+    try {
+      log = this.git(['log', '--reverse', '--first-parent', '--format=', '--name-status', '-M', '-l0', '--diff-filter=R', `${base}..${head}`]);
+    } catch {
+      return out;
+    }
+    for (const line of log.split('\n')) {
+      const [status, from, to] = line.split('\t');
+      if (!status?.startsWith('R') || !from || !to) continue;
+      for (const [k, v] of out) if (v === from) out.set(k, to);
+      out.set(from, to);
+    }
+    return out;
+  }
+
+  /**
    * Three-way merges submitted files (written against `base`) onto HEAD.
-   * A moved file (lint.js movedFrom) takes along what main changed at its old path since `base`.
+   * A moved file (lint.js movedFrom) takes along what main changed at its old path since `base`;
+   * a file main moved since `base` receives the submitted change at its new path.
    * @returns {{files: Record<string,string>, conflicts: string[]}}
    */
   mergeOntoHead(base, files) {
@@ -220,15 +246,48 @@ export class Repo {
     const conflicts = [];
     const moved = movedFrom(files, (f) => this.show(base, f) === null && this.show(head, f) === null);
     const movedSources = new Set(moved.values());
+    let mainRenames = null;
+    const renames = () => (mainRenames ??= this.renamesSince(base, head));
+    const renamedOnMain = (file) => renames().get(file) ?? null;
+    // Includes of files main moved since the base, rewritten to where they are now (relative to
+    // the top source folder, as includes are written): main did that to its own copy, so both
+    // sides of the merge, and the result, read the new paths.
+    let includeMap = null;
+    const followIncludes = (text) => {
+      if (text === null) return text;
+      if (!includeMap) {
+        includeMap = new Map();
+        for (const [from, to] of renames()) {
+          const top = from.slice(0, from.indexOf('/') + 1);
+          if (top && to.startsWith(top)) includeMap.set(from.slice(top.length), to.slice(top.length));
+        }
+      }
+      if (!includeMap.size) return text;
+      return text.replace(/(#\s*include\s*")([^"]+)(")/g, (m, a, p, b) => (includeMap.has(p) ? a + includeMap.get(p) + b : m));
+    };
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'td-merge-'));
     try {
-      for (const [file, theirs] of Object.entries(files)) {
-        const source = moved.get(file);
-        const baseText = this.show(base, source ?? file);
+      for (let [submitted, theirs] of Object.entries(files)) {
+        const source = moved.get(submitted);
+        // Main moved this file since the base: the change lands where the file is now.
+        const target = !source && this.show(head, submitted) === null && this.show(base, submitted) !== null ? renamedOnMain(submitted) : null;
+        const file = target ?? submitted;
+        if (target && Object.hasOwn(files, target)) {
+          conflicts.push(submitted);
+          continue;
+        }
+        const baseText = followIncludes(this.show(base, source ?? submitted));
         const headText = this.show(head, source ?? file);
+        if (theirs !== null && !source) theirs = followIncludes(theirs);
         if (theirs === null) {
-          if (baseText === headText || (movedSources.has(file) && headText !== null)) out[file] = null;
-          else conflicts.push(file);
+          if (baseText === headText || (movedSources.has(submitted) && headText !== null)) out[file] = null;
+          else conflicts.push(submitted);
+          continue;
+        }
+        if (baseText !== null && headText === null) {
+          // Main removed the file since the base (and did not move it): writing it back would
+          // resurrect what main retired.
+          conflicts.push(submitted);
           continue;
         }
         if (baseText === headText || headText === null) {
@@ -245,11 +304,11 @@ export class Repo {
         fs.writeFileSync(h, headText);
         fs.writeFileSync(t, theirs);
         try {
-          out[file] = execFileSync('git', ['merge-file', '-p', h, b, t], { encoding: 'utf8' });
+          out[file] = execFileSync('git', ['merge-file', '-p', h, b, t], MERGE_OPTS);
         } catch {
           let marked = null;
           try {
-            execFileSync('git', ['merge-file', '-p', '--diff3', `--marker-size=${MARK}`, h, b, t], { encoding: 'utf8' });
+            execFileSync('git', ['merge-file', '-p', '--diff3', `--marker-size=${MARK}`, h, b, t], MERGE_OPTS);
           } catch (e) {
             if (e.status > 0) marked = e.stdout;
           }
@@ -274,7 +333,7 @@ export class Repo {
       fs.writeFileSync(b, base);
       fs.writeFileSync(o, ours);
       fs.writeFileSync(t, theirs);
-      return execFileSync('git', ['merge-file', '-p', o, b, t], { encoding: 'utf8' });
+      return execFileSync('git', ['merge-file', '-p', o, b, t], MERGE_OPTS);
     } catch {
       return null;
     } finally {

@@ -58,6 +58,33 @@ test('a moved file takes along what main changed at its old path', (t) => {
   assert.deepEqual(repo.mergeOntoHead(base, { 'src/b.cpp': null }).conflicts, ['src/b.cpp'], 'a plain deletion still conflicts');
 });
 
+test('a pending change follows a file main moved since its base, includes included', (t) => {
+  const { dir, repo, git } = repository(t);
+  const base = repo.head();
+  fs.mkdirSync(path.join(dir, 'src', 'x'));
+  git('mv', 'src/old.h', 'src/x/old.h');
+  fs.writeFileSync(path.join(dir, 'src', 'a.cpp'), '#include "x/old.h"\nint a;\n');
+  git('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-am', 'move');
+  const r = repo.mergeOntoHead(base, { 'src/a.cpp': '#include "old.h"\nint a;\nint more;\n', 'src/old.h': 'int old();\nint added();\n' });
+  assert.deepEqual(r, { files: { 'src/a.cpp': '#include "x/old.h"\nint a;\nint more;\n', 'src/x/old.h': 'int old();\nint added();\n' }, conflicts: [] });
+  git('rm', '-q', 'src/b.cpp');
+  git('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'drop');
+  assert.deepEqual(repo.mergeOntoHead(base, { 'src/b.cpp': 'int b2;\n' }).conflicts, ['src/b.cpp'], 'a file main removed is not written back');
+});
+
+test('files over 1 MB merge', (t) => {
+  const { dir, repo, git } = repository(t);
+  const big = 'int x;\n'.repeat(200000);
+  fs.writeFileSync(path.join(dir, 'src', 'b.cpp'), big);
+  git('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-am', 'big');
+  const base = repo.head();
+  fs.writeFileSync(path.join(dir, 'src', 'b.cpp'), 'int head;\n' + big);
+  git('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-am', 'head edit');
+  const r = repo.mergeOntoHead(base, { 'src/b.cpp': big + 'int tail;\n' });
+  assert.deepEqual(r.conflicts, []);
+  assert.equal(r.files['src/b.cpp'], 'int head;\n' + big + 'int tail;\n');
+});
+
 test("main's references to a moved unit's statics read under its new object path", () => {
   const parts = (obj) => ({ bytesHash: 'b', is64: false, effective: [`4:abs:?${obj}|?kSecret@@3QBEB+0`, '9:rel:4198400'], unresolvedRefs: [{ index: 0, name: `${obj}|?kSecret@@3QBEB`, addend: 0, prefix: '4:abs:' }] });
   const fn = (obj) => ({ effectiveParts: parts(obj), effectiveHash: hashEffectiveParts(parts(obj)), relocations: [{ offset: 4, symbol: `${obj}|?kSecret@@3QBEB`, actual: 1234 }] });
