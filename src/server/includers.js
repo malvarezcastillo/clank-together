@@ -40,10 +40,14 @@ export function sourceIncluders(repo, project, headers, files = {}) {
     return null;
   };
   const edges = new Map();
+  // A unit's linkage prelude is forced in with /FI, not #included: it is the unit's first include.
+  const preludeDir = project.unitPrelude ? project.unitPrelude.replace(/\/+$/, '') : null;
   const includesOf = (f) => {
     if (!edges.has(f)) {
       const text = read(f) ?? '';
-      edges.set(f, [...text.matchAll(INCLUDE_RE)].map((m) => resolve(f, m[1])).filter(Boolean));
+      const listed = [...text.matchAll(INCLUDE_RE)].map((m) => resolve(f, m[1])).filter(Boolean);
+      const prelude = preludeDir && /\.(c|cc|cpp|cxx)$/i.test(f) ? `${preludeDir}/${f}.h` : null;
+      edges.set(f, prelude && known.has(prelude) ? [prelude, ...listed] : listed);
     }
     return edges.get(f);
   };

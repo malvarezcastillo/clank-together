@@ -39,14 +39,27 @@ export function fillPlaceholders(s, roots) {
   return s.replaceAll('${SRC}', roots.src).replaceAll('${TC}', roots.tc ?? '');
 }
 
-function clArgs({ cflags, includeDirs, src, out, toPath, roots }) {
+/**
+ * A unit's linkage prelude (project.unitPrelude): `<dir>/<unit path>.h`, forced into the unit with /FI
+ * ahead of its own text. It holds the explicit-template declarations that keep standard-library code
+ * out of line, so the game source does not carry them. Null when the unit has none.
+ */
+export function unitPrelude(project, file, exists) {
+  const dir = project.unitPrelude;
+  if (!dir) return null;
+  const rel = `${dir.replace(/\/+$/, '')}/${file}.h`;
+  return exists(rel) ? rel : null;
+}
+
+function clArgs({ cflags, includeDirs, src, out, toPath, roots, prelude = null }) {
   const flags = cflags.map((f) => fillPlaceholders(f, roots));
   const inc = includeDirs.map((d) => `/I${toPath(d)}`);
+  const fi = prelude ? [`/FI${toPath(prelude)}`] : [];
   // /showIncludes lists every included header (dependency tracking); /Z7 puts debug info in the
   // object, which tells where each function is defined (CoffObject.functionLines). Neither
   // changes codegen.
-  const compile = [...flags, ...inc, '/showIncludes', '/Z7', '/FAcs', `/Fa${toPath(out + '.cod')}`, `/Fo${toPath(out + '.obj')}`, toPath(src)];
-  const preprocess = [...flags.filter((f) => f.toLowerCase() !== '/c'), ...inc, '/P', `/Fi${toPath(out + '.i')}`, toPath(src)];
+  const compile = [...flags, ...inc, ...fi, '/showIncludes', '/Z7', '/FAcs', `/Fa${toPath(out + '.cod')}`, `/Fo${toPath(out + '.obj')}`, toPath(src)];
+  const preprocess = [...flags.filter((f) => f.toLowerCase() !== '/c'), ...inc, ...fi, '/P', `/Fi${toPath(out + '.i')}`, toPath(src)];
   return { compile, preprocess };
 }
 
@@ -124,7 +137,8 @@ async function runDocker({ jobDir, list, project, runner, timeoutMs }) {
   // One script per unit, run `jobs` at a time inside the container.
   for (const { file, cflags, env, pre } of list) {
     const out = `out/${outputBase(file)}`;
-    const { compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots });
+    const prelude = unitPrelude(project, file, (rel) => fs.existsSync(path.join(jobDir, rel)));
+    const { compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots, prelude });
     const log = `/job/${out}.log`;
     const exports = Object.entries(fillEnv(env, roots)).map(([k, v]) => `export ${k}=${shQuote(v)}`);
     const status = shQuote(`/job/${out}.status`);
@@ -195,7 +209,8 @@ async function runLocal({ jobDir, list, project, runner, timeoutMs }) {
       const { file, cflags, env: unitEnv, pre: wantPre } = list[i];
       const env = { ...process.env, ...(runner.env ?? {}), ...fillEnv(unitEnv, roots) };
       const out = `out/${outputBase(file)}`;
-      const { compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots });
+      const prelude = unitPrelude(project, file, (rel) => fs.existsSync(path.join(absJob, rel)));
+      const { compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots, prelude });
       const [cmd, pre] = runner.type === 'wine' ? [runner.wine ?? 'wine', [runner.clPath]] : [runner.clPath, []];
       clearOutputs(jobDir, file);
       const a = await run(cmd, [...pre, ...compile], { timeoutMs, env, cwd: absJob });

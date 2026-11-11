@@ -11,7 +11,7 @@ import { reconcile } from '../shared/reconcile.js';
 import { lintSubmission, matchesAny } from '../shared/lint.js';
 import { isUnit, loadToolchainLock } from '../shared/project.js';
 import { hex } from '../shared/annotations.js';
-import { run } from '../shared/build.js';
+import { run, unitPrelude } from '../shared/build.js';
 import { rememberServer } from './update.js';
 import { extractTarGz } from '../shared/tar.js';
 import { functionRegions } from '../server/split.js';
@@ -154,7 +154,9 @@ export function writeEditorCompileDb(ws) {
   const entries = Object.entries(compile.units).map(([unit, shape]) => {
     const file = `${source}/${unit}`;
     const flags = compile.shapes[shape].filter((f) => !/^[/-]execution-charset:\./i.test(f)).map(expand);
-    return { directory: source, file, arguments: [compiler, ...flags, ...includes, file] };
+    const prelude = unitPrelude(ws.project, unit, (rel) => fs.existsSync(path.join(ws.dir, rel)));
+    const forced = prelude ? [`/FI${source}/${prelude}`] : [];
+    return { directory: source, file, arguments: [compiler, ...flags, ...includes, ...forced, file] };
   });
   const out = path.join(ws.dir, dbDir, 'compile_commands.json');
   fs.mkdirSync(path.dirname(out), { recursive: true });
