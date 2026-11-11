@@ -50,6 +50,7 @@ Work (a region: a source file, a class, or a run of unplaced functions, done as 
                                               with why; --watch polls and prints new ones as they come back
   td result <attemptId>                       show a verification result
   td withdraw <attemptId>                     take back a function waiting for review, to fix it
+  td cancel <batchId>                         cancel a whole batch that has not finished (any kind); its functions return to your claim
   td heartbeat [taskId] | td release <taskId> extend your leases (all without an id)
   td config [ghidraHome|server <value>]       show or change workspace settings
   td symbol <id|name|0xaddr>                  look up a symbol
@@ -279,6 +280,9 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       return print(await client.post(`/api/tasks/${args[0]}/release`));
     case 'withdraw':
       return print(await client.post(`/api/attempts/${args[0]}/withdraw`));
+    case 'cancel':
+      if (!args[0]) throw new Error('usage: td cancel <batchId>');
+      return print(await client.post(`/api/batches/${args[0]}/cancel`));
     case 'toolchain':
       if (args[0] === 'install') return print(await ops.toolchainInstall(ws));
       throw new Error('usage: td toolchain install');

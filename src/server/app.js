@@ -961,6 +961,12 @@ export function createApp(ctx) {
     return tasks.withdraw(user, intParam(params.id));
   });
 
+  // The author (or an admin) cancels a whole batch that has not finished, of any kind.
+  router.on('POST', '/api/batches/:id/cancel', ({ req, params }) => {
+    const user = auth(req);
+    return tasks.cancelBatch(user, intParam(params.id));
+  });
+
   router.on('GET', '/api/attempts/:id', ({ req, params }) => {
     const user = auth(req);
     const a = store.get('SELECT a.*, u.name AS author FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.id = ?', intParam(params.id));

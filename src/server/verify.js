@@ -945,6 +945,8 @@ export class Verifier {
       deferBuild(this.store, batch.id, e);
       return;
     }
+    // Cancelled by its author while it compiled (td cancel): nothing to record.
+    if (this.store.get('SELECT state FROM batches WHERE id = ?', batch.id)?.state !== 'verifying') return;
     clearBuildRetry(this.store, batch.id);
     const targets = new Set(attempts.map((a) => a.symbol_id));
     const ownUnits = this.ownUnitsOf(attempts);

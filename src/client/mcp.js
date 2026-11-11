@@ -93,6 +93,12 @@ const TOOLS = [
     run: async (ws, a) => ops.api(ws).post(`/api/attempts/${a.attemptId}/withdraw`),
   },
   {
+    name: 'td_cancel_batch',
+    description: 'Cancel a whole batch of yours that has not finished (queued, verifying, in review or merging; code or maintenance): nothing of it merges, and its functions return to your claim.',
+    inputSchema: { type: 'object', properties: { batchId: int('batch id') }, required: ['batchId'] },
+    run: async (ws, a) => ops.api(ws).post(`/api/batches/${a.batchId}/cancel`),
+  },
+  {
     name: 'td_decompile',
     description: 'Ghidra decompiler output for a function in the original executable (by symbol ID, name or hex address). A starting point only; the result must be rewritten into matching C++.',
     inputSchema: { type: 'object', properties: { symbol: str('fn_00123, a name, or 0x401000') }, required: ['symbol'] },

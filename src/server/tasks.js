@@ -2,10 +2,11 @@
 
 import { HttpError } from './http.js';
 import { now } from './db.js';
+import { hasRole } from './accounts.js';
 import { hex } from '../shared/annotations.js';
 import { groupFor } from './grouping.js';
 import { normalizeRepoPath } from '../shared/lint.js';
-import { settleBatch, LIVE_STATES } from './batches.js';
+import { settleBatch, LIVE_STATES, dropMergeData } from './batches.js';
 
 // Why a function needs no decompilation (a "no decompile" claim).
 export const SKIP_CATEGORIES = {
@@ -239,6 +240,41 @@ export class Tasks {
       settleBatch(this.store, a.batch_id, `the author withdrew attempt ${a.id}`);
       this.store.event('withdrawn', user.id, { attempt: a.id, task: a.task_id });
       return { attempt: a.id, task: a.task_id, state: 'withdrawn', note: a.competing ? 'withdrawn' : 'withdrawn; the function is back in your claim: fix it and submit again' };
+    });
+  }
+
+  /**
+   * The author (or an admin) cancels a whole batch that has not finished: queued, verifying, open
+   * (in review) or merging, code or maintenance. Its functions go back to the author's claim as if
+   * withdrawn one by one. A verification or merge already running sees the batch is no longer
+   * its to finish and stops before it records or commits anything.
+   */
+  cancelBatch(user, batchId) {
+    return this.store.tx(() => {
+      const b = this.store.get('SELECT * FROM batches WHERE id = ?', batchId);
+      if (!b || (b.user_id !== user.id && !hasRole(user, 'admin'))) throw new HttpError(404, 'no such batch of yours');
+      if (!['queued', 'verifying', 'open', 'merging'].includes(b.state)) throw new HttpError(409, `batch ${b.id} is ${b.state}; only batches that have not finished can be cancelled`);
+      const ph = LIVE_STATES.map(() => '?').join(',');
+      const live = this.store.all(`SELECT * FROM attempts WHERE batch_id = ? AND state IN (${ph})`, b.id, ...LIVE_STATES);
+      const expires = now() + (this.config.leaseMinutes ?? 120) * 60_000;
+      for (const a of live) {
+        this.store.run(`UPDATE attempts SET state = 'withdrawn', finished_at = ?, result_json = json_set(COALESCE(result_json, '{}'), '$.withdrawnByAuthor', json('true'), '$.cancelledBatch', ?) WHERE id = ?`, now(), b.id, a.id);
+        this.store.run('DELETE FROM peer_leases WHERE attempt_id = ?', a.id);
+        if (a.competing) {
+          const other = this.store.get(`SELECT 1 FROM attempts WHERE task_id = ? AND id != ? AND state IN (${ph})`, a.task_id, a.id, ...LIVE_STATES);
+          if (!other) this.store.run(`UPDATE tasks SET state = 'open', updated_at = ? WHERE id = ? AND state IN ('verifying', 'peer_review', 'in_review', 'approved', 'merging')`, now(), a.task_id);
+        } else {
+          this.store.run(`UPDATE tasks SET state = 'leased', lease_user = ?, lease_expires = ?, lease_started = ?, updated_at = ? WHERE id = ?`, a.user_id, expires, now(), now(), a.task_id);
+        }
+      }
+      const reason = `cancelled by ${b.user_id === user.id ? 'its author' : `admin ${user.name}`}`;
+      this.store.run(
+        `UPDATE batches SET state = 'returned', finished_at = ?, result_json = json_set(COALESCE(result_json, '{}'), '$.returned', ?, '$.cancelled', json('true')) WHERE id = ?`,
+        now(), reason, b.id,
+      );
+      dropMergeData(this.store, b.id);
+      this.store.event('batch_cancelled', user.id, { batch: b.id, kind: b.kind, from: b.state, attempts: live.map((a) => a.id) });
+      return { batch: b.id, state: 'cancelled', was: b.state, withdrawn: live.map((a) => a.id), note: live.length ? 'its functions are back in your claim' : undefined };
     });
   }
 

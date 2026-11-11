@@ -72,11 +72,12 @@ export class Maintenance {
     clearBuildRetry(this.store, batch.id);
     try {
       const outcome = await this.verifyAndMerge(batch);
+      if (this.cancelled(batch.id)) return { state: 'returned' };
       if (outcome.state === 'queued') {
-        this.store.run(`UPDATE batches SET state = 'queued' WHERE id = ?`, batch.id);
+        this.store.run(`UPDATE batches SET state = 'queued' WHERE id = ? AND state = 'verifying'`, batch.id);
         return outcome;
       }
-      this.store.run(`UPDATE batches SET state = ?, finished_at = ?, result_json = ?, merged_commit = ? WHERE id = ?`, outcome.state, now(), JSON.stringify(outcome.result), outcome.commit ?? null, batch.id);
+      this.store.run(`UPDATE batches SET state = ?, finished_at = ?, result_json = ?, merged_commit = ? WHERE id = ? AND state = 'verifying'`, outcome.state, now(), JSON.stringify(outcome.result), outcome.commit ?? null, batch.id);
       return outcome;
     } catch (e) {
       if (e instanceof BuildRetryError) {
@@ -84,7 +85,8 @@ export class Maintenance {
         return { state: 'queued', result: { buildRetry: e.diagnostic } };
       }
       this.log.error(`maintenance batch ${batch.id}: ${e.stack}`);
-      this.store.run(`UPDATE batches SET state = 'returned', finished_at = ?, result_json = ? WHERE id = ?`, now(), JSON.stringify({ returned: 'internal error; a maintainer has been notified' }), batch.id);
+      if (this.cancelled(batch.id)) return { state: 'returned' };
+      this.store.run(`UPDATE batches SET state = 'returned', finished_at = ?, result_json = ? WHERE id = ? AND state = 'verifying'`, now(), JSON.stringify({ returned: 'internal error; a maintainer has been notified' }), batch.id);
       return { state: 'returned' };
     }
   }
@@ -151,6 +153,8 @@ export class Maintenance {
 
     // Another merge committed while this one compiled: check again on the new main.
     if (this.repo.head() !== startHead) return { state: 'queued', result: { note: 'main moved while verifying; checking again', ...(forced && { forced: true }) } };
+    // Cancelled by its author while it compiled: nothing is committed.
+    if (this.cancelled(batch.id)) return { state: 'returned', result: { returned: 'cancelled' } };
 
     // Commit like any merge; new units join the build list in the same commit.
     const author = this.store.get('SELECT name FROM users WHERE id = ?', batch.user_id).name;
@@ -184,6 +188,11 @@ export class Maintenance {
     this.merger.afterCommit(commit);
     this.log.info(`merged maintenance batch ${batch.id} as ${commit.slice(0, 10)}${forced ? ' (forced)' : ''}`);
     return { state: 'merged', commit, result: { units: check.units.length, changedHeaders, ...(forced && { forced: true, regressions, changedFunctions: changed.slice(0, 200) }) } };
+  }
+
+  /** Whether the batch was cancelled (td cancel) while it was being verified. */
+  cancelled(batchId) {
+    return this.store.get('SELECT state FROM batches WHERE id = ?', batchId)?.state !== 'verifying';
   }
 
   /**
