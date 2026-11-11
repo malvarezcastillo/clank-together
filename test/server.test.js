@@ -1447,6 +1447,11 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   assert.deepEqual(changed.map((o) => o.id), [a], 'a code change in another unit');
   assert.match(changed[0].why, /list it in taskIds/);
   assert.deepEqual(inCaller({ effectiveHash: 'eff-a-changed', status: STATUS.EXACT }), [], 'an improvement to byte-identical is proven');
+  const viaHeader = (files) => ctx.verifier.changedOutside({ units: [{ bindings: {}, functions: [{ id: a, file: 'src/caller.cpp', codeHash: 'other-bytes', effectiveHash: 'eff-a-changed', status: STATUS.MISMATCH }] }] }, files, new Set([b]), authorId, new Set(['src/batch.cpp', 'src/caller.cpp']));
+  assert.deepEqual(viaHeader({ 'src/batch.cpp': '' }), [], 'without a header change, units outside the submission are not judged');
+  const unreviewed = viaHeader({ 'src/batch.cpp': '', 'src/batch.h': '' });
+  assert.deepEqual(unreviewed.map((o) => o.id), [a], 'a header change alters a function whose file is not submitted, even in a task unit');
+  assert.match(unreviewed[0].why, /not in the submission/);
   assert.equal(ctx.verifier.crossUnit({ 'src/caller.cpp': '', 'src/batch.h': '' }, new Set(['src/batch.cpp'])), true);
   assert.equal(ctx.verifier.crossUnit({ 'src/batch.cpp': '', 'src/batch.h': '' }, new Set(['src/batch.cpp'])), false, 'headers are not another unit');
   assert.ok(ctx.tasks.allowedPathsForTasks([taskB]).includes('src/**'), 'every source unit may be edited');

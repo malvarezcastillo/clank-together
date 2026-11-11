@@ -326,7 +326,7 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta } = {})
     const symbols = me.leasedSymbols ?? [];
     ids = symbols.filter((t) => rewritten.has(t.symbol)).map((t) => t.taskId);
   }
-  let allowed = taskIds.length ? [...new Set((await Promise.all(ids.map((id) => api(ws).get(`/api/tasks/${id}`)))).flatMap((c) => c.allowedPaths))] : me.leasedAllowedPaths;
+  let allowed = taskIds.length ? (await api(ws).post('/api/tasks/allowed-paths', { taskIds: ids })).allowedPaths : me.leasedAllowedPaths;
   // Shared regions: functions another agent holds are submitted as competing candidates, but only
   // the ones this agent actually rewrote.
   if (!taskIds.length && me.regionTasks?.length) {

@@ -448,6 +448,17 @@ export function createApp(ctx) {
     return guided(tasks.context(intParam(params.id)));
   });
 
+  // Allowed paths of many tasks in one request (td submit with explicit task IDs): a task's full
+  // context carries file contents, and one GET per task of a large batch timed out.
+  router.on('POST', '/api/tasks/allowed-paths', async ({ req }) => {
+    auth(req);
+    const body = await readJson(req, 256 * 1024);
+    const ids = Array.isArray(body.taskIds) ? body.taskIds.map(Number) : [];
+    if (!ids.length || ids.length > 5000 || !ids.every(Number.isSafeInteger)) throw new HttpError(400, 'taskIds: 1 to 5000 task ids');
+    for (const id of ids) tasks.get(id);
+    return { allowedPaths: tasks.allowedPathsForTasks(ids) };
+  });
+
   // Functions on main that still differ from the original, lowest score first (tasks.improvable).
   router.on('GET', '/api/improvable', ({ req, query }) => {
     auth(req);

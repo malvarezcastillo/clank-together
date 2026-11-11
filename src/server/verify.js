@@ -779,11 +779,14 @@ export class Verifier {
   // measured again, and the regression check still protects whatever already matches.
   // In every other unit a refactor may only rename and move: any code change counts, unless the
   // function becomes byte-identical to the original (that proves it as merging it would).
+  // With a changed header, units that only include it count too (a merge compiles them): a function
+  // there whose code the header changed was never shown to a reviewer.
   changedOutside(check, files, targets, userId = null, ownUnits = null) {
     const fileSet = new Set(Object.keys(files));
+    const headerChanged = Object.keys(files).some((f) => !isUnit(f));
     const addressOf = boundAddresses(check, this.store.symbolMap(this.store.currentVersion().id));
     const seen = new Map();
-    for (const u of check.units) for (const f of u.functions) if (fileSet.has(f.file) && !targets.has(f.id) && f.codeHash) seen.set(f.id, f);
+    for (const u of check.units) for (const f of u.functions) if ((fileSet.has(f.file) || headerChanged) && !targets.has(f.id) && f.codeHash) seen.set(f.id, f);
     const out = [];
     for (const [id, f] of seen) {
       const main = this.store.get('SELECT code_hash, effective_hash FROM func_status WHERE symbol_id = ?', id);
@@ -791,13 +794,15 @@ export class Verifier {
       else if (main.effective_hash ? main.effective_hash !== resolvedEffectiveHash(f, addressOf) : main.code_hash && main.code_hash !== f.codeHash) out.push({ id, file: f.file, why: 'compiled code changed' });
     }
     if (userId == null) return out;
-    const foreign = (o) => ownUnits && !ownUnits.has(o.file);
+    const foreign = (o) => !fileSet.has(o.file) || (ownUnits && !ownUnits.has(o.file));
     return out.filter((o) => {
       if (foreign(o)) {
         if (this.workedOnByOthers(o.id, userId)) return true;
         const f = seen.get(o.id);
         if (f.status === STATUS.EXACT || f.status === STATUS.UNRESOLVED) return false;
-        o.why = 'in a unit outside this submission\'s tasks: a refactor there may rename and move, not change code; list it in taskIds to submit it as a revision';
+        o.why = fileSet.has(o.file)
+          ? 'in a unit outside this submission\'s tasks: a refactor there may rename and move, not change code; list it in taskIds to submit it as a revision'
+          : 'a changed header changes its code, but its file is not in the submission: include the file and list it in taskIds so reviewers see it';
         return true;
       }
       return this.workedOnByOthers(o.id, userId) || this.unlistedRevision(o, files);
