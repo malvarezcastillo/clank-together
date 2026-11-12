@@ -103,6 +103,20 @@ test('effectiveHash ignores the per-unit tags MSVC gives anonymous namespaces an
   assert.notEqual(hash('?v@?A0x0c4fce31@@3HA'), hash('?w@?A0x0c4fce31@@3HA'));
 });
 
+test('effectiveHash identifies a label of the function by where it lands, not by its unit-wide number', () => {
+  // A jump table entry: the compiler numbers $LN labels across the unit, so an edit elsewhere renumbers them.
+  const hash = (name, value, section = 1) => {
+    const f = fixture();
+    const obj = new CoffObject(f.obj);
+    Object.assign(obj.symbols[3], { name, value, section });
+    const { annotations } = parseAnnotations(f.source, FILE);
+    return compareObject({ obj, listing: parseListing(f.listing), file: FILE, annotations, symbols: symbols(), nameIndex: new Map([['?Callee@@YAXXZ', 'fn_00002']]), pe: new PEImage(f.pe) }).functions[0].effectiveHash;
+  };
+  assert.equal(hash('$LN2792@Update', 13), hash('$LN2790@Update', 13));
+  assert.notEqual(hash('$LN2792@Update', 13), hash('$LN2792@Update', 14), 'another target in the function is a change');
+  assert.notEqual(hash('$LN2792@Update', 13, 0), hash('$LN2790@Update', 13, 0), 'a label outside the function still hashes by name');
+});
+
 test('a caller of a renamed function has the same effective code once the new name is bound', () => {
   const known = new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00001']]);
   const before = run({ nameIndex: known }).fn;
