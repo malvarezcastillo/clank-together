@@ -430,6 +430,7 @@ export class Verifier {
     const scan = scanAnnotations(this.repo.dir, this.project, files);
     const cacheSnapshot = this.checkSnapshot(files, { version: v, symbols, nameIndex, scan });
     const jobDir = path.join(this.jobsDir, jobName);
+    const started = Date.now();
     try {
       const check = await checkUnits({
         scan,
@@ -453,6 +454,10 @@ export class Verifier {
         compileCache: this.config.compileCacheMb === 0 ? null : { dir: path.join(this.config.dataDir, 'compile-cache'), capMb: this.config.compileCacheMb },
         analyze: (args) => analyzeInWorkers({ symbols, nameIndex, ...args, peFile: v.file }),
       });
+      if (check.units.length) {
+        const hits = check.units.filter((u) => u.cached).length;
+        this.log.info(`${jobName}: built ${check.units.length} unit(s) in ${((Date.now() - started) / 1000).toFixed(1)}s, ${hits} from the compile cache`);
+      }
       // Reconciliation mutates statuses; retries must start with compiler analysis, not a prior
       // batch-wide upgrade whose supporting unit may have changed.
       for (const u of check.units) for (const f of u.functions) f.comparisonStatus = f.status;

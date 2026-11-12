@@ -59,8 +59,12 @@ function tryTake(dir, count) {
       fs.writeFileSync(file, `${process.pid} ${Date.now()}\n`, { flag: 'wx' });
       return file;
     } catch (e) {
+      // EPERM/EACCES: on Windows, a slot file another process is deleting right now; busy.
+      if (e.code === 'EPERM' || e.code === 'EACCES') continue;
       if (e.code !== 'EEXIST') throw e;
-      if (stale(file)) fs.rmSync(file, { force: true });
+      try {
+        if (stale(file)) fs.rmSync(file, { force: true });
+      } catch {}
     }
   }
   return null;

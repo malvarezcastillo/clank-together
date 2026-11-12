@@ -89,7 +89,7 @@ export function analyzeCompiled({ compiled, annotations, roots, symbols, nameInd
 
   const results = [];
   for (const c of compiled) {
-    const unit = { file: c.file, compiled: c.ok, timedOut: c.timedOut ?? false, log: trimLog(c.log), includes: c.includes ?? [], lintErrors: [], functions: [], inferred: [], bindings: {}, unannotated: [], errors: [] };
+    const unit = { file: c.file, compiled: c.ok, timedOut: c.timedOut ?? false, ...(c.cached && { cached: true }), log: trimLog(c.log), includes: c.includes ?? [], lintErrors: [], functions: [], inferred: [], bindings: {}, unannotated: [], errors: [] };
     if (c.pre) unit.lintErrors = lintPreprocessed(fs.readFileSync(c.pre, 'latin1'), isProjectFile);
     if (c.ok) {
       try {
