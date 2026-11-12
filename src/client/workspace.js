@@ -106,6 +106,15 @@ export class Workspace {
     }
   }
 
+  /** A file's text as HEAD has it, or null if HEAD does not have it. */
+  show(file) {
+    try {
+      return this.gitRaw('show', `HEAD:${file}`);
+    } catch {
+      return null;
+    }
+  }
+
   /** Every file path HEAD tracks. */
   trackedPaths() {
     return this.gitRaw('ls-tree', '-r', '--name-only', '-z', 'HEAD').split('\0').filter(Boolean);

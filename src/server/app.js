@@ -1158,7 +1158,7 @@ export function createApp(ctx) {
     if (!body.files || typeof body.files !== 'object' || Array.isArray(body.files)) throw new HttpError(400, 'files must be an object of path -> content');
     body.files = lf(body.files);
     const allowed = [...project.sourceDirs.map((d) => `${d}/**`)];
-    const lintErrors = lintSubmission(body.files, { allowedPaths: allowed, limits: project.lintLimits, allowedPragmas: project.allowedPragmas, baseSize: (f) => repo.size('HEAD', f), trackedPaths: repo.trackedPaths('HEAD') });
+    const lintErrors = lintSubmission(body.files, { allowedPaths: allowed, limits: project.lintLimits, allowedPragmas: project.allowedPragmas, baseSize: (f) => repo.size('HEAD', f), trackedPaths: repo.trackedPaths('HEAD'), unitPrelude: project.unitPrelude, baseText: (f) => repo.show('HEAD', f) });
     if (lintErrors.length) return { gate: 'rejected', lintErrors };
     if (!repo.isAncestor(body.baseCommit)) throw new HttpError(409, 'your base commit is not part of main; run td sync');
     const textErrors = ctx.verifier.freeTextGate(body.files, body.baseCommit);

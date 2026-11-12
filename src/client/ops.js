@@ -352,7 +352,7 @@ export async function submit(ws, taskIds = [], { files, notes, agentMeta } = {})
   if (!candidates.length) throw new Error(`no changed files match the allowed paths of your tasks (${allowed.join(', ')})`);
   const contents = {};
   for (const f of candidates) contents[f.replace(/\\/g, '/')] = fs.readFileSync(path.join(ws.dir, f), 'utf8');
-  const errors = lintSubmission(contents, { allowedPaths: allowed, limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas, baseSize: (f) => ws.size(f), trackedPaths: ws.trackedPaths() });
+  const errors = lintSubmission(contents, { allowedPaths: allowed, limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas, baseSize: (f) => ws.size(f), trackedPaths: ws.trackedPaths(), unitPrelude: ws.project.unitPrelude, baseText: (f) => ws.show(f) });
   if (errors.length) {
     const e = new Error('submission fails the static gate:\n' + errors.map((x) => `  ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${x.message}`).join('\n'));
     e.details = errors;
@@ -375,7 +375,7 @@ export async function submitMaintenance(ws, files, { notes, force = false, delet
     if (!tracked.has(f)) throw new Error(`${f} is not tracked on main; nothing to delete`);
     contents[f] = null;
   }
-  const errors = lintSubmission(contents, { allowedPaths: [`${ws.project.sourceDirs[0]}/**`, ...ws.project.headerGlobs], limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas, baseSize: (f) => ws.size(f), trackedPaths: [...tracked], allowDeletions: true });
+  const errors = lintSubmission(contents, { allowedPaths: [`${ws.project.sourceDirs[0]}/**`, ...ws.project.headerGlobs], limits: ws.project.lintLimits, allowedPragmas: ws.project.allowedPragmas, baseSize: (f) => ws.size(f), trackedPaths: [...tracked], allowDeletions: true, unitPrelude: ws.project.unitPrelude, baseText: (f) => ws.show(f) });
   if (errors.length) {
     const e = new Error('submission fails the static gate:\n' + errors.map((x) => `  ${x.file ?? ''}${x.line ? ':' + x.line : ''} ${x.message}`).join('\n'));
     e.details = errors;

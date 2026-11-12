@@ -161,6 +161,40 @@ export function movedFrom(files, isNew) {
 }
 
 /**
+ * Explicit-template declarations (`extern template ...;`) belong in the unit's linkage prelude
+ * (project.unitPrelude), not in the game source. Only lines a submission adds are refused: what main
+ * already has passes, so work that touches such a file is not held up.
+ * @param {(path: string) => string | null} baseText  the file's text on main (null when new)
+ */
+export function externTemplateErrors(file, text, preludeDir, baseText) {
+  if (!preludeDir) return [];
+  const dir = preludeDir.replace(/\/+$/, '');
+  if (file.startsWith(`${dir}/`)) return [];
+  const declarations = (s) => {
+    const code = stripCommentsAndStrings(s ?? '');
+    const out = [];
+    const re = /^[ \t]*extern\s+template\b[^;{]*;/gm;
+    let m;
+    while ((m = re.exec(code))) out.push({ text: m[0].replace(/\s+/g, ' ').trim(), index: m.index });
+    return { code, out };
+  };
+  const before = new Map();
+  for (const d of declarations(baseText?.(file)).out) before.set(d.text, (before.get(d.text) ?? 0) + 1);
+  const { code, out } = declarations(text);
+  const errors = [];
+  for (const d of out) {
+    const left = before.get(d.text) ?? 0;
+    if (left > 0) {
+      before.set(d.text, left - 1);
+      continue;
+    }
+    const prelude = /\.(c|cc|cpp|cxx)$/i.test(file) ? `${dir}/${file}.h` : `the linkage prelude (${dir}/<unit>.h) of each unit that needs it`;
+    errors.push({ file, line: lineOf(code, d.index), message: `extern template declarations go in ${prelude}, not in the game source; the build forces that file into the unit` });
+  }
+  return errors;
+}
+
+/**
  * Checks a submission's shape and content.
  * @param {Record<string,string>} files   path -> content
  * @param {{allowedPaths: string[], limits?: object, allowedPragmas?: string[], baseSize?: (path: string) => number | null, trackedPaths?: Iterable<string>}} opts
@@ -169,8 +203,10 @@ export function movedFrom(files, isNew) {
  *   trackedPaths: every file main holds. A path that differs from one of them (or from another
  *   file of the submission) only by letter case is rejected: on case-insensitive checkouts the
  *   two are one file, so the second silently overwrites or never reaches the commit.
+ *   unitPrelude / baseText: with a linkage prelude folder, extern template lines a submission adds
+ *   to game source are refused (externTemplateErrors); baseText gives a file's text on main.
  */
-export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragmas, baseSize = () => null, trackedPaths = [], allowDeletions = false } = {}) {
+export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragmas, baseSize = () => null, trackedPaths = [], allowDeletions = false, unitPrelude = null, baseText = null } = {}) {
   const L = { ...DEFAULT_LIMITS, ...limits };
   const errors = [];
   const entries = Object.entries(files ?? {});
@@ -209,6 +245,7 @@ export function lintSubmission(files, { allowedPaths, limits = {}, allowedPragma
     total += Math.max(0, bytes - base);
     if (content.includes('\0')) errors.push({ file: n, message: 'file contains NUL bytes' });
     errors.push(...lintSource(n, content, { allowedPragmas, maxInitializerNumbers: L.maxInitializerNumbers }));
+    errors.push(...externTemplateErrors(n, content, unitPrelude, baseText));
   }
   if (total > L.maxTotalBytes) errors.push({ file: null, message: `submission too large (${total} bytes beyond what main holds)` });
   return errors;
