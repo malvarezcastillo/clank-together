@@ -14,6 +14,8 @@ cd "$(dirname "$0")/.."
 [ -z "$(git status --porcelain -- src deploy template ghidra_scripts toolchain)" ] || echo "note: uncommitted changes are not deployed; this deploys HEAD ($(git rev-parse --short HEAD))"
 
 tmp=$(mktemp -d)
+# Windows (msys/Git Bash) with a native git: git only understands the Windows form of the path.
+command -v cygpath >/dev/null 2>&1 && tmp=$(cygpath -m "$tmp")
 trap 'rm -rf "$tmp"' EXIT
 git archive --format=tar.gz -o "$tmp/release.tar.gz" HEAD
 scp -q "$tmp/release.tar.gz" "$HOST:/tmp/clank-release.tar.gz"
