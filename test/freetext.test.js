@@ -118,8 +118,26 @@ test('encoded literals are rejected for invented text, a wrong key, an undeclare
   assert.equal(one('CRYPT_NAME("DEVICENAME", 0x1F7530137154D8FE5ULL);'), 1, 'key wider than keyBytes');
 });
 
+const cryptChars = encodedLiteralRules([{ macro: 'CRYPT_CHARS', kind: 'xor-repeating-key', keyBytes: 8, includeTerminator: true, lengthArgument: true }]);
+
+test('a lengthArgument macro is accepted with the encoded size as its first argument', () => {
+  const src = `const char name[] = CRYPT_CHARS(11, "DEVICENAME", 0xF7530137154D8FE5ULL);
+`;
+  assert.deepEqual(freeTextErrors(src, null, inEncodedExe, null, cryptChars), []);
+});
+
+test('a lengthArgument macro is rejected for a wrong or missing length, and a plain rule takes no length', () => {
+  const one = (src, rules = cryptChars) => freeTextErrors(src, null, inEncodedExe, null, rules).length;
+  assert.equal(one('CRYPT_CHARS(10, "DEVICENAME", 0xF7530137154D8FE5ULL);'), 1, 'length without the terminator');
+  assert.equal(one('CRYPT_CHARS(12, "DEVICENAME", 0xF7530137154D8FE5ULL);'), 1, 'length too large');
+  assert.equal(one('CRYPT_CHARS("DEVICENAME", 0xF7530137154D8FE5ULL);'), 1, 'length missing');
+  assert.equal(one('CRYPT_CHARS(11, "DEVICENAMF", 0xF7530137154D8FE5ULL);'), 1, 'one wrong character');
+  assert.equal(one('CRYPT_NAME(11, "DEVICENAME", 0xF7530137154D8FE5ULL);', cryptName), 1, 'length given to a plain rule');
+});
+
 test('encodedLiterals rules are validated', () => {
   assert.throws(() => encodedLiteralRules([{ macro: 'X', kind: 'rot13' }]), /unknown kind/);
   assert.throws(() => encodedLiteralRules([{ macro: 'a b', kind: 'xor-repeating-key' }]), /invalid macro/);
   assert.throws(() => encodedLiteralRules([{ macro: 'X', kind: 'xor-repeating-key', keyBytes: 9 }]), /keyBytes/);
+  assert.throws(() => encodedLiteralRules([{ macro: 'X', kind: 'xor-repeating-key', lengthArgument: 'yes' }]), /lengthArgument/);
 });

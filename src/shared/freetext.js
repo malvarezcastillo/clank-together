@@ -71,7 +71,8 @@ export function scanText(src, executionCharset = null) {
         prev.wide ||= wide;
         prev.end = end;
       } else {
-        literals.push({ pieces: [{ value, segments }], wide, line, include: INCLUDE_RE.test(src.slice(lineBegin, i)) ? value : null, linkage: lastCode === 'extern', call: CALL_OPEN_RE.exec(src.slice(Math.max(0, i - 80), i))?.[1] ?? null, end });
+        const open = CALL_OPEN_RE.exec(src.slice(Math.max(0, i - 80), i));
+        literals.push({ pieces: [{ value, segments }], wide, line, include: INCLUDE_RE.test(src.slice(lineBegin, i)) ? value : null, linkage: lastCode === 'extern', call: open?.[1] ?? null, length: open?.[2] != null ? Number(open[2]) : null, end });
       }
       i = end;
       continue;
@@ -98,7 +99,7 @@ export function scanText(src, executionCharset = null) {
     line: l.line,
     include: l.include,
     linkage: l.linkage,
-    call: l.call === null ? null : callWithKey(l.call, src.slice(l.end, l.end + 80)),
+    call: l.call === null ? null : callWithKey(l.call, src.slice(l.end, l.end + 80), l.length),
   }));
   return { comments, strings };
 }
@@ -110,19 +111,22 @@ function lastCodeEnd(src, at) {
   return j + 1;
 }
 
-// `NAME(` right before a literal: the literal is the first argument of that call or macro.
-const CALL_OPEN_RE = /\b([A-Za-z_]\w*)\s*\(\s*$/;
+// `NAME(` right before a literal: the literal is the first argument of that call or macro; or
+// `NAME(<decimal length>, ` for a macro that takes the encoded length first (lengthArgument rules).
+const CALL_OPEN_RE = /\b([A-Za-z_]\w*)\s*\(\s*(?:([1-9]\d{0,4})\s*,\s*)?$/;
 // `, <integer literal>)` right after it: the second and last argument, a constant key.
 const CALL_KEY_RE = /^\s*,\s*(0[xX][0-9A-Fa-f]+|[1-9]\d*|0)(?:[uU](?:ll|LL|l|L)?|(?:ll|LL|l|L)[uU]?)?\s*\)/;
 
-function callWithKey(name, after) {
+function callWithKey(name, after, length = null) {
   const m = CALL_KEY_RE.exec(after);
-  return m ? { name, key: BigInt(m[1]) } : null;
+  return m ? { name, key: BigInt(m[1]), length } : null;
 }
 
 /**
  * Encodings a project may declare for literals the original stores encoded (data/decomp.json):
  *   "encodedLiterals": [{ "macro": "CRYPT_NAME", "kind": "xor-repeating-key", "keyBytes": 8, "includeTerminator": true }]
+ * With "lengthArgument": true the macro is written MACRO(<length>, "text", key), the length being the
+ * encoded size (an array initializer macro needs it, the preprocessor cannot count a literal).
  * A literal written as MACRO("text", key) is accepted when its encoded bytes and the key occur in
  * the original, which proves the text is the original's as much as a plain match does.
  */
@@ -140,6 +144,7 @@ export function encodedLiteralRules(list) {
     if (!ENCODINGS[rule.kind]) throw new Error(`encodedLiterals: unknown kind ${JSON.stringify(rule.kind)}`);
     const keyBytes = rule.keyBytes ?? 8;
     if (!Number.isInteger(keyBytes) || keyBytes < 1 || keyBytes > 8) throw new Error('encodedLiterals: keyBytes must be 1 to 8');
+    if (rule.lengthArgument != null && typeof rule.lengthArgument !== 'boolean') throw new Error('encodedLiterals: lengthArgument must be a boolean');
     rules.set(rule.macro, rule);
   }
   return rules;
@@ -159,12 +164,16 @@ function chunks(bytes) {
 function inOriginalEncoded(s, rules, inOriginal) {
   const rule = s.call && !s.wide ? rules.get(s.call.name) : undefined;
   if (!rule) return false;
+  // A lengthArgument macro is written MACRO(<length>, "text", key); any other rule takes no length.
+  if (Boolean(rule.lengthArgument) !== (s.call.length != null)) return false;
   const keyBytes = rule.keyBytes ?? 8;
   if (s.call.key >> BigInt(8 * keyBytes) !== 0n) return false;
   const key = Buffer.alloc(keyBytes);
   for (let i = 0; i < keyBytes; i++) key[i] = Number((s.call.key >> BigInt(8 * i)) & 0xffn);
   if (!chunks(key).every((c) => inOriginal(c))) return false;
   const plain = Buffer.concat([...s.pieces, ...(rule.includeTerminator ? [Buffer.alloc(1)] : [])]);
+  // The length is what the compiler checks the initializer against: it must be the encoded size.
+  if (rule.lengthArgument && s.call.length !== plain.length) return false;
   const encoded = ENCODINGS[rule.kind](plain, s.call.key, rule);
   return inOriginal(encoded) || chunks(encoded).every((c) => inOriginal(c));
 }
