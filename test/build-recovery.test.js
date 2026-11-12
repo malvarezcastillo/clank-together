@@ -194,6 +194,31 @@ test('maintenance: a callee no symbol knows, respelled from C to C++ linkage, is
   assert.deepEqual(await changed('??$_Traits_equal@U?$char_traits@D@std@@@std@@YA_NPBDI0I@Z'), ['fn_00001'], 'a different function');
 });
 
+test('maintenance: a thread_local moved from a deleted helper into a lambda at its call site is not a code change; reaching other data is', async (t) => {
+  const f = fixture(t);
+  f.store.currentVersion = () => ({ id: 1 });
+  f.store.symbolMap = () => new Map([['fn_00001', { kind: 'function', addr: 0x401000 }]]);
+  const m = new Maintenance({ ...f, project: f.verifier.project, log: f.verifier.log });
+  const { effectiveHash } = await import('../src/shared/compare.js');
+  const self = '?RegisterLuaFunctions@CTipBoxMgr@@QAE_NXZ';
+  // The thread_local, its init guard and its atexit thunk: no database symbol, the scope they are
+  // named after is the deleted DecryptName<K,N> on main and the call site's lambda now.
+  const statics = (scope) => [`?name@?1??${scope}@4V?$EncryptedName@$0BC@$0K@@@A`, `?$TSS0@?1??${scope}@4HA`, `??__Fname@?1??${scope}@YAXXZ`];
+  const fn = (scope, lands) => {
+    const refs = statics(scope);
+    const effective = refs.map((n, i) => `${10 + i * 6}:abs:?${n}+0`);
+    const parts = { bytesHash: 'b', effective, unresolvedRefs: refs.map((n, i) => ({ index: i, name: n, addend: 0, prefix: `${10 + i * 6}:abs:` })), is64: false };
+    return { id: 'fn_00001', symbol: self, status: 'exact', score: 1, effectiveHash: effectiveHash(Buffer.from([0]), [0], effective), effectiveParts: parts,
+      relocations: refs.map((n, i) => ({ offset: 10 + i * 6, symbol: n, ok: true, unresolved: true, actual: lands[i] })) };
+  };
+  const original = [0x1357000, 0x1357010, 0x0e60000];
+  const unit = (fnc) => ({ file: 'src/a.cpp', compiled: true, functions: [fnc], bindings: { [self]: 'fn_00001' }, lintErrors: [], unannotated: [] });
+  f.verifier.check = async () => ({ check: { units: [unit(fn('??$DecryptName@$0K@$0BC@@?A0x1@@YAPBDAAY0BC@$$CBD@Z', original))] } });
+  const changed = async (lands) => (await m.changedFunctions({ units: [unit(fn('??R<lambda_1>@?5??RegisterLuaFunctions@CTipBoxMgr@@QAE_NXZ@QBE@XZ', lands))] }, files, 'head')).map((c) => c.id);
+  assert.deepEqual(await changed(original), [], 'same code, statics renamed after their new scope');
+  assert.deepEqual(await changed([0x1357000, 0x1357010, 0x0e60040]), ['fn_00001'], 'a static that reaches other data is a change');
+});
+
 test('a batch that edits a unit outside its tasks merges whole: one function sent back returns it all', async (t) => {
   const f = fixture(t);
   const refactor = { ...files, 'src/caller.cpp': 'int g() { return f(); }\n' };

@@ -242,6 +242,14 @@ export class Maintenance {
       return name.includes(`$${f.symbol}`) || name.includes(`?${f.symbol}`);
     };
     const original = (f, name) => f.relocations?.find((r) => r.symbol === name && r.actual != null)?.actual ?? null;
+    // A function-local static (a thread_local or static variable, its init guard `?$TSS0@`/`?$S1@`,
+    // its dynamic-initializer and atexit thunks `??__J`/`??__F`) is named after the scope it is
+    // declared in (`...@?1??Scope@@...`). Moving the declaration into another scope (a helper's body
+    // into a lambda at the call site) renames it with the same code: it counts as reaching where the
+    // original points from that reference, on main's side as on this one. Only data: a lambda or a
+    // vtable renamed this way is other code and still compared by name.
+    const localStatic = (name) => /^(?:\?\$S\d+@|\?\$TSS\d+@|\?\?__[JF])/.test(name) || /^\?[A-Za-z_]\w*@\?\d+\?\?.*@4.*A$/.test(name);
+    const local = (f, name) => (localStatic(name) ? original(f, name) : null);
     const byDecorated = new Map();
     for (const s of symbols.values()) if (s.addr != null && s.decorated && !byDecorated.has(s.decorated)) byDecorated.set(s.decorated, s.addr);
     // A helper named after a renamed function is main's helper under the old spelling: it reaches
@@ -262,7 +270,7 @@ export class Maintenance {
       for (const [now, was] of oldKey) if (name.startsWith(now)) return addressBefore(was + name.slice(now.length)) ?? byDecorated.get(was + name.slice(now.length)) ?? null;
       return null;
     };
-    const effective = (f, bound, old) => resolvedEffectiveHash(f, (name) => bound(name) ?? byOldObject(name) ?? helper(f, old, name) ?? callee(name));
+    const effective = (f, bound, old) => resolvedEffectiveHash(f, (name) => bound(name) ?? byOldObject(name) ?? helper(f, old, name) ?? local(f, name) ?? callee(name));
     // Neither side's name is known anywhere, yet both spell the same identifier and reach the same
     // place in the original: the same function under another linkage spelling (a declaration
     // moved out of an `extern "C"` block names `?_Traits_compare@...` instead of `__Traits_compare`).
