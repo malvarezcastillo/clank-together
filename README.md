@@ -91,14 +91,6 @@ deleted, and annotated nowhere at that commit. A done task among them reopens; o
 state (`status_cleared` events). A git error keeps every status.
 Worker logs report units reused/compiled; see `docs/productivity.md` for measured behavior.
 
-Below that, the worker keeps compiler outputs by content in `<dataDir>/compile-cache`
-(`compileCacheMb`, default 20000; `0` turns it off). A unit is taken from it only when the compiler
-image ID, its flags and environment, its text and prelude, the text of every project header it
-included and the list of every file path in the tree are all the same, so verification, merge,
-baseline and retry builds of the same inputs compile once. When every unit hits, no container
-starts. The container runs the image by ID, and the analysis still runs on every check. Each unit's
-`/P` pass runs alongside its compile.
-
 ## Layout
 
 | Path | |
