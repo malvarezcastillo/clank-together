@@ -10,18 +10,34 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { unitSettings } from './project.js';
+import { CompileCache } from './compile-cache.js';
+import { acquireSlot } from './slots.js';
 
 export function outputBase(file) {
   return file.replace(/[\/.]/g, '_');
 }
 
-/** Copies the source/include dirs of `repoDir` into `jobDir`, then applies `overrides`. */
-export function prepareJobDir({ repoDir, jobDir, project, overrides = {} }) {
-  fs.rmSync(jobDir, { recursive: true, force: true });
-  fs.mkdirSync(path.join(jobDir, 'out'), { recursive: true });
-  for (const d of new Set([...project.sourceDirs, ...project.includeDirs])) {
-    const src = path.join(repoDir, d);
-    if (fs.existsSync(src)) fs.cpSync(src, path.join(jobDir, d), { recursive: true });
+/**
+ * Copies the source/include dirs of `repoDir` into `jobDir`, then applies `overrides`.
+ * `incremental`: keep a job directory left by an earlier run and bring it up to date, copying
+ * only files whose size or mtime differ and deleting what the source no longer has (outputs of
+ * earlier runs in out/ stay; each unit's are cleared before it compiles). Files written from
+ * `overrides` last time are recorded, so they are restored from the source when no longer
+ * overridden.
+ */
+export function prepareJobDir({ repoDir, jobDir, project, overrides = {}, incremental = false }) {
+  const record = path.join(jobDir, 'out', '.overrides.json');
+  if (!incremental || !fs.existsSync(record)) {
+    fs.rmSync(jobDir, { recursive: true, force: true });
+    fs.mkdirSync(path.join(jobDir, 'out'), { recursive: true });
+    for (const d of new Set([...project.sourceDirs, ...project.includeDirs])) {
+      const src = path.join(repoDir, d);
+      if (fs.existsSync(src)) fs.cpSync(src, path.join(jobDir, d), { recursive: true });
+    }
+  } else {
+    const stale = new Set(JSON.parse(fs.readFileSync(record, 'utf8')));
+    for (const d of new Set([...project.sourceDirs, ...project.includeDirs])) syncTree(path.join(repoDir, d), path.join(jobDir, d), stale, d);
+    fs.mkdirSync(path.join(jobDir, 'out'), { recursive: true });
   }
   for (const [rel, content] of Object.entries(overrides)) {
     const dst = path.join(jobDir, rel);
@@ -30,8 +46,46 @@ export function prepareJobDir({ repoDir, jobDir, project, overrides = {} }) {
       continue;
     }
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.writeFileSync(dst, content);
+    // Unchanged text keeps its mtime, so nothing that depends on it looks modified.
+    let same = false;
+    try {
+      same = fs.readFileSync(dst).equals(Buffer.from(content));
+    } catch {}
+    if (!same) fs.writeFileSync(dst, content);
   }
+  fs.writeFileSync(record, JSON.stringify(Object.keys(overrides)));
+}
+
+/** Mirrors `src` into `dst` by size + mtime; `forced`: repo-relative files to copy regardless. */
+function syncTree(src, dst, forced, rel) {
+  if (!fs.existsSync(src)) {
+    fs.rmSync(dst, { recursive: true, force: true });
+    return;
+  }
+  fs.mkdirSync(dst, { recursive: true });
+  const have = new Map(fs.readdirSync(dst, { withFileTypes: true }).map((e) => [e.name, e]));
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name);
+    const d = path.join(dst, e.name);
+    const r = `${rel}/${e.name}`;
+    const old = have.get(e.name);
+    have.delete(e.name);
+    if (e.isDirectory()) {
+      if (old && !old.isDirectory()) fs.rmSync(d, { force: true });
+      syncTree(s, d, forced, r);
+      continue;
+    }
+    if (old?.isDirectory()) fs.rmSync(d, { recursive: true, force: true });
+    const a = fs.statSync(s);
+    if (old && !forced.has(r)) {
+      const b = fs.statSync(d);
+      // Whole milliseconds: utimes does not keep every platform's full timestamp precision.
+      if (a.size === b.size && Math.floor(a.mtimeMs) === Math.floor(b.mtimeMs)) continue;
+    }
+    fs.copyFileSync(s, d);
+    fs.utimesSync(d, a.atime, a.mtime);
+  }
+  for (const [name, e] of have) fs.rmSync(path.join(dst, name), { recursive: e.isDirectory(), force: true });
 }
 
 /** Fills ${SRC} (repo root as the compiler sees it) and ${TC} (toolchain root) in an argument. */
@@ -58,9 +112,11 @@ function clArgs({ cflags, includeDirs, src, out, toPath, roots, prelude = null }
   // /showIncludes lists every included header (dependency tracking); /Z7 puts debug info in the
   // object, which tells where each function is defined (CoffObject.functionLines). Neither
   // changes codegen.
+  // `key`: everything that decides the outputs except where they are written (the cache key).
+  const key = [...flags, ...inc, ...fi, '/showIncludes', '/Z7', '/FAcs', toPath(src)];
   const compile = [...flags, ...inc, ...fi, '/showIncludes', '/Z7', '/FAcs', `/Fa${toPath(out + '.cod')}`, `/Fo${toPath(out + '.obj')}`, toPath(src)];
   const preprocess = [...flags.filter((f) => f.toLowerCase() !== '/c'), ...inc, ...fi, '/P', `/Fi${toPath(out + '.i')}`, toPath(src)];
-  return { compile, preprocess };
+  return { key, compile, preprocess };
 }
 
 function fillEnv(env, roots) {
@@ -194,6 +250,10 @@ async function runDocker({ jobDir, list, project, runner, timeoutMs }) {
   });
 }
 
+// Local runners (contributors): each compiler process takes a machine-wide slot (slots.js), so
+// several agents compiling at once share the cores instead of oversubscribing them, and each
+// unit's outputs go through the machine-wide compile cache (compile-cache.js). The /P pass runs
+// alongside the compile; it is discarded when the compile fails.
 async function runLocal({ jobDir, list, project, runner, timeoutMs }) {
   const absJob = path.resolve(jobDir);
   const toPath =
@@ -201,25 +261,45 @@ async function runLocal({ jobDir, list, project, runner, timeoutMs }) {
       ? (rel) => 'Z:' + path.posix.join(absJob, rel).replace(/\//g, '\\')
       : (rel) => path.join(absJob, rel);
   const roots = { src: toPath('').replace(/[\\/]$/, ''), tc: runner.toolchainRoot };
+  const cache = new CompileCache({ jobDir: absJob, dir: runner.cache === false ? null : undefined });
+  const slot = runner.slots === false ? async () => () => {} : () => acquireSlot();
   const results = new Array(list.length);
   let next = 0;
   const worker = async () => {
     while (next < list.length) {
       const i = next++;
       const { file, cflags, env: unitEnv, pre: wantPre } = list[i];
-      const env = { ...process.env, ...(runner.env ?? {}), ...fillEnv(unitEnv, roots) };
+      const filled = fillEnv(unitEnv, roots);
+      const env = { ...process.env, ...(runner.env ?? {}), ...filled };
       const out = `out/${outputBase(file)}`;
+      const base = path.join(absJob, out);
       const prelude = unitPrelude(project, file, (rel) => fs.existsSync(path.join(absJob, rel)));
-      const { compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots, prelude });
+      const { key: keyArgs, compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots, prelude });
       const [cmd, pre] = runner.type === 'wine' ? [runner.wine ?? 'wine', [runner.clPath]] : [runner.clPath, []];
       clearOutputs(jobDir, file);
-      const a = await run(cmd, [...pre, ...compile], { timeoutMs, env, cwd: absJob });
-      const b = wantPre && a.code === 0 && !a.timedOut ? await run(cmd, [...pre, ...preprocess], { timeoutMs, env, cwd: absJob }) : { code: 0, output: '', timedOut: false };
-      const timedOut = a.timedOut || b.timedOut;
-      results[i] = collect(jobDir, file, `== ${file}\n${a.output}${b.output}${timedOut ? '\n[build timed out]' : ''}`, { completed: a.code === 0 && b.code === 0, timedOut, wantPre });
+      const key = cache.enabled ? cache.manifestKey({ runner, args: keyArgs, root: roots.src, env: filled, file, prelude }) : null;
+      const hit = key && cache.restore(key, base, { wantPre, root: roots.src });
+      if (hit) {
+        results[i] = { ...collect(jobDir, file, hit.log, { completed: true, timedOut: false, wantPre }), cached: true };
+        continue;
+      }
+      const step = async (args) => {
+        const release = await slot();
+        try {
+          return await run(cmd, [...pre, ...args], { timeoutMs, env, cwd: absJob });
+        } finally {
+          release();
+        }
+      };
+      const [a, b] = await Promise.all([step(compile), wantPre ? step(preprocess) : { code: 0, output: '', timedOut: false }]);
+      const timedOut = a.timedOut || (a.code === 0 && b.timedOut);
+      const log = `== ${file}\n${a.output}${a.code === 0 ? b.output : ''}${timedOut ? '\n[build timed out]' : ''}`;
+      results[i] = collect(jobDir, file, log, { completed: a.code === 0 && b.code === 0, timedOut, wantPre });
+      if (key && results[i].ok) cache.store(key, base, { includes: results[i].includes, log, hasPre: wantPre, root: roots.src });
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, runner.jobs ?? 1) }, worker));
+  cache.prune();
   return results;
 }
 

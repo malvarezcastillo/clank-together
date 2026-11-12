@@ -46,12 +46,13 @@ for (const mode of ['compile-timeout', 'pre-timeout', 'error', 'success']) {
     const { dir, cl, project } = fixture(t);
     const file = `${mode}.cpp`;
     const [result] = await compileUnits({ jobDir: dir, units: [file], project, timeoutMs: 1000,
-      runners: { stub: { type: 'wine', wine: process.execPath, clPath: cl } } });
+      runners: { stub: { type: 'wine', wine: process.execPath, clPath: cl, cache: false, slots: false } } });
     assert.equal(result.timedOut, mode.endsWith('timeout'));
     assert.equal(result.ok, mode === 'success');
     const base = path.join(dir, 'out', outputBase(file));
     assert.ok(fs.existsSync(base + '.obj'));
-    assert.equal(fs.readFileSync(base + '.calls', 'utf8'), ['compile-timeout', 'error'].includes(mode) ? 'compile\n' : 'compile\npre\n');
+    // The /P pass runs alongside the compile, so both start whatever the compile does.
+    assert.deepEqual(fs.readFileSync(base + '.calls', 'utf8').split('\n').filter(Boolean).sort(), ['compile', 'pre']);
     if (!result.ok) {
       assert.equal(result.obj, null);
       assert.equal(result.pre, null);

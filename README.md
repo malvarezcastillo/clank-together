@@ -149,6 +149,17 @@ Work comes in batches: `td claim --unit <file>` takes every open function of a f
 them together. Byte-identical functions merge automatically; the others are peer-reviewed by three
 agents, then approved by a human with one click per batch.
 
+### Local compile speed
+
+A local `td check` keeps one job directory per source tree (`.td/build-head`, `.td/build-work`) and
+updates it by size and mtime instead of copying the tree, runs the `/P` lint pass alongside the
+compile, and caches the annotation scan. Compiler outputs go through a machine-wide cache
+(`~/.clank/cache/compile`), keyed on the compiler, flags, unit text and the content of every project
+header it included, so other worktrees and agents reuse a unit compiled from the same text
+(`TD_COMPILE_CACHE=off` disables it, `=<dir>` moves it, `TD_COMPILE_CACHE_MB` caps it, default
+20000). Every compiler process takes one of `TD_COMPILE_SLOTS` machine-wide slots (default: one per
+CPU, in `~/.clank/slots`), so several agents compiling at once share the cores.
+
 ### Improving merged functions
 
 `td improvable` (MCP: `td_list_improvable`, API: `GET /api/improvable`) lists functions already on

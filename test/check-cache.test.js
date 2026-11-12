@@ -23,7 +23,7 @@ fs.writeFileSync(out,Buffer.from(${JSON.stringify(binary.obj.toString('base64'))
 fs.writeFileSync(cod,file.endsWith('a.cpp')?${JSON.stringify(binary.listing.replaceAll('player.cpp', 'a.cpp'))}:${JSON.stringify('EXTRN\t?g_val@@3HA:DWORD\t; g_val\n')});
 `);
   const project = { sourceDirs: ['src'], includeDirs: [], toolchain: 'one', cflags: [writer, '/c'], fileOverrides: [{ glob: 'src/b.cpp', toolchain: 'two' }] };
-  const runner = { type: 'native', clPath: process.execPath };
+  const runner = { type: 'native', clPath: process.execPath, cache: false, slots: false };
   const symbols = new Map([
     ['fn_00001', { id: 'fn_00001', kind: 'function', addr: FN_ADDR, size: 15 }],
     ['fn_00002', { id: 'fn_00002', kind: 'function', addr: CALLEE_ADDR, size: 1, decorated: '?Callee@@YAXXZ' }],

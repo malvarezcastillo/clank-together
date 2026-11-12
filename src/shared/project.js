@@ -174,20 +174,45 @@ export function isUnit(file) {
 /**
  * Annotations of the whole repo, optionally with some files replaced
  * (the contents of a submission).
+ * `cacheFile`: a JSON file keeping each file's parse result by size and mtime, so a repeated scan
+ * only parses what changed (the client's checks; the server scans its own repo in memory).
  */
-export function scanAnnotations(repoDir, project, overrides = {}) {
+export function scanAnnotations(repoDir, project, overrides = {}, { cacheFile = null } = {}) {
   const files = new Set(listSources(repoDir, project));
   for (const [f, text] of Object.entries(overrides)) {
     if (text === null) files.delete(f);
     else files.add(f);
   }
+  let cache = {};
+  if (cacheFile) {
+    try {
+      cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    } catch {}
+  }
+  const fresh = {};
   const annotations = [];
   const errors = [];
   for (const f of [...files].sort()) {
-    const text = f in overrides ? overrides[f] : fs.readFileSync(path.join(repoDir, f), 'utf8');
-    const r = parseAnnotations(text, f);
-    annotations.push(...r.annotations);
-    errors.push(...r.errors);
+    let r;
+    if (f in overrides) r = parseAnnotations(overrides[f], f);
+    else if (cacheFile) {
+      const abs = path.join(repoDir, f);
+      const st = fs.statSync(abs);
+      const stamp = `${st.size}:${st.mtimeMs}`;
+      r = cache[f]?.stamp === stamp ? cache[f].r : parseAnnotations(fs.readFileSync(abs, 'utf8'), f);
+      fresh[f] = { stamp, r };
+    } else r = parseAnnotations(fs.readFileSync(path.join(repoDir, f), 'utf8'), f);
+    // Copies: callers may annotate the objects, which must not leak into the cache.
+    annotations.push(...(cacheFile ? r.annotations.map((a) => ({ ...a })) : r.annotations));
+    errors.push(...(cacheFile ? r.errors.map((e) => ({ ...e })) : r.errors));
+  }
+  if (cacheFile) {
+    try {
+      fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+      const tmp = `${cacheFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(fresh));
+      fs.renameSync(tmp, cacheFile);
+    } catch {}
   }
   return { annotations, errors };
 }

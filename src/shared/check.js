@@ -26,10 +26,12 @@ import { scanAnnotations, unitSettings } from './project.js';
 // lintUnits: units whose preprocessed output is scanned (default: all compiled units).
 // analyze: replaces the in-process analysis of the compiler output (the server runs it in worker
 // threads, so a check of many units doesn't block it).
-export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, cachedUnits = [], unitOrder = null, scan = scanAnnotations(repoDir, project, overrides) }) {
+// incremental: update a job directory left by an earlier check instead of copying the tree anew
+// (prepareJobDir); for a job directory only ever filled from the same repoDir.
+export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, cachedUnits = [], unitOrder = null, incremental = false, scan = scanAnnotations(repoDir, project, overrides) }) {
   const annotationErrors = [...scan.errors, ...lintAnnotations(scan.annotations, symbols)];
 
-  prepareJobDir({ repoDir, jobDir, project, overrides });
+  prepareJobDir({ repoDir, jobDir, project, overrides, incremental });
   const compiled = await compileUnits({ jobDir, units, project, runners, timeoutMs, scaleTimeout, preprocess: (f) => !lintUnits || lintUnits.has(f) });
 
   const roots = { sourceDirs: project.sourceDirs, includeDirs: project.includeDirs };

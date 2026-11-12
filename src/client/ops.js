@@ -9,7 +9,7 @@ import { Workspace, sha256File } from './workspace.js';
 import { checkUnits, summarizeCheck } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { lintSubmission, matchesAny } from '../shared/lint.js';
-import { isUnit, loadToolchainLock } from '../shared/project.js';
+import { isUnit, loadToolchainLock, scanAnnotations } from '../shared/project.js';
 import { hex } from '../shared/annotations.js';
 import { run, unitPrelude } from '../shared/build.js';
 import { rememberServer } from './update.js';
@@ -243,10 +243,19 @@ export async function check(ws, files, { wait = true, includers = false } = {}) 
     }
   }
   if (!units.size) throw new Error('nothing to check: pass .cpp files or modify some');
+  const repoDir = explicit ? headTree(ws) : ws.dir;
+  const overrides = explicit ? readFiles(ws, targets) : {};
+  // One job directory per source tree, kept between checks and brought up to date by size and
+  // mtime: copying the whole tree each time costs more than compiling a small unit.
+  const tree = explicit ? 'head' : 'work';
+  // Before per-tree job directories, every check recopied the tree into .td/build.
+  fs.rmSync(path.join(ws.tdDir, 'build'), { recursive: true, force: true });
   const result = await checkUnits({
-    repoDir: explicit ? headTree(ws) : ws.dir,
-    overrides: explicit ? readFiles(ws, targets) : {},
-    jobDir: path.join(ws.tdDir, 'build'),
+    repoDir,
+    overrides,
+    jobDir: path.join(ws.tdDir, `build-${tree}`),
+    incremental: true,
+    scan: scanAnnotations(repoDir, project, overrides, { cacheFile: path.join(ws.tdDir, `annotations-${tree}.json`) }),
     project,
     units: [...units],
     symbols: ws.symbols,
