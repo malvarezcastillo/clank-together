@@ -180,7 +180,8 @@ export class Merger {
     const batches = this.store.all(
       `SELECT b.id FROM batches b WHERE b.state = 'open' AND b.kind = 'code'
           AND EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN ('needs_cleanup', 'rejected', 'returned'))
-          AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN (${ph}))`,
+          AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.batch_id = b.id AND a.state IN (${ph}))
+          AND NOT EXISTS (SELECT 1 FROM batches child WHERE json_extract(child.result_json, '$.splitFrom') = b.id AND child.state IN ('open', 'merging'))`,
       ...LIVE_STATES,
     ).filter((b) => !this.active.has(b.id));
     this.store.tx(() => {

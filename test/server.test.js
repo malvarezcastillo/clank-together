@@ -2381,10 +2381,18 @@ test('the merger settles abandoned open batches without changing attempts, tasks
     ctx.merger.active.add(active);
     const maintenance = seed([], 'maintenance');
     const empty = seed([]);
+    const parentOf = (childState) => {
+      const parent = seed(['needs_cleanup']);
+      const child = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, kind, result_json, created_at) VALUES (?, ?, '{}', ?, 'code', ?, ?)`, user.id, ctx.repo.head(), childState, JSON.stringify({ splitFrom: parent }), now()).lastInsertRowid);
+      ids.push(child);
+      return parent;
+    };
+    const splitting = ['open', 'merging'].map(parentOf);
+    const splitDone = parentOf('superseded');
     const before = ctx.store.all('SELECT * FROM attempts WHERE batch_id = ?', abandoned);
     ctx.merger.settleInactive();
-    for (const id of [abandoned, rejected]) assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'returned');
-    for (const id of [...live, active, maintenance, empty]) assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'open');
+    for (const id of [abandoned, rejected, splitDone]) assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'returned');
+    for (const id of [...live, active, maintenance, empty, ...splitting]) assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'open');
     assert.deepEqual(ctx.store.all('SELECT * FROM attempts WHERE batch_id = ?', abandoned), before);
     assert.deepEqual(ctx.store.get('SELECT * FROM tasks WHERE id = ?', task.id), task);
     const eventCount = () => ctx.store.get(`SELECT COUNT(*) n FROM events WHERE type = 'batch_settled' AND json_extract(data, '$.batch') = ?`, abandoned)?.n;
