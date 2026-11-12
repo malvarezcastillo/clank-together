@@ -448,6 +448,9 @@ export class Verifier {
         // changed (a macro there expands everywhere); never for a rebuild of trusted main.
         lintUnits,
         cachedUnits, unitOrder: unitOrder ?? [...units],
+        // Verification, merge and baseline builds of the same inputs give the same compiler output:
+        // it is kept by content (compile-cache.js) and the compile is skipped. compileCacheMb: 0 turns it off.
+        compileCache: this.config.compileCacheMb === 0 ? null : { dir: path.join(this.config.dataDir, 'compile-cache'), capMb: this.config.compileCacheMb },
         analyze: (args) => analyzeInWorkers({ symbols, nameIndex, ...args, peFile: v.file }),
       });
       // Reconciliation mutates statuses; retries must start with compiler analysis, not a prior

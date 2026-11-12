@@ -77,6 +77,8 @@ export const DEFAULT_CONFIG = {
   gitCloneUrl: null,
   gitWebUrl: null,
   keepJobDirs: false,
+  // Size cap of <dataDir>/compile-cache (compiler outputs reused by later builds of the same inputs); 0 disables it.
+  compileCacheMb: 20000,
   trustProxy: false,
 };
 

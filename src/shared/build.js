@@ -10,7 +10,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { unitSettings } from './project.js';
-import { CompileCache } from './compile-cache.js';
+import { CompileCache, compilerId, treeListHash } from './compile-cache.js';
 import { acquireSlot } from './slots.js';
 
 export function outputBase(file) {
@@ -140,7 +140,9 @@ export function dockerDeadlineMs({ timeoutMs = 120_000, unitCount, jobs = 1, sca
  * @returns {Promise<Array<{file, ok, obj, cod, pre, log}>>}
  */
 // preprocess(file): whether to also write the /P output (needed only to lint submitted code).
-export async function compileUnits({ jobDir, units, project, runners, timeoutMs = 120_000, scaleTimeout = false, preprocess = () => true }) {
+// cache: for docker runners, {dir, capMb} of a compile-output cache (the server's); local runners
+// use the contributor's machine-wide cache unless the runner sets `cache: false`.
+export async function compileUnits({ jobDir, units, project, runners, timeoutMs = 120_000, scaleTimeout = false, preprocess = () => true, cache = null }) {
   const byToolchain = new Map();
   for (const file of units) {
     const { cflags, toolchain, env } = unitSettings(project, file);
@@ -151,7 +153,7 @@ export async function compileUnits({ jobDir, units, project, runners, timeoutMs 
   for (const [toolchain, list] of byToolchain) {
     const runner = runners?.[toolchain];
     if (!runner) throw new Error(`no runner configured for toolchain "${toolchain}"`);
-    if (runner.type === 'docker') results.push(...(await runDocker({ jobDir, list, project, runner, timeoutMs: dockerDeadlineMs({ timeoutMs, unitCount: list.length, jobs: runner.jobs, scaleTimeout }) })));
+    if (runner.type === 'docker') results.push(...(await runDocker({ jobDir, list, project, runner, cache, timeoutMs: dockerDeadlineMs({ timeoutMs, unitCount: list.length, jobs: runner.jobs, scaleTimeout }) })));
     else if (runner.type === 'native' || runner.type === 'wine') results.push(...(await runLocal({ jobDir, list, project, runner, timeoutMs })));
     else throw new Error(`unknown runner type "${runner.type}"`);
   }
@@ -186,68 +188,103 @@ export function projectIncludes(log, jobDir) {
   return [...out];
 }
 
-async function runDocker({ jobDir, list, project, runner, timeoutMs }) {
+/** The local ID of a Docker image (what `docker run` would start), or null when unknown. */
+async function imageId(docker, image) {
+  const r = await run(docker, ['image', 'inspect', '--format', '{{.Id}}', image], { timeoutMs: 60_000 });
+  const id = r.code === 0 ? r.output.trim() : '';
+  return /^sha256:[0-9a-f]{64}$/.test(id) ? id : null;
+}
+
+// Docker runner (the server). With `cache` (compileUnits), units whose inputs match an earlier
+// compile take its outputs and only the rest go into the container; when every unit hits, no
+// container starts. The container runs the image by ID, the same ID the cache key holds. Each
+// unit's /P pass runs alongside its compile; its output is kept only when the compile succeeds.
+async function runDocker({ jobDir, list, project, runner, timeoutMs, cache: cacheOptions = null }) {
   const toPath = (rel) => 'Z:\\job' + (rel ? '\\' + rel.replace(/\//g, '\\') : '');
   const roots = { src: 'Z:\\job', tc: runner.toolchainRoot ?? 'Z:\\opt\\toolchain' };
   const jobs = runner.jobs ?? 1;
+  const docker = runner.docker ?? 'docker';
+  const results = new Array(list.length);
+  const id = cacheOptions ? await imageId(docker, runner.image) : null;
+  const cache = id ? new CompileCache({ jobDir, dir: cacheOptions.dir, capMb: cacheOptions.capMb }) : null;
+  const context = cache ? { image: id, tree: treeListHash(jobDir, [...project.sourceDirs, ...project.includeDirs]) } : null;
+  const todo = [];
   // One script per unit, run `jobs` at a time inside the container.
-  for (const { file, cflags, env, pre } of list) {
+  list.forEach(({ file, cflags, env, pre }, i) => {
     const out = `out/${outputBase(file)}`;
     const prelude = unitPrelude(project, file, (rel) => fs.existsSync(path.join(jobDir, rel)));
-    const { compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots, prelude });
-    const log = `/job/${out}.log`;
-    const exports = Object.entries(fillEnv(env, roots)).map(([k, v]) => `export ${k}=${shQuote(v)}`);
-    const status = shQuote(`/job/${out}.status`);
-    const invoke = (args) => `td_cl ${args.map(shQuote).join(' ')} >> ${shQuote(log)} 2>&1 || { echo failed > ${status}; exit 1; }`;
+    const { key: keyArgs, compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots, prelude });
+    const filled = fillEnv(env, roots);
     clearOutputs(jobDir, file);
-    const unit = ['. /opt/td/env.sh', ...exports, `echo '== ${file}' > ${shQuote(log)}`, invoke(compile), ...(pre ? [invoke(preprocess)] : []), `echo complete > ${status}`];
+    const key = cache ? cache.manifestKey({ runner, args: keyArgs, root: roots.src, env: filled, file, prelude, context }) : null;
+    const hit = key && cache.restore(key, path.join(jobDir, out), { wantPre: pre, root: roots.src });
+    if (hit) {
+      results[i] = { ...collect(jobDir, file, hit.log, { completed: true, timedOut: false, wantPre: pre }), cached: true };
+      return;
+    }
+    todo.push({ i, file, pre, key });
+    const log = shQuote(`/job/${out}.log`);
+    const preLog = shQuote(`/job/${out}.pre.log`);
+    const exports = Object.entries(filled).map(([k, v]) => `export ${k}=${shQuote(v)}`);
+    const status = shQuote(`/job/${out}.status`);
+    const cl = (args) => `td_cl ${args.map(shQuote).join(' ')}`;
+    const unit = ['. /opt/td/env.sh', ...exports, `echo '== ${file}' > ${log}`,
+      ...(pre
+        ? [`${cl(preprocess)} > ${preLog} 2>&1 &`, 'p=$!', `${cl(compile)} >> ${log} 2>&1; c=$?`, 'wait $p; q=$?',
+          `[ $c -eq 0 ] || { echo failed > ${status}; exit 1; }`, `cat ${preLog} >> ${log}`, `[ $q -eq 0 ] || { echo failed > ${status}; exit 1; }`]
+        : [`${cl(compile)} >> ${log} 2>&1 || { echo failed > ${status}; exit 1; }`]),
+      `echo complete > ${status}`];
     fs.writeFileSync(path.join(jobDir, out + '.sh'), unit.join('\n') + '\n');
-  }
-  const scripts = list.map(({ file }) => shQuote(`/job/out/${outputBase(file)}.sh`));
-  const lines = ['#!/bin/sh', 'set -u', '. /opt/td/env.sh', `printf '%s\\0' ${scripts.join(' ')} | xargs -0 -P ${jobs} -n 1 sh`];
-  fs.writeFileSync(path.join(jobDir, 'build.sh'), lines.join('\n') + '\n');
-  // With userns-remap the container user maps to an unprivileged host UID, so it
-  // needs write access to the job dir. The jobs parent dir stays private (0700).
-  fs.chmodSync(jobDir, 0o777);
-  fs.chmodSync(path.join(jobDir, 'out'), 0o777);
-
-  // Containerized workers share jobs through a named volume, not daemon-host paths.
-  const jobSubpath = runner.jobVolume ? path.relative(runner.jobVolumeRoot, jobDir) : null;
-  if (jobSubpath !== null && (!jobSubpath || jobSubpath.startsWith('..') || path.isAbsolute(jobSubpath))) {
-    throw new Error('compiler job must be inside jobVolumeRoot');
-  }
-  const name = `td-${crypto.randomBytes(6).toString('hex')}`;
-  const args = [
-    'run', '--rm', '--name', name,
-    '--network', 'none',
-    '--read-only',
-    '--tmpfs', '/tmp:rw,exec,size=512m',
-    '--memory', runner.memory ?? '1g',
-    '--memory-swap', runner.memory ?? '1g',
-    '--cpus', String(runner.cpus ?? 1),
-    '--pids-limit', String(runner.pids ?? 256),
-    '--cap-drop', 'ALL',
-    '--security-opt', 'no-new-privileges',
-    '--user', runner.user ?? '1000:1000',
-    ...(runner.runtime ? ['--runtime', runner.runtime] : []),
-    ...(runner.jobVolume
-      ? ['--mount', `type=volume,source=${runner.jobVolume},target=/job,volume-subpath=${jobSubpath}`]
-      : ['-v', `${path.resolve(jobDir)}:/job:rw`]),
-    runner.image,
-    'sh', '/job/build.sh',
-  ];
-  const docker = runner.docker ?? 'docker';
-  const r = await run(docker, args, { timeoutMs, onTimeout: async () => {
-    const killed = await run(docker, ['kill', name]);
-    if (killed.code !== 0) throw new Error(`could not cancel compiler container ${name}: ${killed.output}`);
-  } });
-  return list.map(({ file, pre }) => {
-    const base = path.join(jobDir, 'out', outputBase(file));
-    const status = fs.existsSync(base + '.status') ? fs.readFileSync(base + '.status', 'utf8').trim() : '';
-    const timedOut = r.timedOut && status !== 'complete' && status !== 'failed';
-    const log = (fs.existsSync(base + '.log') ? fs.readFileSync(base + '.log', 'utf8') : '') + (timedOut ? '\n[build timed out]' : '');
-    return collect(jobDir, file, log, { completed: status === 'complete', timedOut, wantPre: pre });
   });
+  if (todo.length) {
+    const scripts = todo.map(({ file }) => shQuote(`/job/out/${outputBase(file)}.sh`));
+    const lines = ['#!/bin/sh', 'set -u', '. /opt/td/env.sh', `printf '%s\\0' ${scripts.join(' ')} | xargs -0 -P ${jobs} -n 1 sh`];
+    fs.writeFileSync(path.join(jobDir, 'build.sh'), lines.join('\n') + '\n');
+    // With userns-remap the container user maps to an unprivileged host UID, so it
+    // needs write access to the job dir. The jobs parent dir stays private (0700).
+    fs.chmodSync(jobDir, 0o777);
+    fs.chmodSync(path.join(jobDir, 'out'), 0o777);
+
+    // Containerized workers share jobs through a named volume, not daemon-host paths.
+    const jobSubpath = runner.jobVolume ? path.relative(runner.jobVolumeRoot, jobDir) : null;
+    if (jobSubpath !== null && (!jobSubpath || jobSubpath.startsWith('..') || path.isAbsolute(jobSubpath))) {
+      throw new Error('compiler job must be inside jobVolumeRoot');
+    }
+    const name = `td-${crypto.randomBytes(6).toString('hex')}`;
+    const args = [
+      'run', '--rm', '--name', name,
+      '--network', 'none',
+      '--read-only',
+      '--tmpfs', '/tmp:rw,exec,size=512m',
+      '--memory', runner.memory ?? '1g',
+      '--memory-swap', runner.memory ?? '1g',
+      '--cpus', String(runner.cpus ?? 1),
+      '--pids-limit', String(runner.pids ?? 256),
+      '--cap-drop', 'ALL',
+      '--security-opt', 'no-new-privileges',
+      '--user', runner.user ?? '1000:1000',
+      ...(runner.runtime ? ['--runtime', runner.runtime] : []),
+      ...(runner.jobVolume
+        ? ['--mount', `type=volume,source=${runner.jobVolume},target=/job,volume-subpath=${jobSubpath}`]
+        : ['-v', `${path.resolve(jobDir)}:/job:rw`]),
+      id ?? runner.image,
+      'sh', '/job/build.sh',
+    ];
+    const r = await run(docker, args, { timeoutMs, onTimeout: async () => {
+      const killed = await run(docker, ['kill', name]);
+      if (killed.code !== 0) throw new Error(`could not cancel compiler container ${name}: ${killed.output}`);
+    } });
+    for (const { i, file, pre, key } of todo) {
+      const base = path.join(jobDir, 'out', outputBase(file));
+      const status = fs.existsSync(base + '.status') ? fs.readFileSync(base + '.status', 'utf8').trim() : '';
+      const timedOut = r.timedOut && status !== 'complete' && status !== 'failed';
+      const log = (fs.existsSync(base + '.log') ? fs.readFileSync(base + '.log', 'utf8') : '') + (timedOut ? '\n[build timed out]' : '');
+      results[i] = collect(jobDir, file, log, { completed: status === 'complete', timedOut, wantPre: pre });
+      if (key && results[i].ok) cache.store(key, base, { includes: results[i].includes, log, hasPre: pre, root: roots.src });
+    }
+  }
+  cache?.prune();
+  return results;
 }
 
 // Local runners (contributors): each compiler process takes a machine-wide slot (slots.js), so
@@ -262,6 +299,7 @@ async function runLocal({ jobDir, list, project, runner, timeoutMs }) {
       : (rel) => path.join(absJob, rel);
   const roots = { src: toPath('').replace(/[\\/]$/, ''), tc: runner.toolchainRoot };
   const cache = new CompileCache({ jobDir: absJob, dir: runner.cache === false ? null : undefined });
+  const context = cache.enabled ? { compiler: compilerId(runner), tree: treeListHash(absJob, [...project.sourceDirs, ...project.includeDirs]) } : null;
   const slot = runner.slots === false ? async () => () => {} : () => acquireSlot();
   const results = new Array(list.length);
   let next = 0;
@@ -277,7 +315,7 @@ async function runLocal({ jobDir, list, project, runner, timeoutMs }) {
       const { key: keyArgs, compile, preprocess } = clArgs({ cflags, includeDirs: project.includeDirs, src: file, out, toPath, roots, prelude });
       const [cmd, pre] = runner.type === 'wine' ? [runner.wine ?? 'wine', [runner.clPath]] : [runner.clPath, []];
       clearOutputs(jobDir, file);
-      const key = cache.enabled ? cache.manifestKey({ runner, args: keyArgs, root: roots.src, env: filled, file, prelude }) : null;
+      const key = cache.enabled ? cache.manifestKey({ runner, args: keyArgs, root: roots.src, env: filled, file, prelude, context }) : null;
       const hit = key && cache.restore(key, base, { wantPre, root: roots.src });
       if (hit) {
         results[i] = { ...collect(jobDir, file, hit.log, { completed: true, timedOut: false, wantPre }), cached: true };

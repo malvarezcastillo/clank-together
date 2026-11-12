@@ -28,11 +28,12 @@ import { scanAnnotations, unitSettings } from './project.js';
 // threads, so a check of many units doesn't block it).
 // incremental: update a job directory left by an earlier check instead of copying the tree anew
 // (prepareJobDir); for a job directory only ever filled from the same repoDir.
-export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, cachedUnits = [], unitOrder = null, incremental = false, scan = scanAnnotations(repoDir, project, overrides) }) {
+// compileCache: {dir, capMb} of a compile-output cache for docker runners (compileUnits).
+export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, cachedUnits = [], unitOrder = null, incremental = false, compileCache = null, scan = scanAnnotations(repoDir, project, overrides) }) {
   const annotationErrors = [...scan.errors, ...lintAnnotations(scan.annotations, symbols)];
 
   prepareJobDir({ repoDir, jobDir, project, overrides, incremental });
-  const compiled = await compileUnits({ jobDir, units, project, runners, timeoutMs, scaleTimeout, preprocess: (f) => !lintUnits || lintUnits.has(f) });
+  const compiled = await compileUnits({ jobDir, units, project, runners, timeoutMs, scaleTimeout, cache: compileCache, preprocess: (f) => !lintUnits || lintUnits.has(f) });
 
   const roots = { sourceDirs: project.sourceDirs, includeDirs: project.includeDirs };
   const evidence = new Map(cachedUnits.map((u) => [u.file, u.globalBindings ?? []]));

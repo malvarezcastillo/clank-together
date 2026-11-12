@@ -1,28 +1,30 @@
-// Machine-wide cache of local compiler outputs (.obj, .cod, .i and the compiler log), shared by
-// every workspace and worktree of the same user: a unit another agent already compiled from the
-// same text with the same compiler and flags is not compiled again.
+// Cache of compiler outputs (.obj, .cod, .i and the compiler log): a unit compiled from the same
+// inputs is not compiled again. Contributors share one per machine (every workspace and worktree);
+// the server keeps one in its data directory for verification, merge and baseline builds.
 //
-// Lookup works like ccache's direct mode. The manifest key covers the compiler, the flags (with
-// the job directory replaced by a placeholder, so worktrees share entries), the unit's
-// environment and the text of the unit and its prelude. Each manifest lists the outputs it has
-// seen with the content hash of every project header the unit included then (from
-// /showIncludes); an entry is a hit when all of those headers still hash the same. Compiler and
-// SDK headers are covered by the compiler key: a toolchain directory never changes in place.
+// Lookup works like ccache's direct mode. The manifest key covers the compiler identity (a local
+// executable's stat, or the container image ID), the flags (with the job directory replaced by a
+// placeholder), the unit's environment, the text of the unit and its prelude, and the list of
+// every file path in the tree (so a header that appears earlier on the include path, or that a
+// `__has_include` probe now finds, is a miss). Each manifest lists the outputs it has seen with the
+// content hash of every project header the unit included then (from /showIncludes); an entry is a
+// hit when all of those headers still hash the same. Compiler and SDK headers are covered by the
+// compiler identity: a toolchain never changes in place.
 //
 // Outputs keep the paths of the job directory that produced them: the .obj debug info, the
 // listing and the /P output name sources by absolute path. The analysis matches those by suffix
 // (repo-relative path), so they compare the same from any job directory; the log is rewritten,
 // because projectIncludes reads it by the current job directory's prefix.
 //
-// TD_COMPILE_CACHE=off disables it; TD_COMPILE_CACHE=<dir> moves it. TD_COMPILE_CACHE_MB caps its
-// size (default 20000); the least recently used outputs go first.
+// Contributors: TD_COMPILE_CACHE=off disables it; TD_COMPILE_CACHE=<dir> moves it.
+// TD_COMPILE_CACHE_MB caps its size (default 20000); the least recently used outputs go first.
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const VERSION = 1;
+const VERSION = 2;
 const MAX_ENTRIES_PER_MANIFEST = 8;
 const PRUNE_EVERY_MS = 60 * 60_000;
 
@@ -49,7 +51,7 @@ function writeAtomic(file, data) {
 
 /** Identity of a compiler executable: path, size and mtime (toolchain dirs are content-named). */
 const compilerIds = new Map();
-function compilerId(runner) {
+export function compilerId(runner) {
   const k = `${runner.type}\0${runner.clPath}\0${runner.wine ?? ''}`;
   if (!compilerIds.has(k)) {
     let st = null;
@@ -62,14 +64,40 @@ function compilerId(runner) {
 }
 
 /**
+ * Hash of the sorted paths of every file under `dirs` of `jobDir`. Part of the key: a header added
+ * where an include resolves before the one a unit used (or a `__has_include` probe that now finds
+ * a file) changes the compile without changing any file the unit read.
+ */
+export function treeListHash(jobDir, dirs) {
+  const out = [];
+  const walk = (abs, rel) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const r = `${rel}/${e.name}`;
+      if (e.isDirectory()) walk(path.join(abs, e.name), r);
+      else out.push(r);
+    }
+  };
+  for (const d of [...new Set(dirs)].sort()) walk(path.join(jobDir, d), d);
+  return sha(out.sort().join('\n'));
+}
+
+/**
  * One cache for one compileUnits call. File hashes are memoized for the call: a header shared by
- * hundreds of units is read once.
+ * hundreds of units is read once. `capMb`: size cap for pruning (default TD_COMPILE_CACHE_MB or
+ * 20000).
  */
 export class CompileCache {
-  constructor({ dir = cacheDir(), jobDir }) {
+  constructor({ dir = cacheDir(), jobDir, capMb = null }) {
     this.dir = dir;
     this.jobDir = path.resolve(jobDir);
     this.hashes = new Map();
+    this.capMb = capMb;
   }
 
   get enabled() {
@@ -95,12 +123,15 @@ export class CompileCache {
    * @param {object} p.env          the unit's own environment (filled)
    * @param {string} p.file         the unit, job-relative
    * @param {string|null} p.prelude its forced-include prelude, job-relative
+   * @param {object} p.context      everything else that decides the compile: the compiler identity
+   *                                (a local executable's stat, a container image ID) and the tree's
+   *                                file list (treeListHash)
    */
-  manifestKey({ runner, args, root, env, file, prelude }) {
+  manifestKey({ runner, args, root, env, file, prelude, context }) {
     const norm = (s) => s.split(root).join('${JOB}');
     return sha(JSON.stringify([
       VERSION,
-      compilerId(runner),
+      context,
       runner.env ?? {},
       env,
       args.map(norm),
@@ -188,7 +219,7 @@ export class CompileCache {
     } catch {}
     try {
       writeAtomic(stamp, String(Date.now()));
-      const capMb = Number.parseInt(process.env.TD_COMPILE_CACHE_MB ?? '', 10);
+      const capMb = this.capMb ?? Number.parseInt(process.env.TD_COMPILE_CACHE_MB ?? '', 10);
       const cap = (capMb > 0 ? capMb : 20_000) * 1048576;
       const root = path.join(this.dir, 'objects');
       const all = [];
