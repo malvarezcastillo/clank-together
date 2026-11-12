@@ -1447,6 +1447,13 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   assert.deepEqual(changed.map((o) => o.id), [a], 'a code change in another unit');
   assert.match(changed[0].why, /list it in taskIds/);
   assert.deepEqual(inCaller({ effectiveHash: 'eff-a-changed', status: STATUS.EXACT }), [], 'an improvement to byte-identical is proven');
+  // Same bytes as main, but this check left a reference unresolved (a template instantiation no
+  // unit of it binds): its effective hash differs only by resolution, which is no code change.
+  ctx.store.run('UPDATE func_status SET code_hash = ? WHERE symbol_id = ?', 'bytes-a', a);
+  const unresolvedParts = { bytesHash: 'h', effective: ['0:rel:?tmpl+0'], unresolvedRefs: [{ index: 0, name: '?tmpl', addend: 0, prefix: '0:rel:' }], is64: false };
+  assert.deepEqual(inCaller({ codeHash: 'bytes-a', effectiveHash: 'eff-a-unresolved', effectiveParts: unresolvedParts, status: STATUS.MISMATCH }), [], 'same bytes with an unresolved reference: not a change');
+  assert.deepEqual(inCaller({ codeHash: 'bytes-a-changed', effectiveHash: 'eff-a-unresolved', effectiveParts: unresolvedParts, status: STATUS.MISMATCH }).map((o) => o.id), [a], 'different bytes still count');
+  assert.deepEqual(inCaller({ codeHash: 'bytes-a', effectiveHash: 'eff-a-changed', status: STATUS.MISMATCH }).map((o) => o.id), [a], 'same bytes, every reference resolved, different target: a change');
   const viaHeader = (files) => ctx.verifier.changedOutside({ units: [{ bindings: {}, functions: [{ id: a, file: 'src/caller.cpp', codeHash: 'other-bytes', effectiveHash: 'eff-a-changed', status: STATUS.MISMATCH }] }] }, files, new Set([b]), authorId, new Set(['src/batch.cpp', 'src/caller.cpp']));
   assert.deepEqual(viaHeader({ 'src/batch.cpp': '' }), [], 'without a header change, units outside the submission are not judged');
   const unreviewed = viaHeader({ 'src/batch.cpp': '', 'src/batch.h': '' });

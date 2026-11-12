@@ -12,7 +12,7 @@ import { offsetErrors } from '../shared/offsets.js';
 import { unannotatedErrors } from '../shared/unannotated.js';
 import { checkUnits } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
-import { STATUS, sameOriginal, resolvedEffectiveHash } from '../shared/compare.js';
+import { STATUS, sameOriginal, resolvedEffectiveHash, resolvedEffectiveParts } from '../shared/compare.js';
 import { listSources, isUnit, unitSettings, loadProject, loadToolchainLock, scanAnnotations } from '../shared/project.js';
 import { changedNames, unitsMentioning, virtualNames } from './affected.js';
 import { undefinedDeclarations } from './undefined.js';
@@ -94,6 +94,18 @@ export function isVirtualizedStub(pe, addr, size) {
     if (dest - pe.imageBase - s.rva >= s.rawSize) return true;
   }
   return false;
+}
+
+/**
+ * Same compiled bytes as main (codeHash) while this check left some of the function's references
+ * unresolved: names no unit of this check binds (template instantiations, CRT helpers) resolve
+ * differently depending on which units a check compiles, so the effective hash differs without
+ * any code change. Only the bytes are evidence then.
+ */
+function sameBytesUnresolved(main, f, addressOf) {
+  if (!main.code_hash || main.code_hash !== f.codeHash) return false;
+  const parts = resolvedEffectiveParts(f, addressOf);
+  return !!parts && parts.unresolved.size > 0;
 }
 
 export function clearBuildRetry(store, batchId) {
@@ -799,7 +811,7 @@ export class Verifier {
     for (const [id, f] of seen) {
       const main = this.store.get('SELECT code_hash, effective_hash FROM func_status WHERE symbol_id = ?', id);
       if (!main) out.push({ id, file: f.file, why: 'new or newly annotated' });
-      else if (main.effective_hash ? main.effective_hash !== resolvedEffectiveHash(f, addressOf) : main.code_hash && main.code_hash !== f.codeHash) out.push({ id, file: f.file, why: 'compiled code changed' });
+      else if (main.effective_hash ? main.effective_hash !== resolvedEffectiveHash(f, addressOf) && !sameBytesUnresolved(main, f, addressOf) : main.code_hash && main.code_hash !== f.codeHash) out.push({ id, file: f.file, why: 'compiled code changed' });
     }
     if (userId == null) return out;
     const foreign = (o) => !fileSet.has(o.file) || (ownUnits && !ownUnits.has(o.file));
