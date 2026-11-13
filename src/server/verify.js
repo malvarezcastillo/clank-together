@@ -805,13 +805,23 @@ export class Verifier {
     const fileSet = new Set(Object.keys(files));
     const headerChanged = Object.keys(files).some((f) => !isUnit(f));
     const addressOf = boundAddresses(check, this.store.symbolMap(this.store.currentVersion().id));
+    // An inline function is compiled once per unit that uses it; its copies may differ (labels,
+    // unresolved references). Main records one of them, so it is unchanged when any copy still matches.
+    const copies = new Map();
+    for (const u of check.units) for (const f of u.functions) {
+      if (!(fileSet.has(f.file) || headerChanged) || targets.has(f.id) || !f.codeHash) continue;
+      if (!copies.has(f.id)) copies.set(f.id, []);
+      copies.get(f.id).push(f);
+    }
     const seen = new Map();
-    for (const u of check.units) for (const f of u.functions) if ((fileSet.has(f.file) || headerChanged) && !targets.has(f.id) && f.codeHash) seen.set(f.id, f);
     const out = [];
-    for (const [id, f] of seen) {
+    for (const [id, fs] of copies) {
       const main = this.store.get('SELECT code_hash, effective_hash FROM func_status WHERE symbol_id = ?', id);
+      const same = (f) => (main.effective_hash ? main.effective_hash === resolvedEffectiveHash(f, addressOf) || sameBytesUnresolved(main, f, addressOf) : !main.code_hash || main.code_hash === f.codeHash);
+      const f = fs[fs.length - 1];
+      seen.set(id, f);
       if (!main) out.push({ id, file: f.file, why: 'new or newly annotated' });
-      else if (main.effective_hash ? main.effective_hash !== resolvedEffectiveHash(f, addressOf) && !sameBytesUnresolved(main, f, addressOf) : main.code_hash && main.code_hash !== f.codeHash) out.push({ id, file: f.file, why: 'compiled code changed' });
+      else if (!fs.some(same)) out.push({ id, file: f.file, why: 'compiled code changed' });
     }
     if (userId == null) return out;
     const foreign = (o) => !fileSet.has(o.file) || (ownUnits && !ownUnits.has(o.file));

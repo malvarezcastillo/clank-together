@@ -151,7 +151,8 @@ agents, then approved by a human with one click per batch.
 
 ### Local compile speed
 
-A local `td check` keeps one job directory per source tree (`.td/build-head`, `.td/build-work`) and
+A local `td check` keeps one job directory per source tree (`.td/build-head` for named files,
+`.td/build-work` for the working tree; listings in `out/*.cod` stay until that unit recompiles),
 updates it by size and mtime instead of copying the tree, runs the `/P` lint pass alongside the
 compile, and caches the annotation scan. Compiler outputs go through a machine-wide cache
 (`~/.clank/cache/compile`), keyed on the compiler, flags, unit text and the content of every project
@@ -159,6 +160,9 @@ header it included, so other worktrees and agents reuse a unit compiled from the
 (`TD_COMPILE_CACHE=off` disables it, `=<dir>` moves it, `TD_COMPILE_CACHE_MB` caps it, default
 20000). Every compiler process takes one of `TD_COMPILE_SLOTS` machine-wide slots (default: one per
 CPU, in `~/.clank/slots`), so several agents compiling at once share the cores.
+
+Each function line of `td check` ends with its effective hash (bytes plus where each reference
+lands), so comparing two check logs shows which functions changed code at an equal score.
 
 ### Improving merged functions
 

@@ -142,6 +142,7 @@ export function summarizeCheck(result, rec, files = null) {
         status: f.status,
         score: f.score,
         size: f.size,
+        ...(f.effectiveHash && { effectiveHash: f.effectiveHash }),
         diffRegions: f.diffRegions?.slice(0, 12),
         relocations: f.relocations,
         ...(f.deletingDestructor && { deletingDestructor: true }),
