@@ -1308,9 +1308,23 @@ async function loadAdmin() {
   $('pause-submissions').checked = pause.paused;
   $('pause-submissions').disabled = false;
   $('auto-approve').disabled = false;
+  $('grant-users').replaceChildren(...users.users.filter((u) => u.status === 'active').map((u) => Object.assign(document.createElement('option'), { value: u.name })));
   renderAdmin();
   renderAuthors(authors.authors);
 }
+
+$('grant-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const { name, amount } = formData(e.target);
+  $('grant-msg').textContent = '';
+  try {
+    const r = await post(`/api/admin/users/${encodeURIComponent(name.trim())}/credits`, { amount: Number(amount) });
+    e.target.reset();
+    $('grant-msg').textContent = `${r.granted > 0 ? 'Granted' : 'Took'} ${fmt(Math.abs(r.granted))} credits ${r.granted > 0 ? 'to' : 'from'} ${r.name}; balance now ${fmt(r.balance)}.`;
+  } catch (err) {
+    $('grant-msg').textContent = err.message;
+  }
+});
 
 function renderAuthors(authors) {
   const pct = (a) => `${Math.round(a * 100)}%`;

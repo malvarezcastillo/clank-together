@@ -468,6 +468,17 @@
         <div id="admin-secret" class="secret" hidden></div>
       </section>
       <section class="plate">
+        <h2>Grant credits</h2>
+        <p class="muted">Adds arcade credits to an account's balance; a negative amount takes them away.</p>
+        <form id="grant-form" class="inline">
+          <input name="name" placeholder="Account name" list="grant-users" autocomplete="off" required>
+          <datalist id="grant-users"></datalist>
+          <input name="amount" type="number" step="1" placeholder="Credits" required>
+          <button type="submit" class="primary">Grant</button>
+        </form>
+        <p class="msg" id="grant-msg" role="status"></p>
+      </section>
+      <section class="plate">
         <h2>Authors</h2>
         <p class="muted">The last 24 hours of each author's submissions. Authors whose functions peers keep sending back, or whose submissions keep breaking (compile errors, regressions, refusals), are limited (one batch waiting, six submissions an hour, one region) or paused automatically; it lifts by itself as their work gets better. Trusted accounts are never limited; paused ones cannot submit until you set them back to auto.</p>
         <div id="authors"></div>

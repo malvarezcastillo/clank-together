@@ -57,6 +57,13 @@ export class Credits {
     return Number(this.store.run('INSERT OR IGNORE INTO credit_ledger (user_id, amount, reason, ref, created_at) VALUES (?, ?, ?, ?, ?)', userId, amount, reason, ref, now()).changes);
   }
 
+  /** An admin's manual grant (negative takes credits away). Each grant is its own ledger entry. */
+  grant(userId, amount) {
+    if (!Number.isSafeInteger(amount) || amount === 0) throw new HttpError(400, 'amount must be a whole number other than 0');
+    this.book(userId, amount, 'grant', `grant:${crypto.randomUUID()}`);
+    return { balance: this.balance(userId), granted: amount };
+  }
+
   /**
    * Books every earning that is not booked yet. Returns how many entries were added.
    * The scans read a snapshot outside the write transaction: they take about a second on a large

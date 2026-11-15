@@ -377,10 +377,19 @@ test('revoking an account kills its tokens, sessions and leases', async () => {
   await login('frank');
 });
 
-test('the last admin cannot be revoked or demoted', async () => {
+test('the last admin cannot be revoked or demoted; only admins grant credits, which add up and can be negative', async () => {
   const admin = await login('root');
   assert.equal((await request('POST', '/api/admin/users/root/revoke', {}, { cookie: admin })).status, 409);
   assert.equal((await request('POST', '/api/admin/users/root/role', { role: 'contributor' }, { cookie: admin })).status, 409);
+
+  const gina = await activeUser('gina');
+  assert.equal((await call('POST', '/api/admin/users/gina/credits', { amount: 50 }, gina)).status, 403);
+  const before = ctx.credits.balance(ctx.accounts.byName('gina').id);
+  assert.equal((await request('POST', '/api/admin/users/gina/credits', { amount: 50 }, { cookie: admin })).body.balance, before + 50);
+  assert.equal((await request('POST', '/api/admin/users/gina/credits', { amount: 50 }, { cookie: admin })).body.balance, before + 100);
+  assert.equal((await request('POST', '/api/admin/users/gina/credits', { amount: -30 }, { cookie: admin })).body.balance, before + 70);
+  assert.equal((await request('POST', '/api/admin/users/gina/credits', { amount: 1.5 }, { cookie: admin })).status, 400);
+  assert.equal((await request('POST', '/api/admin/users/nobody/credits', { amount: 5 }, { cookie: admin })).status, 404);
 });
 
 test('an admin accepts a batch sent back only for lower scores; it merges past the regression check', async () => {

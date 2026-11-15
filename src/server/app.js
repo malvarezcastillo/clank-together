@@ -1450,6 +1450,15 @@ export function createApp(ctx) {
       const body = await readJson(req, 4096);
       return accountCall(() => accounts.setRole(params.name, String(body.role ?? ''), admin.id));
     }
+    if (params.action === 'credits') {
+      const body = await readJson(req, 1024);
+      return accountCall(() => {
+        const target = accounts.requireUser(params.name);
+        const result = ctx.credits.grant(target.id, Number(body.amount));
+        store.event('credits_granted', admin.id, { name: target.name, amount: result.granted });
+        return { name: target.name, ...result };
+      });
+    }
     const fn = ADMIN_ACTIONS[params.action];
     if (!fn) throw new HttpError(404, 'unknown action');
     return accountCall(() => fn(params.name, admin));
