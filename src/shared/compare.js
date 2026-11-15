@@ -325,7 +325,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     }
 
     if (ok && target && target.addr != null) {
-      if (target.addr !== actual) {
+      if (target.addr !== actual && !sameTarget(pe, target, actual)) {
         ok = false;
         reason = `references ${id} (0x${hex(target.addr)}) but original references 0x${hex(actual)}`;
       }
@@ -462,6 +462,64 @@ export function sameOriginal(pe, addrA, addrB, size) {
     let field = -1;
     for (let p = Math.max(0, i - 3); p <= i && field < 0; p++) {
       if (p + 4 <= size && a.readInt32LE(p) - b.readInt32LE(p) === addrB - addrA) field = p;
+    }
+    if (field < 0) return false;
+    i = field + 3;
+  }
+  return true;
+}
+
+const EH_PROLOG = Buffer.from([0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68]);
+
+/**
+ * Whether the original's reference to `actual` reaches the same code as `target`: the linker kept
+ * an incremental-link thunk (`jmp target`) or a second copy of the function that ICF did not fold
+ * only because each copy has its own exception-handling tables. Such a copy is the same size and
+ * bytes, except relative references to the same targets and the handler pushed by the x86 EH
+ * prologue (`push ebp; mov ebp,esp; push -1; push handler`), whose stubs differ only in the FuncInfo
+ * they load.
+ */
+export function sameTarget(pe, target, actual) {
+  try {
+    if (pe.is64) return false;
+    const head = pe.read(actual, 5);
+    if (head[0] === 0xe9 && actual + 5 + head.readInt32LE(1) === target.addr) return true;
+    const size = target.size;
+    if (!size || size < EH_PROLOG.length + 4 || !pe.isCode(actual)) return false;
+    const a = pe.read(target.addr, size);
+    const b = pe.read(actual, size);
+    if (!a.subarray(0, EH_PROLOG.length).equals(EH_PROLOG) || !b.subarray(0, EH_PROLOG.length).equals(EH_PROLOG)) return false;
+    const at = EH_PROLOG.length;
+    const relocs = pe.baseRelocations();
+    if (relocs.size && !(relocs.has(target.addr + at) && relocs.has(actual + at))) return false;
+    if (!sameHandlerStub(pe, a.readUInt32LE(at), b.readUInt32LE(at))) return false;
+    a.writeUInt32LE(b.readUInt32LE(at), at);
+    return sameBytes(a, b, actual - target.addr);
+  } catch {
+    return false;
+  }
+}
+
+/** MSVC x86 EH handler stubs (`... mov eax, FuncInfo; jmp __CxxFrameHandler3`) equal but for the FuncInfo. */
+function sameHandlerStub(pe, x, y) {
+  if (x === y) return true;
+  const N = 0x20;
+  const a = pe.read(x, N);
+  const b = pe.read(y, N);
+  let mov = -1;
+  for (let i = 0; i + 10 <= N && mov < 0; i++) if (a[i] === 0xb8 && a[i + 5] === 0xe9 && b[i] === 0xb8 && b[i + 5] === 0xe9) mov = i;
+  if (mov < 0) return false;
+  a.writeUInt32LE(b.readUInt32LE(mov + 1), mov + 1);
+  return sameBytes(a.subarray(0, mov + 10), b.subarray(0, mov + 10), y - x);
+}
+
+/** Equal bytes, where a 4-byte field may differ only as a relative reference to the same target. */
+function sameBytes(a, b, delta) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    let field = -1;
+    for (let p = Math.max(0, i - 3); p <= i && field < 0; p++) {
+      if (p + 4 <= a.length && ((a.readInt32LE(p) - b.readInt32LE(p)) | 0) === delta) field = p;
     }
     if (field < 0) return false;
     i = field + 3;

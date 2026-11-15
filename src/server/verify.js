@@ -473,7 +473,7 @@ export class Verifier {
       // Reconciliation mutates statuses; retries must start with compiler analysis, not a prior
       // batch-wide upgrade whose supporting unit may have changed.
       for (const u of check.units) for (const f of u.functions) f.comparisonStatus = f.status;
-      const rec = reconcile(check, symbols);
+      const rec = reconcile(check, symbols, this.getPe?.() ?? null);
       return { check, rec, symbols, changedHeaders, units: [...units], cacheSnapshot };
     } finally {
       if (!this.config.keepJobDirs) fs.rmSync(jobDir, { recursive: true, force: true });
@@ -680,11 +680,11 @@ export class Verifier {
       const order = part.check.analysisOrder ?? [...required];
       const check = { annotationErrors: part.check.annotationErrors, analysisNames: part.check.analysisNames, units: order.filter((file) => byFile.has(file)).map((file) => byFile.get(file)) };
       for (const u of check.units) for (const f of u.functions) if (f.comparisonStatus) { f.status = f.comparisonStatus; delete f.conflictedReferences; }
-      result = { ...part, check, rec: reconcile(check, this.store.symbolMap(this.store.currentVersion().id)), reused: reused.length, compiled };
+      result = { ...part, check, rec: reconcile(check, this.store.symbolMap(this.store.currentVersion().id), this.getPe?.() ?? null), reused: reused.length, compiled };
     } else {
       const check = { ...saved.check, annotationErrors: snapshot.annotationErrors };
       for (const u of check.units) for (const f of u.functions) if (f.comparisonStatus) { f.status = f.comparisonStatus; delete f.conflictedReferences; }
-      result = { check, rec: reconcile(check, this.store.symbolMap(this.store.currentVersion().id)),
+      result = { check, rec: reconcile(check, this.store.symbolMap(this.store.currentVersion().id), this.getPe?.() ?? null),
         changedHeaders: Object.keys(files).filter((f) => !isUnit(f)), cacheSnapshot: snapshot, reused: saved.check.units.length, compiled: 0 };
     }
     this.rememberCheck(batch.id, result);

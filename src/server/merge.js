@@ -450,7 +450,7 @@ export class Merger {
     // Unnamed symbols can be registered while compiling without changing compiler analysis.
     // Reconcile their current addresses before any regression/evaluation/commit decision.
     for (const u of check.units) for (const f of u.functions) if (f.comparisonStatus) { f.status = f.comparisonStatus; delete f.conflictedReferences; }
-    const rec = reconcile(check, this.store.symbolMap(this.store.currentVersion().id));
+    const rec = reconcile(check, this.store.symbolMap(this.store.currentVersion().id), this.getPe?.() ?? null);
     const targets = new Set(attempts.map((a) => a.symbol_id));
     // The batch a split part came from holds the other functions of these files (still in review,
     // their source put back as on main); shared changes in the file may change their compiled code.

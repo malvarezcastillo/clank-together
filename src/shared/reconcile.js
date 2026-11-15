@@ -4,15 +4,17 @@
 // database knows is fn_00042. If nothing contradicts it, that reference is
 // correct and `?Foo@@YAXXZ` is learned as fn_00042's decorated name on merge.
 
-import { STATUS } from './compare.js';
+import { STATUS, sameTarget } from './compare.js';
 import { hex } from './annotations.js';
 
 /**
  * @param {object} check                     result of checkUnits
  * @param {Map<string,object>} symbols       ID -> symbol (with addr for the current version)
+ * @param {import('./pe.js').PEImage} [pe]   the original: a reference through a thunk or to an
+ *                                           EH-only copy of a named function is not a conflict
  * @returns {{learned: Array<{decorated, id, addr}>, unknown: Array<{decorated, addr}>, conflicts: string[]}}
  */
-export function reconcile(check, symbols) {
+export function reconcile(check, symbols, pe = null) {
   const byAddr = new Map();
   const byDecorated = new Map();
   for (const s of symbols.values()) {
@@ -42,6 +44,9 @@ export function reconcile(check, symbols) {
       // original's target is its address here (unless another symbol already holds it).
       ok.add(decorated);
       if (!atAddr) learnedAddresses.push({ id: named.id, decorated, addr });
+    } else if (named && named.addr !== addr && pe && sameTarget(pe, named, addr)) {
+      // The original reaches the named function through a thunk or an EH-only copy of it.
+      ok.add(decorated);
     } else if (named && named.addr !== addr) {
       // Definitive: the name is known to live elsewhere, so the reference is wrong.
       conflicts.push({ symbol: decorated, hard: true, message: `${decorated} is ${named.id} at 0x${hex(named.addr)}, but the original references 0x${hex(addr)}` });

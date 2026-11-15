@@ -263,7 +263,7 @@ export async function check(ws, files, { wait = true, includers = false } = {}) 
     pe: ws.pe,
     runners: ws.config.runners,
   });
-  const rec = reconcile(result, ws.symbols);
+  const rec = reconcile(result, ws.symbols, ws.pe);
   return summarizeCheck(result, rec, new Set(targets));
 }
 

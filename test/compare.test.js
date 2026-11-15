@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture, buildCoff, buildDebugS, FN_ADDR, CALLEE_ADDR, GLOBAL_ADDR } from './helpers.js';
+import { fixture, buildCoff, buildDebugS, buildPe, FN_ADDR, CALLEE_ADDR, GLOBAL_ADDR } from './helpers.js';
 import { PEImage } from '../src/shared/pe.js';
 import { CoffObject } from '../src/shared/coff.js';
 import { parseListing } from '../src/shared/listing.js';
 import { parseAnnotations } from '../src/shared/annotations.js';
-import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash } from '../src/shared/compare.js';
+import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash, sameTarget } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 
 const FILE = 'src/player.cpp';
@@ -161,6 +161,53 @@ test('reconcile flags a decorated name that is already bound elsewhere', () => {
   const rec = reconcile({ units: [result], annotationErrors: [] }, syms);
   assert.equal(rec.conflicts.length, 1);
   assert.equal(result.functions[0].status, STATUS.MISMATCH);
+});
+
+// A function with the x86 EH prologue and its handler stub, as MSVC emits them.
+function ehImage({ copyDiffers = false } = {}) {
+  const text = Buffer.alloc(0x400, 0xcc);
+  const FN = 0x401000, COPY = 0x401080, THUNK = 0x401100, STUB_A = 0x401200, STUB_B = 0x401220, HANDLER = 0x401300, CALLEE = 0x401340;
+  const put = (va, bytes) => Buffer.from(bytes).copy(text, va - 0x401000);
+  const rel = (va, at, target) => text.writeInt32LE(target - (va + at + 4), va - 0x401000 + at);
+  const body = (va, stub) => {
+    put(va, [0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0x5d, 0xc3]);
+    text.writeUInt32LE(stub, va - 0x401000 + 6);
+    rel(va, 11, CALLEE);
+  };
+  body(FN, STUB_A);
+  body(COPY, STUB_B);
+  if (copyDiffers) put(COPY + 15, [0x90]);
+  put(THUNK, [0xe9, 0, 0, 0, 0]);
+  rel(THUNK, 1, FN);
+  for (const [stub, info] of [[STUB_A, 0x405000], [STUB_B, 0x405040]]) {
+    put(stub, [0xb8, 0, 0, 0, 0, 0xe9, 0, 0, 0, 0]);
+    text.writeUInt32LE(info, stub - 0x401000 + 1);
+    rel(stub, 6, HANDLER);
+  }
+  put(CALLEE, [0xc3]);
+  const pe = new PEImage(buildPe({
+    sections: [{ name: '.text', rva: 0x1000, data: text }, { name: '.data', rva: 0x5000, data: Buffer.alloc(0x100), characteristics: 0xc0000040 }],
+    baseRelocs: [FN + 6, COPY + 6, STUB_A + 1, STUB_B + 1],
+  }));
+  return { pe, target: { addr: FN, size: 17 }, COPY, THUNK, CALLEE };
+}
+
+test('a thunk or an EH-only copy of a named function reaches the same code', () => {
+  const { pe, target, COPY, THUNK, CALLEE } = ehImage();
+  assert.ok(sameTarget(pe, target, THUNK), 'jmp thunk to the function');
+  assert.ok(sameTarget(pe, target, COPY), 'copy differing only in its EH FuncInfo');
+  assert.ok(!sameTarget(pe, target, CALLEE), 'another function');
+  assert.ok(!sameTarget(pe, target, COPY + 1), 'not a function start');
+  const changed = ehImage({ copyDiffers: true });
+  assert.ok(!sameTarget(changed.pe, changed.target, changed.COPY), 'a copy with other code');
+});
+
+test('reconcile accepts a known name the original reaches through an equivalent copy', () => {
+  const { pe, target, COPY } = ehImage();
+  const syms = new Map([['fn_00009', { id: 'fn_00009', kind: 'function', ...target, decorated: '?Tidy@@YAXXZ' }]]);
+  const check = { units: [{ bindings: {}, inferred: [{ symbol: '?Tidy@@YAXXZ', addr: COPY }], functions: [] }], annotationErrors: [] };
+  assert.equal(reconcile(check, syms, pe).conflicts.length, 0);
+  assert.equal(reconcile(check, syms).conflicts.length, 1, 'without the image it stays a conflict');
 });
 
 test('byte differences are reported with the instruction at that offset', () => {
