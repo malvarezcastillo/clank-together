@@ -9,13 +9,27 @@ import crypto from 'node:crypto';
 import { HttpError } from './http.js';
 import { now } from './db.js';
 
+// Base awards for a function of up to 64 bytes. Merges, submissions and reviews scale with the
+// function's size (see `sizeFactor`); merges also pay more for functions others were sent back on.
 export const AWARDS = {
   identical: 10, // a function merged byte-identical
-  confirmed: 6, // a function merged after five peers confirmed its logic
+  confirmed: 8, // a function merged after peers confirmed its logic
   skip: 3, // an accepted "no decompile" claim
   submitted: 1, // a submitted function that compiled and went on (peer review or approved)
   review: 2, // a peer verdict that agreed with how the function was decided
 };
+
+export const SCALE = { unit: 64, maxSize: 8, maxReview: 4, perRetry: 0.25, maxRetry: 1, hard: 1.5 };
+
+/** Size multiplier: sqrt(size / 64) between 1 and `cap`, so big functions pay more without dominating. */
+export const sizeFactor = (size, cap = SCALE.maxSize) => Math.min(Math.max(Math.sqrt((size ?? 0) / SCALE.unit), 1), cap);
+
+/** Bonus for work others gave up on: +25% per earlier sent-back attempt (at most +100%), x1.5 if it was ever hard. */
+export const staleFactor = (retries, hard) => (1 + Math.min((retries ?? 0) * SCALE.perRetry, SCALE.maxRetry)) * (hard ? SCALE.hard : 1);
+
+const size = (taskId) => `(SELECT sa.size FROM tasks st JOIN symbol_addresses sa ON sa.symbol_id = st.symbol_id JOIN versions sv ON sv.id = sa.version_id AND sv.is_current = 1 WHERE st.id = ${taskId})`;
+const RETRIES = `(SELECT COUNT(*) FROM attempts x WHERE x.task_id = a.task_id AND x.id < a.id AND x.state IN ('returned', 'needs_cleanup', 'rejected', 'superseded', 'hard'))`;
+const HARD = `(SELECT t.state = 'hard' OR t.cleanup_cycles > 0 OR EXISTS (SELECT 1 FROM attempts h WHERE h.task_id = t.id AND h.state = 'hard') FROM tasks t WHERE t.id = a.task_id)`;
 
 const MAX_BET = 1000;
 const BAILOUT = 25; // once a day for anyone below 5 credits
@@ -53,13 +67,14 @@ export class Credits {
   sync() {
     const missing = (reason, refExpr) => `NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.user_id = a.user_id AND l.reason = '${reason}' AND l.ref = ${refExpr})`;
     const entries = [];
-    // Merged code: byte-identical or peer-confirmed.
+    // Merged code: byte-identical or peer-confirmed, scaled by size and by earlier failures.
     for (const r of this.store.all(
-      `SELECT a.id, a.user_id, json_extract(a.result_json, '$.feedback.target.status') AS status FROM attempts a
+      `SELECT a.id, a.user_id, json_extract(a.result_json, '$.feedback.target.status') AS status, ${size('a.task_id')} AS size, ${RETRIES} AS retries, ${HARD} AS hard FROM attempts a
         WHERE a.state = 'merged' AND a.kind = 'code' AND ${missing('identical', "'attempt:' || a.id")} AND ${missing('confirmed', "'attempt:' || a.id")}`,
     )) {
       const identical = r.status === 'exact' || r.status === 'match_unresolved';
-      entries.push([r.user_id, identical ? AWARDS.identical : AWARDS.confirmed, identical ? 'identical' : 'confirmed', `attempt:${r.id}`]);
+      const base = identical ? AWARDS.identical : AWARDS.confirmed;
+      entries.push([r.user_id, Math.round(base * sizeFactor(r.size) * staleFactor(r.retries, r.hard)), identical ? 'identical' : 'confirmed', `attempt:${r.id}`]);
     }
     // Accepted "no decompile" claims.
     for (const r of this.store.all(`SELECT a.id, a.user_id FROM attempts a WHERE a.kind = 'skip' AND a.state IN ('merged', 'skipped', 'approved') AND ${missing('skip', "'attempt:' || a.id")}`)) {
@@ -67,19 +82,19 @@ export class Credits {
     }
     // Submitted code that compiled and went on.
     for (const r of this.store.all(
-      `SELECT a.id, a.user_id FROM attempts a WHERE a.kind = 'code' AND a.state IN ('peer_review', 'in_review', 'approved', 'merging', 'merged') AND ${missing('submitted', "'attempt:' || a.id")}`,
+      `SELECT a.id, a.user_id, ${size('a.task_id')} AS size FROM attempts a WHERE a.kind = 'code' AND a.state IN ('peer_review', 'in_review', 'approved', 'merging', 'merged') AND ${missing('submitted', "'attempt:' || a.id")}`,
     )) {
-      entries.push([r.user_id, AWARDS.submitted, 'submitted', `attempt:${r.id}`]);
+      entries.push([r.user_id, Math.round(AWARDS.submitted * sizeFactor(r.size)), 'submitted', `attempt:${r.id}`]);
     }
     // Reviews that agreed with the outcome: "same" on what merged, "different" on what peers sent back
     // (also once a later attempt finished the function and this one was retired as superseded).
     for (const r of this.store.all(
-      `SELECT p.id, p.reviewer_id AS user_id FROM peer_reviews p JOIN attempts t ON t.id = p.attempt_id
+      `SELECT p.id, p.reviewer_id AS user_id, ${size('t.task_id')} AS size FROM peer_reviews p JOIN attempts t ON t.id = p.attempt_id
         WHERE ((p.verdict = 'same' AND t.state IN ('merged', 'approved', 'merging')) OR (p.verdict = 'different' AND t.state IN ('needs_cleanup', 'hard', 'returned', 'superseded') AND
                (SELECT COALESCE(SUM(q.weight), 0) FROM peer_reviews q WHERE q.attempt_id = t.id AND q.verdict = 'different') >= 3))
           AND NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.user_id = p.reviewer_id AND l.reason = 'review' AND l.ref = 'review:' || p.id)`,
     )) {
-      entries.push([r.user_id, AWARDS.review, 'review', `review:${r.id}`]);
+      entries.push([r.user_id, Math.round(AWARDS.review * sizeFactor(r.size, SCALE.maxReview)), 'review', `review:${r.id}`]);
     }
     if (!entries.length) return 0;
     let n = 0;

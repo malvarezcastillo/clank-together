@@ -1909,7 +1909,8 @@ async function loadArcade() {
   const earn = $('earn');
   earn.replaceChildren();
   const labels = { identical: 'per byte-identical merge', confirmed: 'per peer-confirmed merge', skip: 'per accepted "no source"', submitted: 'per submitted function that compiles', review: 'per review that matched the outcome' };
-  for (const [k, v] of Object.entries(wallet.awards)) earn.append(el('span', `+${v} ${labels[k] ?? k}${wallet.earned[k] ? ` · earned ${fmt(wallet.earned[k].credits)}` : ''}`, 'chip'));
+  for (const [k, v] of Object.entries(wallet.awards)) earn.append(el('span', `+${v}${k === 'skip' ? '' : '+'} ${labels[k] ?? k}${wallet.earned[k] ? ` · earned ${fmt(wallet.earned[k].credits)}` : ''}`, 'chip'));
+  earn.append(el('span', 'Bigger functions pay more (up to x8, reviews x4); functions others were sent back on pay up to x3 more', 'chip'));
   $('bailout').hidden = !wallet.bailout;
   for (const b of document.querySelectorAll('.bet')) b.max = String(wallet.maxBet);
   const pt = $('paytable');

@@ -1896,8 +1896,17 @@ test('credits: merged work and agreeing reviews pay once; games book bet and pay
   ctx.store.run(`INSERT INTO peer_reviews (attempt_id, reviewer_id, verdict, reason, created_at) VALUES (?, ?, 'same', 'the same calls and returns', ?)`, attempt, peer.id, now());
   ctx.credits.sync();
   ctx.credits.sync();
-  assert.equal(ctx.credits.balance(author.id), 6 + 1, 'peer-confirmed merge plus the submission, booked once');
+  assert.equal(ctx.credits.balance(author.id), 8 + 1, 'peer-confirmed merge plus the submission, booked once');
   assert.equal(ctx.credits.balance(peer.id), 2, 'an agreeing review');
+
+  const big = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x403000, size: 1024, unit: 'src/credits.cpp' }).symbol.id;
+  ctx.tasks.generate();
+  const bigTask = ctx.store.get('SELECT id FROM tasks WHERE symbol_id = ?', big).id;
+  ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, created_at) VALUES (?, ?, ?, '{}', 'returned', ?)`, bigTask, author.id, ctx.repo.head(), now());
+  const bigAttempt = Number(ctx.store.run(`INSERT INTO attempts (task_id, user_id, base_commit, files_json, state, result_json, created_at) VALUES (?, ?, ?, '{}', 'merged', ?, ?)`, bigTask, peer.id, ctx.repo.head(), JSON.stringify({ feedback: { target: { status: 'exact' } } }), now()).lastInsertRowid);
+  ctx.credits.sync();
+  assert.equal(ctx.store.get(`SELECT amount FROM credit_ledger WHERE ref = ? AND reason = 'identical'`, `attempt:${bigAttempt}`).amount, 50, '1024 bytes pays x4, one earlier sent-back attempt x1.25');
+  assert.equal(ctx.store.get(`SELECT amount FROM credit_ledger WHERE ref = ? AND reason = 'submitted'`, `attempt:${bigAttempt}`).amount, 4, 'the submission scales with size only');
 
   const cookie = await login('crauthor');
   const play = (game, body) => request('POST', `/api/games/${game}`, body, { cookie });
@@ -1905,7 +1914,7 @@ test('credits: merged work and agreeing reviews pay once; games book bet and pay
   assert.equal((await play('coinflip', { bet: 3, side: 'edge' })).status, 400);
   const r = await play('coinflip', { bet: 3, side: 'heads' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(r.body.balance, 7 - 3 + r.body.payout);
+  assert.equal(r.body.balance, 9 - 3 + r.body.payout);
   assert.equal(ctx.credits.balance(author.id), r.body.balance);
   const d = await play('dice', { bet: 1, under: 50 });
   assert.equal(d.status, 200);
