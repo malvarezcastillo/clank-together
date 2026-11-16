@@ -6,7 +6,7 @@
 
 import iconv from 'iconv-lite';
 
-const ANNOTATION_RE = /^\/\/\s*(FUNCTION|STUB|GLOBAL|VTABLE|STRING|SIZE|LIBRARY|OFFSET)\s*:\s*[\w.]+(\s+<[\w\s:<>,*&]{1,120}>)?\s*$/;
+const ANNOTATION_RE = /^\/\/\s*(FUNCTION|STUB|FOLDED|GLOBAL|VTABLE|STRING|SIZE|LIBRARY|OFFSET)\s*:\s*[\w.]+(\s+<[\w\s:<>,*&]{1,120}>)?\s*$/;
 const OFFSET_RE = /^\/\*\s*(?:0x)?(?:[0-9A-Fa-f]{1,8}|-{2,8})\s*\*\/$/;
 const BLANK_RE = /^(?:\/\/[\s\-=*\/]*|\/\*[\s\-=*]*\*\/)$/;
 // The project marks inlined copies: // INLINED, optionally with the address range.

@@ -503,7 +503,7 @@ export class Verifier {
     for (const [file, text] of Object.entries(files)) {
       if (typeof text !== 'string') continue;
       for (const e of offsetErrors(text, baseFiles[file] ?? null, addressOf)) errors.push({ file, ...e });
-      for (const e of unannotatedErrors(text, baseFiles[file] ?? null)) errors.push({ file, ...e });
+      for (const e of unannotatedErrors(text, baseFiles[file] ?? null, (id) => addressOf(id) != null)) errors.push({ file, ...e });
     }
     return errors;
   }
