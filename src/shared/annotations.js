@@ -7,6 +7,9 @@
 //
 //   // FUNCTION: fn_00123     decompiled (or attempted) function
 //   // STUB: fn_00124         placeholder, not yet decompiled
+//   // FOLDED: fn_00125       a separate source function whose code the original linker folded
+//                             into fn_00125 (identical COMDAT folding): it must compile to the
+//                             same bytes, and is compared with that function's address
 //   // GLOBAL: gl_00045       global or static variable
 //   // VTABLE: vt_00007       vtable of the following class
 //   // STRING: st_00310       string literal
@@ -18,16 +21,16 @@
 // (template instances, identical copies). Text after the ID is a detail; for
 // templates it names the instance: `// FUNCTION: fn_01234 <CAnimKitInst>`.
 
-export const KIND_PREFIX = { FUNCTION: 'fn', STUB: 'fn', GLOBAL: 'gl', VTABLE: 'vt', STRING: 'st' };
+export const KIND_PREFIX = { FUNCTION: 'fn', STUB: 'fn', FOLDED: 'fn', GLOBAL: 'gl', VTABLE: 'vt', STRING: 'st' };
 export const PREFIX_KIND = { fn: 'function', gl: 'global', vt: 'vtable', st: 'string' };
-export const FUNCTION_KINDS = ['FUNCTION', 'STUB'];
+export const FUNCTION_KINDS = ['FUNCTION', 'STUB', 'FOLDED'];
 
-const ANNOTATION_RE = /^\s*\/\/\s*(FUNCTION|STUB|GLOBAL|VTABLE|STRING|SIZE)\s*:\s*(.*?)\s*$/;
+const ANNOTATION_RE = /^\s*\/\/\s*(FUNCTION|STUB|FOLDED|GLOBAL|VTABLE|STRING|SIZE)\s*:\s*(.*?)\s*$/;
 const ID_RE = /^(fn|gl|vt|st)_([0-9]{5,})$/;
 const SIZE_BODY_RE = /^0x([0-9a-fA-F]{1,8})$/;
 // Lines that look like an annotation attempt (a keyword followed by an ID or an address), so typos
 // are reported instead of ignored. Ordinary comments ("// Function declarations") are not.
-const LOOKS_LIKE_RE = /^\s*\/\/\s*(FUNCTION|STUB|GLOBAL|VTABLE|STRING|SIZE|LIBRARY)\s*:?\s*((fn|gl|vt|st)_\d+|0x[0-9a-f]+)/i;
+const LOOKS_LIKE_RE = /^\s*\/\/\s*(FUNCTION|STUB|FOLDED|GLOBAL|VTABLE|STRING|SIZE|LIBRARY)\s*:?\s*((fn|gl|vt|st)_\d+|0x[0-9a-f]+)/i;
 
 export function isSymbolId(s) {
   return ID_RE.test(s);

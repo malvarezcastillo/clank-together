@@ -126,8 +126,10 @@ export function bindAnnotations({ listing, file, annotations, nameIndex = new Ma
     });
   }
 
+  // A FOLDED definition is a different source function that shares the ID's address: it never
+  // names that address (the decorated name belongs to the function annotated FUNCTION).
   const idsPerSymbol = new Map();
-  for (const [a, sym] of byAnn) idsPerSymbol.set(sym, [...new Set([...(idsPerSymbol.get(sym) ?? []), a.id])]);
+  for (const [a, sym] of byAnn) if (a.kind !== 'FOLDED') idsPerSymbol.set(sym, [...new Set([...(idsPerSymbol.get(sym) ?? []), a.id])]);
   const bindings = new Map([...idsPerSymbol].filter(([, ids]) => ids.length === 1).map(([sym, ids]) => [sym, ids[0]]));
 
   for (const a of annotations) {
@@ -174,6 +176,7 @@ export function compareObject({ obj, listing, file, annotations, symbols, nameIn
   const procsBySymbol = new Map(listing.procs.map((p) => [p.symbol, p]));
 
   const functions = [];
+  const folded = [];
   const inferred = [];
   // The unit's own annotations, plus header annotations that bound to code compiled here.
   const toCompare = annotations.filter((x) => FUNCTION_KINDS.includes(x.kind) && (x.file === file || byAnn.has(x)));
@@ -181,11 +184,22 @@ export function compareObject({ obj, listing, file, annotations, symbols, nameIn
     const symbol = byAnn.get(a) ?? null;
     const sym = symbols.get(a.id);
     const base = { id: a.id, kind: a.kind, file: a.file, line: a.line, symbol, demangled: symbol ? listing.names.get(symbol) ?? null : null };
+    const fn = symbol && sym?.addr != null ? objFns.get(symbol) : null;
+    // A FOLDED definition must compile to the bytes at its ID's address, as the original linker
+    // could only fold identical code. It is proof, not a result: it never stands for the ID's status.
+    if (a.kind === 'FOLDED') {
+      if (!fn) {
+        folded.push({ ...base, status: sym?.addr == null ? STATUS.NO_ADDRESS : STATUS.MISSING, score: 0 });
+        continue;
+      }
+      const r = compareFunction({ fn: withLocalNames(fn), addr: sym.addr, origSize: sym.size, pe, resolve, symbols, proc: procsBySymbol.get(symbol), literalOf: (s) => obj.literal(s) });
+      folded.push({ ...base, addr: sym.addr, status: r.status, score: r.score, size: r.size });
+      continue;
+    }
     if (!sym || sym.addr == null) {
       functions.push({ ...base, status: STATUS.NO_ADDRESS, score: 0 });
       continue;
     }
-    const fn = symbol ? objFns.get(symbol) : null;
     if (!fn) {
       functions.push({ ...base, addr: sym.addr, status: STATUS.MISSING, score: 0 });
       continue;
@@ -200,7 +214,7 @@ export function compareObject({ obj, listing, file, annotations, symbols, nameIn
 
   const boundSymbols = new Set([...bindings.keys(), ...byAnn.values()]);
   const unannotated = [...objFns.keys()].filter((n) => !boundSymbols.has(n) && !isCompilerGenerated(n));
-  return { file, functions, bindings: Object.fromEntries(bindings), inferred: dedupeInferred(inferred), unannotated, errors };
+  return { file, functions, folded, bindings: Object.fromEntries(bindings), inferred: dedupeInferred(inferred), unannotated, errors };
 }
 
 // Our compiled code as the listing shows it, for reviewers to read next to the original.

@@ -93,6 +93,7 @@ function printCheck(r) {
       for (const d of f.diffRegions ?? []) console.log(`      +0x${d.offset.toString(16)}: ours ${d.ours} orig ${d.original}  ${d.ourInstruction ?? ''}${d.sourceLine ? ` (line ${d.sourceLine})` : ''}`);
       for (const x of f.relocations ?? []) console.log(`      reloc +0x${x.offset.toString(16)} ${x.symbol}: ${x.ok ? `not yet named, original points at 0x${hex(x.actual)}` : x.reason}`);
     }
+    for (const f of u.folded ?? []) console.log(`  FOLDED ${f.id} (line ${f.line})${''.padEnd(22)} ${f.status.padEnd(17)} ${(f.score * 100).toFixed(1)}%  size ${f.size?.ours ?? '-'}/${f.size?.original ?? '?'}`);
     if (u.unannotated.length) console.log(`  unannotated: ${u.unannotated.join(', ')}`);
   }
   for (const c of r.referenceConflicts) console.log(`conflict: ${c.message ?? c}`);

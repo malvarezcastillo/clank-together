@@ -6,6 +6,7 @@ import path from 'node:path';
 import { CoffObject } from './coff.js';
 import { parseListing, normalizePath } from './listing.js';
 import { compareObject } from './compare.js';
+import { foldedErrors } from './folded.js';
 import { lintAnnotations, hex } from './annotations.js';
 import { lintPreprocessed } from './lint.js';
 import { compileUnits, prepareJobDir } from './build.js';
@@ -126,7 +127,7 @@ export function jobDirFor(base, name) {
 /** `files`: the files the user asked about; annotation problems elsewhere in the repo are not theirs. */
 export function summarizeCheck(result, rec, files = null) {
   return {
-    annotationErrors: files ? result.annotationErrors.filter((e) => files.has(e.file)) : result.annotationErrors,
+    annotationErrors: [...(files ? result.annotationErrors.filter((e) => files.has(e.file)) : result.annotationErrors), ...foldedErrors(result, files ?? new Set(result.units.flatMap((u) => (u.folded ?? []).map((f) => f.file))))],
     units: result.units.map((u) => ({
       file: u.file,
       compiled: u.compiled,
@@ -147,6 +148,7 @@ export function summarizeCheck(result, rec, files = null) {
         relocations: f.relocations,
         ...(f.deletingDestructor && { deletingDestructor: true }),
       })),
+      folded: (u.folded ?? []).map((f) => ({ id: f.id, line: f.line, status: f.status, score: f.score, size: f.size })),
     })),
     referenceConflicts: rec.conflicts,
     unknownReferences: rec.unknown.map((x) => ({ symbol: x.decorated, addr: '0x' + hex(x.addr) })),

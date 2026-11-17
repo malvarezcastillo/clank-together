@@ -78,11 +78,7 @@ test('a definition main has that is only renamed stays exempt; changing its sign
   assert.equal(unannotatedErrors(`${main}class B {\n  virtual bool Other() {\n    return true;\n  }\n};\n`, main).length, 1, 'a second, new definition');
 });
 
-test('a definition the linker folded into another function carries FOLDED with that function ID', () => {
+test('a FOLDED definition is an annotated definition', () => {
   const src = '// FOLDED: fn_18148\nbool ResourceName::operator<(const ResourceName& other) const {\n  return false;\n}\n';
-  const known = (id) => id === 'fn_18148';
-  assert.deepEqual(unannotatedErrors(src, null, known), [], 'names a function of the symbol database');
-  assert.deepEqual(lines(unannotatedErrors(src.replace('fn_18148', 'fn_99999'), null, known)), [1], 'unknown ID');
-  assert.deepEqual(lines(unannotatedErrors(src.replace('fn_18148', 'gl_00001'), null, known)), [1], 'not a function ID');
-  assert.deepEqual(unannotatedErrors(src.replace('fn_18148', 'fn_99999'), src.replace('fn_18148', 'fn_99999'), known), [], 'kept as it is on main');
+  assert.deepEqual(unannotatedErrors(src, null), []);
 });

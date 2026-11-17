@@ -12,6 +12,7 @@ import { lintSubmission } from '../shared/lint.js';
 import { isUnit, addUnitsToCompileCommands, removeUnitsFromCompileCommands, movedUnits, withMovedUnits } from '../shared/project.js';
 import { bestResults, BuildRetryError, deferBuild, clearBuildRetry, boundAddresses } from './verify.js';
 import { resolvedEffectiveHash, resolvedEffectiveParts, hashEffectiveParts } from '../shared/compare.js';
+import { foldedErrors } from '../shared/folded.js';
 
 /**
  * A unit's unbound file-local statics are named after its object (Dir/Unit.obj|kSecret): main's
@@ -140,7 +141,7 @@ export class Maintenance {
     const failed = check.units.filter((u) => !u.compiled);
     if (failed.length) return back('compilation failed', { compileErrors: failed.map((u) => ({ file: u.file, log: u.log })) });
     const fileSet = new Set(Object.keys(merged.files));
-    const annErrors = check.annotationErrors.filter((e) => fileSet.has(e.file) && e.severity !== 'warning');
+    const annErrors = [...check.annotationErrors.filter((e) => fileSet.has(e.file) && e.severity !== 'warning'), ...foldedErrors(check, fileSet)];
     if (annErrors.length) return back('annotation errors', { annotationErrors: annErrors });
     const lint = check.units.flatMap((u) => u.lintErrors);
     if (lint.length) return back('banned constructs found after preprocessing', { lintErrors: lint });

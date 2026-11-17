@@ -6,8 +6,6 @@
 // Only definitions a submission adds or changes are checked: existing code on main is left alone.
 
 const ANNOTATED_RE = /^\s*\/\/\s*(?:(?:FUNCTION|STUB|FOLDED)\s*:|INLINED\b)/;
-const FOLDED_RE = /^\s*\/\/\s*FOLDED\s*:\s*(\S*)\s*$/;
-const FUNCTION_ID_RE = /^fn_\d{5,}$/;
 const NOT_A_DEFINITION = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'else', 'do', 'sizeof', 'decltype', 'alignof', 'static_assert', 'operator']);
 
 /**
@@ -90,26 +88,15 @@ function unannotatedDefinitions(text) {
   return out;
 }
 
-/** The `// FOLDED:` lines of `text`: line number and the ID they name. */
-function foldedLines(text) {
-  const out = [];
-  text.split(/\r?\n/).forEach((l, i) => {
-    const m = FOLDED_RE.exec(l);
-    if (m) out.push({ line: i + 1, id: m[1] });
-  });
-  return out;
-}
-
 /**
  * Errors for function definitions a submission adds or changes without `// FUNCTION:`, `// STUB:`,
- * `// FOLDED:` or `// INLINED` above them, and for `// FOLDED:` lines it adds that do not name a
- * function of the symbol database.
+ * `// FOLDED:` or `// INLINED` above them. A FOLDED ID is checked like any annotation ID
+ * (annotations.js) and its code against the ID's address (folded.js).
  * @param {string} text
  * @param {string|null} baseText  the file on the base commit (null for a new file)
- * @param {(id: string) => boolean} [isFunction]  whether the symbol database has a function with this ID
  * @returns {{line: number, message: string}[]}
  */
-export function unannotatedErrors(text, baseText, isFunction = null) {
+export function unannotatedErrors(text, baseText) {
   const kept = new Map();
   for (const d of baseText === null ? [] : unannotatedDefinitions(baseText)) kept.set(d.key, (kept.get(d.key) ?? 0) + 1);
   const errors = [];
@@ -120,18 +107,6 @@ export function unannotatedErrors(text, baseText, isFunction = null) {
       continue;
     }
     errors.push({ line: d.line, message: `function definition without an annotation: add "// OFFSET:" and "// FUNCTION: fn_....." (td symbol), "// FOLDED: fn_....." when the linker folded its code into that function, or "// INLINED" when the original has no standalone copy` });
-  }
-  const keptFolded = new Map();
-  for (const f of baseText === null ? [] : foldedLines(baseText)) keptFolded.set(f.id, (keptFolded.get(f.id) ?? 0) + 1);
-  for (const f of foldedLines(text)) {
-    const n = keptFolded.get(f.id) ?? 0;
-    if (n > 0) {
-      keptFolded.set(f.id, n - 1);
-      continue;
-    }
-    if (!FUNCTION_ID_RE.test(f.id) || (isFunction && !isFunction(f.id))) {
-      errors.push({ line: f.line, message: `"// FOLDED: ${f.id}" must name the function (fn_.....) whose address holds the folded code` });
-    }
   }
   return errors;
 }
