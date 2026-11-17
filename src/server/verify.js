@@ -360,6 +360,18 @@ export class Verifier {
   }
 
   /**
+   * The unit a never-compiled function is assigned to, when that unit exists. A header-inline
+   * function is emitted out of line only in some includers, and its assigned unit is where the
+   * original keeps that copy: one includer of the header alone may only inline it ("no compiled
+   * function is annotated").
+   */
+  placedUnit(id) {
+    const unit = this.store.get('SELECT unit FROM symbols WHERE id = ?', id)?.unit;
+    if (!unit || !isUnit(unit)) return null;
+    return fs.existsSync(path.join(this.repo.dir, unit)) ? unit : null;
+  }
+
+  /**
    * Units that include any of `headers`: what compiles recorded (unit_deps: the compiler's own
    * include list), plus what the sources say (includers.js), which also covers units no merge has
    * compiled yet. As `files` change them; a unit `files` deletes (null) includes nothing any more.
@@ -410,8 +422,13 @@ export class Verifier {
       let unknown = 0;
       for (const id of targets) {
         const at = this.store.get('SELECT file FROM func_status WHERE symbol_id = ?', id)?.file;
-        if (at && isUnit(at)) units.add(at);
-        else unknown++;
+        if (at && isUnit(at)) {
+          units.add(at);
+          continue;
+        }
+        const placed = this.placedUnit(id);
+        if (placed) units.add(placed);
+        unknown++;
       }
       // Never compiled before and defined in a changed header: the includers that mention its template
       // arguments or class are the ones that can instantiate it (every includer took up to an hour).

@@ -662,6 +662,17 @@ test('header includers come from the sources too, also for units no merge has co
   }
 });
 
+test('a never-compiled header-inline function is checked in its assigned unit, not just any includer', () => {
+  ctx.repo.commitFiles({ 'src/route.h': 'struct Route { ~Route(); };\n', 'src/route_owner.cpp': 'int owner() { return 0; }\n' }, 'route header and owner', 'x <x@y.invalid>');
+  const v = ctx.store.currentVersion();
+  const id = ctx.store.ensureSymbol({ kind: 'function', versionId: v.id, addr: 0x40a100, size: 16, unit: 'src/route_owner.cpp' }).symbol.id;
+  assert.equal(ctx.verifier.placedUnit(id), 'src/route_owner.cpp', 'the unit the original keeps its out-of-line copy in');
+  ctx.store.run('UPDATE symbols SET unit = ? WHERE id = ?', 'src/gone.cpp', id);
+  assert.equal(ctx.verifier.placedUnit(id), null, 'a unit that does not exist is not compiled');
+  ctx.store.run('UPDATE symbols SET unit = ? WHERE id = ?', 'src/route.h', id);
+  assert.equal(ctx.verifier.placedUnit(id), null, 'a header is no unit');
+});
+
 test('agreeing peers accept a function without human review (three ahead)', async () => {
   await activeUser('aaauthor');
   const author = ctx.accounts.byName('aaauthor');
