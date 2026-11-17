@@ -807,22 +807,32 @@ export class Verifier {
     const headerChanged = Object.keys(files).some((f) => !isUnit(f));
     const addressOf = boundAddresses(check, this.store.symbolMap(this.store.currentVersion().id));
     // An inline function is compiled once per unit that uses it; its copies may differ (labels,
-    // unresolved references). Main records one of them, so it is unchanged when any copy still matches.
+    // unresolved references, unit-specific inlining). Main records one of them, so it is unchanged
+    // when any copy still matches.
     const copies = new Map();
     for (const u of check.units) for (const f of u.functions) {
       if (!(fileSet.has(f.file) || headerChanged) || targets.has(f.id) || !f.codeHash) continue;
       if (!copies.has(f.id)) copies.set(f.id, []);
-      copies.get(f.id).push(f);
+      copies.get(f.id).push({ ...f, unit: u.file });
     }
     const seen = new Map();
     const out = [];
     for (const [id, fs] of copies) {
-      const main = this.store.get('SELECT code_hash, effective_hash FROM func_status WHERE symbol_id = ?', id);
-      const same = (f) => (main.effective_hash ? main.effective_hash === resolvedEffectiveHash(f, addressOf) || sameBytesUnresolved(main, f, addressOf) : !main.code_hash || main.code_hash === f.codeHash);
+      const main = this.store.get('SELECT file, code_hash, effective_hash FROM func_status WHERE symbol_id = ?', id);
       const f = fs[fs.length - 1];
       seen.set(id, f);
-      if (!main) out.push({ id, file: f.file, why: 'new or newly annotated' });
-      else if (!fs.some(same)) out.push({ id, file: f.file, why: 'compiled code changed' });
+      if (!main) {
+        out.push({ id, file: f.file, why: 'new or newly annotated' });
+        continue;
+      }
+      // Defined in a header this submission does not touch: only the unit main records it from
+      // shows whether its code changed. Other units emit their own copy (different inlining), and
+      // when main's unit is not part of this check there is nothing to compare with.
+      const unsubmittedHeader = !!f.file && !isUnit(f.file) && !fileSet.has(f.file);
+      const comparable = unsubmittedHeader ? fs.filter((c) => c.unit === main.file) : fs;
+      if (!comparable.length) continue;
+      const same = (c) => (main.effective_hash ? main.effective_hash === resolvedEffectiveHash(c, addressOf) || sameBytesUnresolved(main, c, addressOf) : !main.code_hash || main.code_hash === c.codeHash);
+      if (!comparable.some(same)) out.push({ id, file: f.file, why: 'compiled code changed' });
     }
     if (userId == null) return out;
     const foreign = (o) => !fileSet.has(o.file) || (ownUnits && !ownUnits.has(o.file));

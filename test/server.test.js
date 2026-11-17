@@ -1474,6 +1474,15 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
   assert.deepEqual(twoCopies(['eff-a', 'eff-a-other-unit']), [], 'one copy still matches main');
   assert.deepEqual(twoCopies(['eff-a-other-unit', 'eff-a']), [], 'whichever unit comes last');
   assert.deepEqual(twoCopies(['eff-a-x', 'eff-a-y']).map((o) => o.id), [a], 'no copy matches: a change');
+  // An inline function defined in a header the submission does not touch (fn_14492: the CUICheckBox
+  // ctor, emitted with different inlining per unit): only main's own unit judges it. Another header
+  // changed, so every includer is compiled; their copies differ but main's unit is not in the check.
+  ctx.store.run('UPDATE func_status SET file = ? WHERE symbol_id = ?', 'src/owner.cpp', a);
+  const inHeader = (units) => ctx.verifier.changedOutside({ units: units.map(([unit, eff]) => ({ file: unit, bindings: {}, functions: [{ id: a, file: 'src/widget.h', codeHash: 'other-bytes', effectiveHash: eff, status: STATUS.MISMATCH }] })) }, { 'src/batch.cpp': '', 'src/batch.h': '' }, new Set([b]), authorId, new Set(['src/batch.cpp']));
+  assert.deepEqual(inHeader([['src/x.cpp', 'eff-a-x'], ['src/y.cpp', 'eff-a-y']]), [], 'main\'s unit not compiled: other units\' copies are not a change');
+  assert.deepEqual(inHeader([['src/x.cpp', 'eff-a-x'], ['src/owner.cpp', 'eff-a']]), [], 'main\'s unit still emits the same copy');
+  assert.deepEqual(inHeader([['src/x.cpp', 'eff-a'], ['src/owner.cpp', 'eff-a-changed']]).map((o) => o.id), [a], 'main\'s unit emits different code: a change, even when another unit happens to match');
+  ctx.store.run('UPDATE func_status SET file = ? WHERE symbol_id = ?', 'src/caller.cpp', a);
   assert.equal(ctx.verifier.crossUnit({ 'src/caller.cpp': '', 'src/batch.h': '' }, new Set(['src/batch.cpp'])), true);
   assert.equal(ctx.verifier.crossUnit({ 'src/batch.cpp': '', 'src/batch.h': '' }, new Set(['src/batch.cpp'])), false, 'headers are not another unit');
   assert.ok(ctx.tasks.allowedPathsForTasks([taskB]).includes('src/**'), 'every source unit may be edited');
