@@ -202,6 +202,35 @@ test('a thunk or an EH-only copy of a named function reaches the same code', () 
   assert.ok(!sameTarget(changed.pe, changed.target, changed.COPY), 'a copy with other code');
 });
 
+// .idata at RVA 0x2000: one descriptor for sdk.dll whose IAT holds Foo twice and Bar once.
+function importImage() {
+  const idata = Buffer.alloc(0x100);
+  const RVA = 0x2000, ILT = 0x40, IAT = 0x60, DLL = 0x80, FOO = 0x90, BAR = 0xa0;
+  idata.writeUInt32LE(RVA + ILT, 0);
+  idata.writeUInt32LE(RVA + DLL, 12);
+  idata.writeUInt32LE(RVA + IAT, 16);
+  [FOO, FOO, BAR].forEach((name, i) => {
+    idata.writeUInt32LE(RVA + name, ILT + i * 4);
+    idata.writeUInt32LE(RVA + name, IAT + i * 4);
+  });
+  idata.write('SDK.dll', DLL, 'latin1');
+  idata.write('Foo', FOO + 2, 'latin1');
+  idata.write('Bar', BAR + 2, 'latin1');
+  const pe = new PEImage(buildPe({
+    sections: [{ name: '.text', rva: 0x1000, data: Buffer.alloc(0x10, 0xc3) }, { name: '.idata', rva: RVA, data: idata, characteristics: 0x40000040 }],
+    imports: { rva: RVA, size: 40 },
+  }));
+  const slot = (i) => 0x400000 + RVA + IAT + i * 4;
+  return { pe, slot };
+}
+
+test('two import slots of the same DLL export are the same target', () => {
+  const { pe, slot } = importImage();
+  assert.equal(pe.imports().get(slot(0)), 'sdk.dll!Foo');
+  assert.ok(sameTarget(pe, { addr: slot(0), size: 4 }, slot(1)), 'Foo imported twice');
+  assert.ok(!sameTarget(pe, { addr: slot(0), size: 4 }, slot(2)), 'Foo is not Bar');
+});
+
 test('reconcile accepts a known name the original reaches through an equivalent copy', () => {
   const { pe, target, COPY } = ehImage();
   const syms = new Map([['fn_00009', { id: 'fn_00009', kind: 'function', ...target, decorated: '?Tidy@@YAXXZ' }]]);

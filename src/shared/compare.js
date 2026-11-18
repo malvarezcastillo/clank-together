@@ -491,10 +491,14 @@ const EH_PROLOG = Buffer.from([0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68]);
  * only because each copy has its own exception-handling tables. Such a copy is the same size and
  * bytes, except relative references to the same targets and the handler pushed by the x86 EH
  * prologue (`push ebp; mov ebp,esp; push -1; push handler`), whose stubs differ only in the FuncInfo
- * they load.
+ * they load. Two import address table slots that import the same DLL export also reach the same
+ * code: the loader fills both with that export's address.
  */
 export function sameTarget(pe, target, actual) {
   try {
+    const imports = pe.imports();
+    const slot = imports.get(actual);
+    if (slot !== undefined && slot === imports.get(target.addr)) return true;
     if (pe.is64) return false;
     const head = pe.read(actual, 5);
     if (head[0] === 0xe9 && actual + 5 + head.readInt32LE(1) === target.addr) return true;

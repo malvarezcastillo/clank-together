@@ -47,6 +47,7 @@ export class PEImage {
     // IMAGE_FILE_RELOCS_STRIPPED: the image has no base relocations (it only loads at imageBase).
     this.relocsStripped = (buf.readUInt16LE(coff + 18) & 0x0001) !== 0;
     this._relocs = null;
+    this._imports = null;
   }
 
   sectionForRva(rva) {
@@ -120,5 +121,41 @@ export class PEImage {
     }
     this._relocs = set;
     return set;
+  }
+
+  /**
+   * Import address table slots: VA of each slot -> "dll!name" (or "dll!#ordinal"), dll lower-cased.
+   * Two slots with the same key import the same export; the loader fills both with one address.
+   */
+  imports() {
+    if (this._imports) return this._imports;
+    const map = new Map();
+    const dir = this.dataDirs[1];
+    if (dir && dir.rva && dir.size) {
+      const cstr = (rva) => {
+        const s = this.sectionForRva(rva);
+        const p = s.rawPtr + (rva - s.rva);
+        return this.buf.toString('latin1', p, this.buf.indexOf(0, p));
+      };
+      const word = this.pointerSize;
+      for (let d = dir.rva; ; d += 20) {
+        const desc = this.read(this.imageBase + d, 20);
+        const lookup = desc.readUInt32LE(0) || desc.readUInt32LE(16);
+        const nameRva = desc.readUInt32LE(12);
+        const iat = desc.readUInt32LE(16);
+        if (!nameRva && !iat) break;
+        const dll = cstr(nameRva).toLowerCase();
+        for (let i = 0; ; i++) {
+          const at = this.imageBase + lookup + i * word;
+          const entry = word === 8 ? this.read(at, 8).readBigUInt64LE(0) : BigInt(this.readU32(at));
+          if (!entry) break;
+          const byOrdinal = (entry >> BigInt(word * 8 - 1)) === 1n;
+          const key = byOrdinal ? `${dll}!#${Number(entry & 0xffffn)}` : `${dll}!${cstr(Number(entry & 0x7fffffffn) + 2)}`;
+          map.set(this.imageBase + iat + i * word, key);
+        }
+      }
+    }
+    this._imports = map;
+    return map;
   }
 }

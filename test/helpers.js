@@ -120,7 +120,7 @@ export function buildDebugS(functions) {
  *        baseRelocs are virtual addresses of HIGHLOW fixups. relocsStripped marks the image as linked
  *        without a relocation table (IMAGE_FILE_RELOCS_STRIPPED), as a packer leaves it.
  */
-export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], relocsStripped = false }) {
+export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], relocsStripped = false, imports = null }) {
   const all = [...sections];
   if (baseRelocs.length) {
     const pages = new Map();
@@ -168,6 +168,10 @@ export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], reloc
   buf.writeUInt32LE(0x1000, opt + 16);
   buf.writeUInt32LE(imageBase, opt + 28);
   buf.writeUInt32LE(16, opt + 92);
+  if (imports) {
+    buf.writeUInt32LE(imports.rva, opt + 96 + 1 * 8);
+    buf.writeUInt32LE(imports.size, opt + 100 + 1 * 8);
+  }
   const reloc = placed.find((s) => s.isReloc);
   if (reloc) {
     buf.writeUInt32LE(reloc.rva, opt + 96 + 5 * 8);
