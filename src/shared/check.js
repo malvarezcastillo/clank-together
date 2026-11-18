@@ -27,10 +27,12 @@ import { scanAnnotations, unitSettings } from './project.js';
 // lintUnits: units whose preprocessed output is scanned (default: all compiled units).
 // analyze: replaces the in-process analysis of the compiler output (the server runs it in worker
 // threads, so a check of many units doesn't block it).
+// bindGlobals: likewise for withGlobalBindings, which parses every unit's listing: resolves to one
+// list of [decorated name, ID] per compiled unit, in order.
 // incremental: update a job directory left by an earlier check instead of copying the tree anew
 // (prepareJobDir); for a job directory only ever filled from the same repoDir.
 // compileCache: {dir, capMb} of a compile-output cache for docker runners (compileUnits).
-export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, cachedUnits = [], unitOrder = null, incremental = false, compileCache = null, scan = scanAnnotations(repoDir, project, overrides) }) {
+export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, bindGlobals = null, cachedUnits = [], unitOrder = null, incremental = false, compileCache = null, scan = scanAnnotations(repoDir, project, overrides) }) {
   const annotationErrors = [...scan.errors, ...lintAnnotations(scan.annotations, symbols)];
 
   prepareJobDir({ repoDir, jobDir, project, overrides, incremental });
@@ -38,7 +40,10 @@ export async function checkUnits({ repoDir, jobDir, project, units, overrides = 
 
   const roots = { sourceDirs: project.sourceDirs, includeDirs: project.includeDirs };
   const evidence = new Map(cachedUnits.map((u) => [u.file, u.globalBindings ?? []]));
-  for (const c of compiled) evidence.set(c.file, [...withGlobalBindings([c], scan.annotations, new Map())]);
+  const bound = bindGlobals
+    ? await bindGlobals({ compiled, annotations: scan.annotations })
+    : compiled.map((c) => [...withGlobalBindings([c], scan.annotations, new Map())]);
+  compiled.forEach((c, i) => evidence.set(c.file, bound[i]));
   // compileUnits groups by toolchain. Preserve that first-binding-wins order for fresh and
   // partial checks, including when a newly required unit joins an earlier toolchain group.
   const groups = new Map();

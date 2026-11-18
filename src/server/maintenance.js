@@ -206,7 +206,8 @@ export class Maintenance {
    */
   async changedFunctions(check, files, head, moves = new Map()) {
     // Main's version of every unit the change compiled; a moved unit is compared with its old path.
-    const touched = [...new Set(check.units.map((u) => moves.get(u.file) ?? u.file))].filter((f) => this.repo.show(head, f) !== null);
+    const onMain = this.repo.showMany(head, [...new Set(check.units.map((u) => moves.get(u.file) ?? u.file))]);
+    const touched = [...onMain].filter(([, text]) => text !== null).map(([f]) => f);
     const before = touched.length ? (await this.verifier.check({}, `maintenance-base-${head.slice(0, 10)}`, { onlyUnits: touched, lint: false })).check : { units: [] };
     if (before.units.some((u) => !u.compiled || u.timedOut)) throw new BuildRetryError(before, 'maintenance-baseline');
     const was = new Map([...bestResults(before)].map(([id, b]) => [id, b.f]));

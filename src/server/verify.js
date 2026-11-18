@@ -22,7 +22,7 @@ import { functionRegions } from './split.js';
 import { className } from './grouping.js';
 import { now } from './db.js';
 import { returnBatch, batchAttempts, settleBatch, holdFor, AUTHOR_HOLD_MS } from './batches.js';
-import { analyzeInWorkers } from './analyze.js';
+import { analyzeInWorkers, bindGlobalsInWorkers } from './analyze.js';
 import { foldedErrors } from '../shared/folded.js';
 
 // A batch whose verification compiles more units than this is big (it changes a widely used header).
@@ -483,6 +483,7 @@ export class Verifier {
         // it is kept by content (compile-cache.js) and the compile is skipped. compileCacheMb: 0 turns it off.
         compileCache: this.config.compileCacheMb === 0 ? null : { dir: path.join(this.config.dataDir, 'compile-cache'), capMb: this.config.compileCacheMb },
         analyze: (args) => analyzeInWorkers({ symbols, nameIndex, ...args, peFile: v.file }),
+        bindGlobals: bindGlobalsInWorkers,
       });
       if (check.units.length) {
         const hits = check.units.filter((u) => u.cached).length;

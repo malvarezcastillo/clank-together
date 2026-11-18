@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import { parentPort, workerData } from 'node:worker_threads';
 import { PEImage } from '../shared/pe.js';
-import { analyzeCompiled } from '../shared/check.js';
+import { analyzeCompiled, withGlobalBindings } from '../shared/check.js';
 
-const { peFile, ...rest } = workerData;
-parentPort.postMessage(analyzeCompiled({ ...rest, pe: new PEImage(fs.readFileSync(peFile)) }));
+const { task, peFile, ...rest } = workerData;
+parentPort.postMessage(
+  task === 'bindGlobals'
+    ? rest.compiled.map((c) => [...withGlobalBindings([c], rest.annotations, new Map())])
+    : analyzeCompiled({ ...rest, pe: new PEImage(fs.readFileSync(peFile)) }),
+);
