@@ -24,7 +24,8 @@ function fixture(t) {
     run: (sql, ...args) => db.prepare(sql).run(...args), tx: (fn) => fn(), event() {} };
   store.run('INSERT INTO batches (id, user_id, base_commit, files_json, result_json, state) VALUES (1, 1, ?, ?, ?, ?)', 'head', JSON.stringify(files), JSON.stringify({ splitKeepCode: true }), 'verifying');
   const repo = { head: () => 'head', size: () => 100, trackedPaths: () => new Set(Object.keys(files)), isAncestor: () => true,
-    mergeOntoHead: () => ({ files, conflicts: [] }), show: () => files['src/a.cpp'], commitFiles: () => assert.fail('must not commit') };
+    mergeOntoHead: () => ({ files, conflicts: [] }), show: () => files['src/a.cpp'], showMany: (_commit, paths) => new Map(paths.map((p) => [p, files['src/a.cpp']])),
+    commitFiles: () => assert.fail('must not commit') };
   const verifier = new Verifier({ store, repo, config: { dataDir: '.' }, project: { sourceDirs: ['src'], headerGlobs: [], matchPolicy: {} },
     tasks: { allowedPathsForTasks: () => ['src/**'] }, log: { info() {}, error() {} } });
   for (const method of ['freeTextGate', 'droppedAnnotations', 'undefinedGate', 'globalsGate', 'changedOutside']) verifier[method] = () => [];
