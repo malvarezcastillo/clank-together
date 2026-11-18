@@ -339,7 +339,7 @@ test('missing incoming compile commands block verification without publishing st
   assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', id).state, 'returned');
 });
 
-test('continuous submissions admit approved merges before synchronized verification cohorts', async (t) => {
+test('continuous submissions join the running lanes without a fetch while the remote has nothing new', async (t) => {
   const r = repositories(t);
   const { ctx, batch } = serverFixture(t, r);
   ctx.merger.start();
@@ -366,21 +366,21 @@ test('continuous submissions admit approved merges before synchronized verificat
     const queued = batch('code');
     const start = events.length;
     ctx.verifier.pump();
-    assert.deepEqual(events.slice(start), ['sync', `merge:${approved}`, `verify:${first}`, `verify:${second}`]);
+    // Only the first synchronization after a start fetches; afterwards the remote is only asked.
+    assert.deepEqual(events.slice(start), [...(round ? [] : ['sync']), `merge:${approved}`, `verify:${first}`, `verify:${second}`]);
     assert.equal(ctx.verifier.syncPending, false, 'remaining synchronized work does not demand another fetch');
     releases.shift()();
     await new Promise((resolve) => setImmediate(resolve));
     assert.ok(events.includes(`verify:${queued}`));
     const incoming = batch('code');
     ctx.verifier.pump();
-    assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', incoming).state, 'queued');
-    const syncs = events.filter((event) => event === 'sync').length;
+    assert.equal(ctx.store.get('SELECT state FROM batches WHERE id = ?', incoming).state, 'queued', 'both lanes are taken');
     releases.shift()();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(events.filter((event) => event === 'sync').length, syncs);
+    assert.equal(events.at(-1), `verify:${incoming}`, 'it takes the first free lane while the other still runs');
+    assert.equal(ctx.verifier.running, 2);
+    assert.equal(events.filter((event) => event === 'sync').length, 1);
     releases.shift()();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(events.slice(-2), ['sync', `verify:${incoming}`]);
     releases.shift()();
     await drained(ctx.verifier);
   }

@@ -186,6 +186,17 @@ export class Repo {
   }
 
   /**
+   * Whether the remote's copy of the checked-out branch holds no commit this repository lacks, so
+   * that `sync` would fetch nothing. Asks the remote only: no ref, object or file here changes.
+   */
+  remoteMerged(remote) {
+    const branch = this.git(['symbolic-ref', '--quiet', 'HEAD']).trim();
+    const listed = this.git(['ls-remote', '--', remote, branch], { timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' } });
+    const commit = listed.split(/\s/)[0];
+    return !!commit && this.isAncestor(commit);
+  }
+
+  /**
    * Joins a remote branch that diverged (someone pushed to it directly) when the two sides
    * changed disjoint files: a merge commit keeping both histories. Any file changed on both
    * sides, or a merge Git cannot complete cleanly, leaves everything as it was.

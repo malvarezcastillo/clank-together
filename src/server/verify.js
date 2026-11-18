@@ -294,10 +294,32 @@ export class Verifier {
     return result;
   }
 
+  /**
+   * A new submission asks for a synchronization, and that needs every lane idle. Nearly always the
+   * remote holds nothing this repository lacks (the worker itself pushes there): then there is
+   * nothing to fetch and no lane to drain. Anything else is left to syncRepository, as is the first
+   * synchronization after a start and the one after a failure.
+   */
+  syncedWithoutFetch() {
+    if (this.needsSync || this.syncError) return false;
+    // As in syncRepository: only work queued before the remote is asked belongs to this answer.
+    const syncedThrough = this.store.get(`SELECT COALESCE(MAX(id), 0) AS id FROM batches WHERE state = 'queued' AND kind IN ('code', 'maintenance')`).id;
+    let current = false;
+    try {
+      current = this.repo.remoteMerged(this.config.pushRemote) && this.repo.isClean();
+    } catch { /* syncRepository reports why */ }
+    if (!current) {
+      this.needsSync = true;
+      return false;
+    }
+    this.syncedThrough = syncedThrough;
+    return true;
+  }
+
   pump() {
     if (this.stopped) return;
     let synchronized = false;
-    if (this.repositoryBlocked) {
+    if (this.repositoryBlocked && !this.syncedWithoutFetch()) {
       if (this.running || this.merger?.busy || this.checks?.running) return;
       try {
         this.syncRepository();
