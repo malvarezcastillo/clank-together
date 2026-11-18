@@ -1046,7 +1046,7 @@ export function createApp(ctx) {
     if (typeof body.reason !== 'string' || !body.reason.trim() || body.reason.length > 500) throw new HttpError(400, 'reason must be 1-500 characters: the evidence for the correction');
     const reason = body.reason.trim();
     const validDecorated = (value) => typeof value === 'string' && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]/.test(value);
-    if (body.decorated !== undefined && !validDecorated(body.decorated)) throw new HttpError(400, 'decorated must be 1-2048 visible ASCII characters without whitespace');
+    if (body.decorated !== undefined && body.decorated !== null && !validDecorated(body.decorated)) throw new HttpError(400, 'decorated must be 1-2048 visible ASCII characters without whitespace, or null to clear a wrong one');
     if (body.retire !== undefined && typeof body.retire !== 'boolean') throw new HttpError(400, 'retire must be a boolean');
     if (body.swapDecoratedWith !== undefined) {
       if (typeof body.swapDecoratedWith !== 'string' || !/^(fn|gl|vt|st)_[0-9]+$/.test(body.swapDecoratedWith) || body.swapDecoratedWith === params.id) throw new HttpError(400, 'swapDecoratedWith must be a different symbol ID');
@@ -1092,7 +1092,7 @@ export function createApp(ctx) {
         changes.name = name;
       }
       if (body.decorated !== undefined) {
-        assertUnique(body.decorated, sym.id);
+        if (body.decorated !== null) assertUnique(body.decorated, sym.id);
         old.decorated = sym.decorated;
         store.run('UPDATE symbols SET decorated = ? WHERE id = ?', body.decorated, sym.id);
         changes.decorated = body.decorated;

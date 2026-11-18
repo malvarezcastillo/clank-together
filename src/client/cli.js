@@ -196,6 +196,7 @@ async function main() {
       size: { type: 'string' },
       decorated: { type: 'string' },
       'swap-decorated-with': { type: 'string' },
+      'clear-decorated': { type: 'boolean', default: false },
       retire: { type: 'boolean', default: false },
       close: { type: 'boolean', default: false },
       batch: { type: 'string' },
@@ -344,13 +345,15 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
         return print(await ops.submitMaintenance(ws, files, { notes: values.notes, force: values.force, deleted }));
       }
       if (sub === 'symbol') {
-        if (!id || !values.reason) throw new Error('usage: td maintenance symbol <id> [--size N] [--name N] [--retire] [--decorated N | --swap-decorated-with ID] --reason "evidence"');
+        if (!id || !values.reason) throw new Error('usage: td maintenance symbol <id> [--size N] [--name N] [--retire] [--decorated N | --clear-decorated | --swap-decorated-with ID] --reason "evidence"');
+        if (values['clear-decorated'] && values.decorated !== undefined) throw new Error('--clear-decorated and --decorated are exclusive');
         const body = {
           reason: values.reason,
           ...(values.size !== undefined && { size: Number(values.size) }),
           ...(values.name !== undefined && { name: values.name }),
           ...(values.retire && { retire: true }),
           ...(values.decorated !== undefined && { decorated: values.decorated }),
+          ...(values['clear-decorated'] && { decorated: null }),
           ...(values['swap-decorated-with'] !== undefined && { swapDecoratedWith: values['swap-decorated-with'] }),
         };
         return print(await ops.correctSymbol(ws, id, body));

@@ -76,7 +76,7 @@ test('decorated corrections require maintainer authorization and session CSRF', 
 test('decorated corrections reject malformed values without coercion, truncation or partial writes', async (t) => {
   const f = await fixture(t);
   const before = f.state();
-  for (const decorated of [null, 0, true, {}, [], '', ' ', ' ?Name@@YAXXZ', '?Name@@YAXXZ ', 'bad\nname', 'bad\n', 'bad\r', 'bad\u0000name', 'bad\u007fname', 'caf\u00e9', 'x'.repeat(2049)]) {
+  for (const decorated of [0, true, {}, [], '', ' ', ' ?Name@@YAXXZ', '?Name@@YAXXZ ', 'bad\nname', 'bad\n', 'bad\r', 'bad\u0000name', 'bad\u007fname', 'caf\u00e9', 'x'.repeat(2049)]) {
     assert.equal((await f.post(f.symbols[0], { name: 'Must not persist', size: 99, decorated, reason: 'Evidence' })).status, 400, JSON.stringify(decorated));
   }
   for (const body of [null, [], 'wrong', { decorated: '?New@@YAXXZ' }, { decorated: '?New@@YAXXZ', reason: {} }, { decorated: '?New@@YAXXZ', reason: ' ' }, { decorated: '?New@@YAXXZ', reason: 'x'.repeat(501) }, { decorated: '?New@@YAXXZ', reason: 'Evidence', addr: 123 }]) {
@@ -94,6 +94,16 @@ test('duplicate decorated names roll back every requested correction', async (t)
   assert.match(result.body.error, new RegExp(f.symbols[1]));
   assert.deepEqual(f.state(), before);
   assert.deepEqual(f.events(), []);
+});
+
+test('a wrong decorated name can be cleared, which frees it for its real owner', async (t) => {
+  const f = await fixture(t);
+  const cleared = await f.post(f.symbols[1], { decorated: null, reason: 'Invented name: the import table has no such export.' });
+  assert.equal(cleared.status, 200);
+  assert.equal(f.store.get('SELECT decorated FROM symbols WHERE id = ?', f.symbols[1]).decorated, null);
+  assert.equal(f.events().at(-1).data.old.decorated, '?Second@@YAXXZ');
+  const moved = await f.post(f.symbols[0], { decorated: '?Second@@YAXXZ', reason: 'Now unambiguous.' });
+  assert.equal(moved.status, 200);
 });
 
 test('audited decorated corrections preserve identity and confirmation and invalidate every version snapshot', async (t) => {
