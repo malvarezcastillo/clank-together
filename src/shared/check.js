@@ -88,6 +88,38 @@ export function withGlobalBindings(compiled, annotations, nameIndex) {
   return out;
 }
 
+/**
+ * What a comparison looked up in a map, hits and misses: its result holds for as long as these
+ * lookups answer the same (inputsCurrent).
+ */
+class Reads {
+  constructor(map) {
+    this.map = map;
+    this.seen = new Map();
+  }
+
+  get(key) {
+    const value = this.map.get(key);
+    this.seen.set(key, value);
+    return value;
+  }
+}
+
+// What compare.js reads of a symbol.
+const symbolInput = (s) => (s ? [s.addr ?? null, s.size ?? null, s.decorated ?? null] : null);
+
+/**
+ * Whether a unit's comparison would read the same from `symbols` (ID -> symbol) and `nameIndex`
+ * (decorated name -> ID) as it did: every other symbol and name may change without changing its
+ * result. A unit analyzed before its lookups were recorded is never current.
+ */
+export function inputsCurrent(unit, symbols, nameIndex) {
+  const inputs = unit?.inputs;
+  if (!inputs) return false;
+  return inputs.names.every(([name, id]) => (nameIndex.get(name) ?? null) === id)
+    && inputs.symbols.every(([id, was]) => JSON.stringify(symbolInput(symbols.get(id))) === JSON.stringify(was));
+}
+
 /** Lints and compares the compiler output of each unit against the original. */
 export function analyzeCompiled({ compiled, annotations, roots, symbols, nameIndex, pe }) {
   const projectRoots = [...roots.sourceDirs, ...roots.includeDirs].map((d) => '/' + normalizePath(d) + '/');
@@ -96,16 +128,19 @@ export function analyzeCompiled({ compiled, annotations, roots, symbols, nameInd
   const results = [];
   for (const c of compiled) {
     const unit = { file: c.file, compiled: c.ok, timedOut: c.timedOut ?? false, ...(c.cached && { cached: true }), log: trimLog(c.log), includes: c.includes ?? [], lintErrors: [], functions: [], inferred: [], bindings: {}, unannotated: [], errors: [] };
+    const names = new Reads(nameIndex);
+    const read = new Reads(symbols);
     if (c.pre) unit.lintErrors = lintPreprocessed(fs.readFileSync(c.pre, 'latin1'), isProjectFile);
     if (c.ok) {
       try {
         const obj = new CoffObject(fs.readFileSync(c.obj));
         const listing = parseListing(c.cod ? fs.readFileSync(c.cod, 'latin1') : '');
-        Object.assign(unit, compareObject({ obj, listing, file: c.file, annotations, symbols, nameIndex, pe }));
+        Object.assign(unit, compareObject({ obj, listing, file: c.file, annotations, symbols: read, nameIndex: names, pe }));
       } catch (e) {
         unit.errors.push({ file: c.file, message: `could not analyze compiler output: ${e.message}` });
       }
     }
+    unit.inputs = { names: [...names.seen].map(([name, id]) => [name, id ?? null]), symbols: [...read.seen].map(([id, s]) => [id, symbolInput(s)]) };
     results.push(unit);
   }
   return results;

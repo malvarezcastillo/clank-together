@@ -10,7 +10,7 @@ import { lintSubmission, movedFrom } from '../shared/lint.js';
 import { freeTextErrorsAcross, executionCharset, encodedLiteralRules, VIRTUALIZED_RE } from '../shared/freetext.js';
 import { offsetErrors } from '../shared/offsets.js';
 import { unannotatedErrors } from '../shared/unannotated.js';
-import { checkUnits } from '../shared/check.js';
+import { checkUnits, inputsCurrent } from '../shared/check.js';
 import { reconcile } from '../shared/reconcile.js';
 import { STATUS, sameOriginal, resolvedEffectiveHash, resolvedEffectiveParts } from '../shared/compare.js';
 import { listSources, isUnit, unitSettings, loadProject, loadToolchainLock, scanAnnotations } from '../shared/project.js';
@@ -480,7 +480,7 @@ export class Verifier {
     const symbols = this.store.symbolMap(v.id);
     const nameIndex = this.store.nameIndex();
     const scan = scanAnnotations(this.repo.dir, this.project, files);
-    const cacheSnapshot = this.checkSnapshot(files, { version: v, symbols, nameIndex, scan });
+    const cacheSnapshot = this.checkSnapshot(files, { version: v, symbols, scan });
     const jobDir = path.join(this.jobsDir, jobName);
     const started = Date.now();
     try {
@@ -615,33 +615,52 @@ export class Verifier {
     return globalViolations(files, { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), repository: this.globalSources });
   }
 
-  /** Capture before compilation: comparison inputs are as important as source dependencies. */
-  checkSnapshot(files, { version = this.store.currentVersion(), symbols = this.store.symbolMap(version.id), nameIndex = this.store.nameIndex(), scan = scanAnnotations(this.repo.dir, this.project, files) } = {}) {
-    const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  /**
+   * What decides every unit's compile and comparison alike. The symbols and names a comparison
+   * resolves are not part of it: each unit records the ones it read (check.js inputsCurrent), so
+   * a name learned for one unit leaves the results of the others standing.
+   */
+  checkContext(files, version = this.store.currentVersion()) {
     const paths = new Set(this.repo.git(['ls-tree', '-r', '--name-only', 'HEAD']).trim().split('\n').filter(Boolean));
     for (const [file, text] of Object.entries(files)) {
       if (text === null) paths.delete(file);
       else paths.add(file);
     }
-    // Comparison resolves annotated IDs and decorated names only. Newly registered unnamed
-    // symbols affect reconciliation (rerun against current metadata), not compiler analysis.
-    const referenced = new Set(scan.annotations.map((a) => a.id).filter(Boolean));
-    for (const id of nameIndex.values()) referenced.add(id);
+    return createHash('sha256').update(JSON.stringify({ project: this.project, toolchain: this.config.toolchainLock,
+      env: this.config.envDigest, runners: this.config.runners, version, paths: [...paths].sort() })).digest('hex');
+  }
+
+  /** Capture before compilation: comparison inputs are as important as source dependencies. */
+  checkSnapshot(files, { version = this.store.currentVersion(), symbols = this.store.symbolMap(version.id), scan = scanAnnotations(this.repo.dir, this.project, files) } = {}) {
     return {
-      format: 2, head: this.repo.head(), overrides: { ...files },
-      context: hash({ project: this.project, toolchain: this.config.toolchainLock,
-        env: this.config.envDigest, runners: this.config.runners, version,
-        symbols: [...symbols].filter(([id]) => referenced.has(id)), names: [...nameIndex],
-        globals: scan.annotations.filter((a) => a.kind === 'GLOBAL'), paths: [...paths].sort() }),
-      // Partial analysis cannot rediscover GLOBAL bindings emitted by a reused unit.
-      globalBindings: scan.annotations.some((a) => a.kind === 'GLOBAL'),
+      format: 3, head: this.repo.head(), overrides: { ...files },
+      context: this.checkContext(files, version),
       annotationErrors: [...scan.errors, ...lintAnnotations(scan.annotations, symbols)],
     };
   }
 
+  /** The names the units of one check are compared with: the database's, then each unit's GLOBAL bindings in order (check.js). */
+  comparisonNames(units) {
+    const names = new Map(this.store.nameIndex());
+    for (const u of units) for (const [name, id] of u.globalBindings ?? []) if (!names.has(name)) names.set(name, id);
+    return names;
+  }
+
+  /**
+   * Whether what `check` was compared with has changed since it was captured (a symbol correction,
+   * a name another merge learned, a new target): its analysis must not be evaluated or committed.
+   */
+  inputsChanged(check, cacheSnapshot, files) {
+    if (!cacheSnapshot) return false;
+    if (cacheSnapshot.context !== this.checkContext(files)) return true;
+    const symbols = this.store.symbolMap(this.store.currentVersion().id);
+    const names = this.comparisonNames(check.units);
+    return check.units.some((u) => !inputsCurrent(u, symbols, names));
+  }
+
   // Store evidence only, never evaluation, ownership, regression or review approvals.
   rememberCheck(batchId, { check, rec, changedHeaders, cacheSnapshot }) {
-    if (!cacheSnapshot || cacheSnapshot.format !== 2) return;
+    if (!cacheSnapshot || cacheSnapshot.format !== 3) return;
     const compact = {
       annotationErrors: check.annotationErrors,
       analysisNames: check.analysisNames,
@@ -661,7 +680,7 @@ export class Verifier {
       try {
         const candidate = decodeCheck(row.check_json);
         const s = candidate.cacheSnapshot;
-        if (s?.format === 2 && s.head === row.head && s.context === snapshot.context && s.overrides && candidate.check?.units) {
+        if (s?.format === 3 && s.head === row.head && s.context === snapshot.context && s.overrides && candidate.check?.units) {
           saved = candidate;
           break;
         }
@@ -696,18 +715,22 @@ export class Verifier {
       } catch { saved = null; }
     }
     const known = new Map((saved?.check.units ?? []).map((u) => [u.file, u]));
+    const symbols = this.store.symbolMap(this.store.currentVersion().id);
+    const names = this.comparisonNames(saved?.check.units ?? []);
     let stale = [...required].filter((file) => {
       const u = known.get(file);
-      return !u?.compiled || u.errors?.length || !Array.isArray(u.includes) || changed.has(file) || u.includes.some((h) => changed.has(h));
+      return !u?.compiled || u.errors?.length || !Array.isArray(u.includes) || changed.has(file) || u.includes.some((h) => changed.has(h)) || !inputsCurrent(u, symbols, names);
     });
     let result;
     if (!saved || stale.length) {
       let part = await this.check(files, `merge-${batch.id}`, { lint: false, onlyUnits: stale,
         cachedUnits: saved?.check.units ?? [], unitOrder: [...required] });
       let compiled = part.check.units.length;
-      // New global bindings can change comparison of otherwise unchanged objects. Recheck the
-      // whole required set rather than combining results analyzed against different name maps.
-      if (saved && snapshot.globalBindings && part.check.units.every((u) => u.compiled && !u.timedOut) && JSON.stringify(part.check.analysisNames) !== JSON.stringify(saved.check.analysisNames)) {
+      // A recompiled unit can bind a GLOBAL's name differently, which changes what the reused
+      // units resolve. Recheck the whole required set rather than combining results analyzed
+      // against different name maps.
+      const partNames = new Map(part.check.analysisNames);
+      if (saved && part.check.units.every((u) => u.compiled && !u.timedOut) && saved.check.units.some((u) => !stale.includes(u.file) && !inputsCurrent(u, symbols, partNames))) {
         // Coverage was selected before the first await. A second build on newer main would
         // falsely certify that snapshot without discovering its newly added includers.
         if (this.repo.head() !== snapshot.head) return { ...part, retryRequired: true, reused: 0, compiled };

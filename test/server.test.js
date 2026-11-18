@@ -622,7 +622,7 @@ test('a header batch is verified on its own units and merged with every includer
   for (const u of ['src/inc_a.cpp', 'src/inc_b.cpp', 'src/inc_c.cpp']) ctx.store.run('INSERT OR IGNORE INTO unit_deps (unit, header) VALUES (?, ?)', u, 'src/shared.h');
   const files = { 'src/inc_a.cpp': 'int a() { return 1; }\n', 'src/shared.h': 'struct S { int x; };\n' };
   const batch = Number(ctx.store.run(`INSERT INTO batches (user_id, base_commit, files_json, state, created_at, result_json) VALUES (?, ?, ?, 'open', ?, ?)`, user.id, ctx.repo.head(), JSON.stringify(files), now(), JSON.stringify({ mergedFiles: files })).lastInsertRowid);
-  const unit = (file) => ({ file, compiled: true, includes: ['src/shared.h'], bindings: {}, lintErrors: [], unannotated: [], inferred: [], errors: [], functions: [] });
+  const unit = (file) => ({ file, compiled: true, includes: ['src/shared.h'], bindings: {}, lintErrors: [], unannotated: [], inferred: [], errors: [], functions: [], inputs: { names: [], symbols: [] } });
   const rec = { conflicts: [], unknown: [], learned: [], learnedAddresses: [] };
 
   const calls = [];
@@ -1373,7 +1373,7 @@ test('batches: one compile, auto-approval, peer review, one function sent back, 
     check: {
       annotationErrors: [],
       units: [{
-        file: 'src/batch.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [],
+        file: 'src/batch.cpp', compiled: true, lintErrors: [], unannotated: [], bindings: {}, inferred: [], includes: [], errors: [], inputs: { names: [], symbols: [] },
         functions: [
           { id: a, status: STATUS.EXACT, score: 1, file: 'src/batch.cpp', codeHash: 'hash-a', relocations: [], size: { ours: 8, original: 8 } },
           { id: b, status: STATUS.MISMATCH, score: 0.9, file: 'src/batch.cpp', codeHash: bHash, relocations: [], size: { ours: 8, original: 8 } },

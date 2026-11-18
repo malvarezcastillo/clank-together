@@ -603,7 +603,9 @@ test('symbol corrections during compilation cannot commit analysis from the old 
   ctx.verifier.mergeCheck = async () => {
     const cacheSnapshot = ctx.verifier.checkSnapshot(files);
     await new Promise((resolve) => { release = resolve; });
-    return { check: { units: [] }, rec: {}, changedHeaders: [], cacheSnapshot };
+    // The unit was compared while fn_1 had no decorated name.
+    const unit = { file: 'src/base.cpp', compiled: true, includes: [], functions: [], inputs: { names: [], symbols: [['fn_1', [null, null, null]]] } };
+    return { check: { units: [unit] }, rec: {}, changedHeaders: [], cacheSnapshot };
   };
   ctx.verifier.refreshBaselines = async () => {};
   ctx.verifier.evaluate = () => assert.fail('old symbol analysis must not be evaluated');

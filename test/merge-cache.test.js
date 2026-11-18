@@ -41,6 +41,8 @@ function fixture(t) {
   const calls = [];
   const failures = new Set();
   let during = null;
+  // What each unit's comparison looked up (check.js inputsCurrent): nothing, unless a test says so.
+  const reads = new Map();
   verifier.check = async (files, _job, { onlyUnits } = {}) => {
     const cacheSnapshot = verifier.checkSnapshot(files);
     const selected = onlyUnits ?? units;
@@ -48,12 +50,13 @@ function fixture(t) {
     const check = { annotationErrors: cacheSnapshot.annotationErrors, analysisNames: [...names], units: selected.map((file) => ({
       file, compiled: !failures.has(file), includes: file === units[0] ? ['src/shared.h', 'src/a.h'] : ['src/shared.h'],
       lintErrors: [], errors: [], functions: [{ id: file, status: 'mismatch', comparisonStatus: 'mismatch', score: 0.5 }], inferred: [], bindings: {}, unannotated: [], globalBindings: [],
+      inputs: reads.get(file) ?? { names: [], symbols: [] },
     })) };
     if (during) { const fn = during; during = null; await fn(); }
     return { check, rec: {}, changedHeaders: Object.keys(files).filter((f) => f.endsWith('.h')), cacheSnapshot };
   };
   const files = { 'src/shared.h': '#define VALUE 2\n' };
-  return { verifier, rows, version, symbols, names, calls, failures, commit, files, units, during: (fn) => { during = fn; } };
+  return { verifier, rows, version, symbols, names, calls, failures, commit, files, units, reads, during: (fn) => { during = fn; } };
 }
 
 test('expanded retries reuse unchanged units, rebuild private and shared dependencies, and match fresh analysis', async (t) => {
@@ -71,7 +74,7 @@ test('expanded retries reuse unchanged units, rebuild private and shared depende
   assert.equal((await f.verifier.mergeCheck({ id: 1 }, changed)).compiled, 2);
 });
 
-test('added/deleted include candidates and project/toolchain/target/name changes invalidate evidence', async (t) => {
+test('added/deleted include candidates and project/toolchain/target changes invalidate evidence', async (t) => {
   const f = fixture(t);
   await f.verifier.mergeCheck({ id: 1 }, f.files);
   for (const change of [
@@ -80,11 +83,28 @@ test('added/deleted include candidates and project/toolchain/target/name changes
     () => { f.verifier.project.flags = ['/O2']; },
     () => { f.verifier.config.toolchainLock = { clSha256: 'new' }; },
     () => { f.version.sha256 = 'second'; },
-    () => { f.names.set('?new', 'fn_new'); },
   ]) {
     change();
     assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 2);
   }
+});
+
+test('a name or symbol invalidates only the units whose comparison read it', async (t) => {
+  const f = fixture(t);
+  f.symbols.set('fn_a', { id: 'fn_a', kind: 'function', addr: 0x401000, size: 8 });
+  f.reads.set('src/a.cpp', { names: [['?Callee@@YAXXZ', null]], symbols: [['fn_a', [0x401000, 8, null]]] });
+  await f.verifier.mergeCheck({ id: 1 }, f.files);
+  f.names.set('?Other@@YAXXZ', 'fn_other');
+  f.symbols.set('fn_other', { id: 'fn_other', kind: 'function', addr: 0x402000, size: 4 });
+  assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 0, 'what no unit read changes no result');
+  f.names.set('?Callee@@YAXXZ', 'fn_callee');
+  assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 1);
+  assert.deepEqual(f.calls.at(-1), ['src/a.cpp'], 'a name it could not resolve is now known');
+  f.reads.set('src/a.cpp', { names: [['?Callee@@YAXXZ', 'fn_callee']], symbols: [['fn_a', [0x401000, 8, null]]] });
+  await f.verifier.mergeCheck({ id: 1 }, f.files);
+  f.symbols.get('fn_a').addr = 0x401010;
+  assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 1);
+  assert.deepEqual(f.calls.at(-1), ['src/a.cpp'], 'the address of a symbol it was compared with was corrected');
 });
 
 test('split children retain their own retries without overwriting parent provenance', async (t) => {
@@ -138,7 +158,6 @@ test('unrelated annotations refresh errors without recompiling other units', asy
 test('GLOBAL annotations do not force unchanged units to compile when binding context is stable', async (t) => {
   const f = fixture(t);
   f.commit({ 'src/global.cpp': '// GLOBAL: gl_00001 gValue\nint gValue;\n' });
-  assert.equal(f.verifier.checkSnapshot(f.files).globalBindings, true);
   await f.verifier.mergeCheck({ id: 1 }, f.files);
   f.commit({ 'src/a.h': '#define A 42\n' });
   const retry = await f.verifier.mergeCheck({ id: 1 }, f.files);
@@ -162,6 +181,8 @@ test('reconciliation starts from comparison status rather than cached approvals'
 test('GLOBAL fallback crossing HEAD requests new coverage instead of certifying new includers', async (t) => {
   const f = fixture(t);
   f.commit({ 'src/global.cpp': '// GLOBAL: gl_00001\nint gValue;\n' });
+  // b.cpp was compared while nothing bound the global's name.
+  f.reads.set('src/b.cpp', { names: [['?gValue@@3HA', null]], symbols: [] });
   await f.verifier.mergeCheck({ id: 1 }, f.files);
   const original = f.rows.get(1).check_json;
   f.commit({ 'src/a.h': '#define A 42\n' });
@@ -186,6 +207,7 @@ test('GLOBAL fallback crossing HEAD requests new coverage instead of certifying 
 test('unrelated unnamed registrations reuse compilation but reconcile newly known addresses', async (t) => {
   const f = fixture(t);
   const check = f.verifier.check;
+  f.reads.set('src/a.cpp', { names: [['?NewGlobal@@3HA', null]], symbols: [] });
   f.verifier.check = async (...args) => {
     const result = await check(...args);
     result.check.units[0].inferred = [{ symbol: '?NewGlobal@@3HA', addr: 0x405000 }];
@@ -199,7 +221,8 @@ test('unrelated unnamed registrations reuse compilation but reconcile newly know
   assert.deepEqual(after.rec.learned, [{ decorated: '?NewGlobal@@3HA', id: 'gl_00001', addr: 0x405000 }]);
   f.symbols.get('gl_00001').decorated = '?NewGlobal@@3HA';
   f.names.set('?NewGlobal@@3HA', 'gl_00001');
-  assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 2, 'decorated resolution changes still invalidate analysis');
+  assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 1, 'decorated resolution changes still invalidate the analysis that read the name');
+  assert.deepEqual(f.calls.at(-1), ['src/a.cpp']);
 });
 
 test('cold merges honor affected-unit selection without losing verification emitter coverage', async (t) => {

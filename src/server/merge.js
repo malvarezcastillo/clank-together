@@ -444,9 +444,9 @@ export class Merger {
     // refreshBaselines can yield and deliberately discards its result when main advances.
     // Never evaluate or commit against that discarded baseline, even for disjoint commits.
     if (this.repo.head() !== baselineHead) return retry();
-    // Symbol corrections and target changes need not advance Git. Never commit cached analysis
-    // against comparison inputs that changed while compilation or baseline checks were awaiting.
-    if (cacheSnapshot && cacheSnapshot.context !== this.verifier.checkSnapshot(merged.files).context) return retry('comparison inputs changed while checking');
+    // Symbol corrections and target changes need not advance Git. Never commit analysis whose
+    // comparison inputs changed while compilation or baseline checks were awaiting.
+    if (this.verifier.inputsChanged(check, cacheSnapshot, merged.files)) return retry('comparison inputs changed while checking');
     // Unnamed symbols can be registered while compiling without changing compiler analysis.
     // Reconcile their current addresses before any regression/evaluation/commit decision.
     for (const u of check.units) for (const f of u.functions) if (f.comparisonStatus) { f.status = f.comparisonStatus; delete f.conflictedReferences; }
