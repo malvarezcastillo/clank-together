@@ -3,8 +3,19 @@
     auto_https off
 }
 :8080 {
+    # Crawlers read robots.txt only at the site root; Forgejo's own is under /git/, where none look.
+    handle /robots.txt {
+        respond <<TXT
+            User-agent: *
+            Disallow: /git/
+
+            TXT 200
+    }
     redir /git /git/ 308
     handle_path /git/* {
+        # Every commit of every file is a page that costs a git process: refuse crawlers outright.
+        @crawler header_regexp User-Agent (?i)(bot|crawl|spider|externalagent)
+        respond @crawler 403
         reverse_proxy forgejo:3000
     }
     handle_path /hooks/* {
