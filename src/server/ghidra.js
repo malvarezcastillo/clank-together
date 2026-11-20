@@ -75,7 +75,7 @@ export class ServerGhidra {
     const exe = path.join(this.dir, PROGRAM);
     fs.copyFileSync(v.file, exe);
     this.log.info(`ghidra: analyzing ${v.id} (this takes a while)`);
-    await this.headless(['-import', exe, '-overwrite', '-postScript', 'ApplySymbols.java', this.writeSymbols(v.id)], 4 * 3600_000);
+    await this.headless(['-import', exe, '-overwrite', '-postScript', 'ApplySymbols.java', this.writeSymbols(v.id), '-postScript', 'FixNoReturn.java'], 4 * 3600_000);
     fs.rmSync(exe, { force: true });
     this.store.setMeta('ghidra.version', v.id);
     await this.refresh({ applySymbols: false });
@@ -86,7 +86,9 @@ export class ServerGhidra {
     const v = this.store.currentVersion();
     if (this.store.getMeta('ghidra.version') !== v.id) return this.build();
     const t0 = Date.now();
-    if (applySymbols) await this.headless(['-process', PROGRAM, '-noanalysis', '-postScript', 'ApplySymbols.java', this.writeSymbols(v.id)], 3600_000);
+    const fix = ['-postScript', 'FixNoReturn.java'];
+    if (applySymbols) await this.headless(['-process', PROGRAM, '-noanalysis', '-postScript', 'ApplySymbols.java', this.writeSymbols(v.id), ...fix], 3600_000);
+    else await this.headless(['-process', PROGRAM, '-noanalysis', ...fix], 3600_000);
     const jsonl = path.join(this.dir, 'originals.jsonl');
     await this.headless(['-process', PROGRAM, '-noanalysis', '-readOnly', '-postScript', 'ExportOriginals.java', jsonl, '30'], 6 * 3600_000);
     const n = await this.originals.import(v.id, jsonl);
