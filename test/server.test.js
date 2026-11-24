@@ -545,12 +545,15 @@ test('merging learns unknown references as symbols, except compiler-generated on
       { decorated: '?Helper@@YAXXZ', addr: 0x401d00 },
       { decorated: '__ehhandler$?Helper@@YAXXZ', addr: 0x401d10 },
       { decorated: '__unwindfunclet$?Helper@@YAXXZ$0', addr: 0x401d20 },
+      { decorated: '__Init_thread_epoch', addr: GLOBAL_ADDR + 8 },
     ],
   };
   ctx.merger.applyCheckToDatabase({ units: [] }, rec, ctx.repo.head(), null);
   assert.equal(at(0x401d00)?.decorated, '?Helper@@YAXXZ', 'an ordinary function is learned');
   assert.equal(at(0x401d10), undefined, 'no symbol for its EH handler');
   assert.equal(at(0x401d20), undefined, 'nor for its unwind funclet');
+  assert.equal(at(GLOBAL_ADDR + 8)?.decorated, '__Init_thread_epoch', 'data of the runtime is no task: learned');
+  assert.match(at(GLOBAL_ADDR + 8).id, /^gl_/);
 });
 
 test('a function main no longer has loses its status and its done task reopens; kept, moved or failed-unit ones stay', () => {
