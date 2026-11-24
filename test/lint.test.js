@@ -76,6 +76,11 @@ test('banned constructs and paths are rejected', () => {
     'unknown pragma': '#pragma bogus',
     'line directive': '#line 1 "x.cpp"',
     naked: '__declspec(naked) void f() {}',
+    'naked after another modifier': '__declspec(noinline naked) void f() {}',
+    'naked after a modifier with arguments': '__declspec(align(16) naked) void f() {}',
+    '_declspec': '_declspec(naked) void f() {}',
+    'declspec code_seg': '__declspec(code_seg(".text$x")) int f() { return 1; }',
+    'digraph pragma': '%:pragma code_seg(".text")',
     'absolute include': '#include "/etc/passwd"',
     'parent include': '#include "../../secret.h"',
     'macro include': '#include MACRO',
@@ -88,6 +93,34 @@ test('banned constructs and paths are rejected', () => {
   assert.ok(lintSubmission({ 'src/player.txt': 'int x;' }, { allowedPaths: ['src/**'] }).length > 0, 'extension');
   assert.deepEqual(lintSubmission({ 'src/table.inc': '  {0, 7, 7, 1079},\n' }, { allowedPaths: ['src/**'] }), [], 'an #included table fragment is source');
   assert.ok(lintSubmission({}, allowed).length > 0, 'empty');
+});
+
+// Both compile with the pinned MSVC and reached the compiler unseen: the apostrophes of two numbers
+// read as one character literal, and the quote inside a raw string as its end, with the banned
+// code between them taken for literal text. The /P output keeps both spellings, so the second
+// lint was blind to them too.
+test('digit separators and raw strings do not hide the code after them', () => {
+  const hidden = {
+    'digit separators': "int f(int x) { int a = 0'0; __asm { mov eax, 0x1234 } int b = 0'0; return a + b + x; }",
+    'hex and binary separators': "int a = 0xFF'FF; __asm nop; int b = 0b1'0;",
+    'raw string': 'const char* g = R"(")"; __declspec(naked) void f() { __asm _emit 0x90 __asm ret }  //"',
+    'raw string with a delimiter': 'const char* g = u8R"x(a)" b)x"; void f() { __asm nop } const char* h = "";',
+    'raw string over several lines': 'const char* g = R"(\n"\n)"; void f() { __asm nop } //"',
+  };
+  for (const [name, code] of Object.entries(hidden)) {
+    assert.ok(lintSubmission({ 'src/player.cpp': code }, allowed).some((e) => /inline assembly/.test(e.message)), name);
+    const pre = ['#line 1 "z:\\\\job\\\\src\\\\player.cpp"', code.replace(/\s*\/\/"$/, '')].join('\n');
+    assert.ok(lintPreprocessed(pre, (f) => f.includes('/src/')).some((e) => /inline assembly/.test(e.message)), `${name}, after preprocessing`);
+  }
+  const clean = [
+    "int big = 1'000'000; char q = '\\''; wchar_t w = L'x'; char8_t c = u8'a'; int hex = 0xDEAD'BEEF;",
+    'const char* a = R"(__asm "quoted" )"; const wchar_t* b = LR"x()" __asm)x";',
+    'const char* c = "__asm"; double d = 1.5e+3; float e = .5f;',
+  ].join('\n');
+  assert.deepEqual(lintSubmission({ 'src/player.cpp': clean }, allowed), []);
+  // Lines after a raw string that spans several keep their numbers.
+  const [e] = lintSubmission({ 'src/player.cpp': 'const char* g = R"(\n\n)";\nvoid f() { __asm nop }\n' }, allowed);
+  assert.equal(e.line, 4);
 });
 
 test('large numeric initializers are rejected', () => {
