@@ -4,6 +4,7 @@
 import crypto from 'node:crypto';
 import { insnAt, normalizePath } from './listing.js';
 import { FUNCTION_KINDS, hex } from './annotations.js';
+import { markedRegions, regionMismatch } from './protector.js';
 
 export const STATUS = {
   EXACT: 'exact', // every byte and every relocation target matches
@@ -299,9 +300,20 @@ function literalKey(bytes, name) {
 /** Compares one compiled function with the original bytes at `addr`. */
 export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc, literalOf }) {
   const ours = fn.bytes;
+  // Regions a protector rewrote (protector.js): compared by where they start and end, not by content.
+  const marked = markedRegions(ours);
+  // The database measures such a function up to the protector's first jump; ours is whole.
+  const measured = origSize;
+  if (marked.regions.length && origSize === marked.regions[0].start + 5) origSize = ours.length;
   const compareLen = Math.max(ours.length, origSize || 0);
   const orig = pe.read(addr, compareLen);
   const masked = new Uint8Array(compareLen);
+  let protectedError = marked.error;
+  for (const region of marked.regions) protectedError ??= regionMismatch(pe, addr, orig, region);
+  const regions = protectedError ? [] : marked.regions;
+  if (protectedError) origSize = measured;
+  for (const g of regions) masked.fill(1, g.start, g.end);
+  const hidden = (offset) => regions.some((g) => offset >= g.start && offset < g.end);
   const relocResults = [];
   // What each reference reaches: a symbol's address plus the addend, so `g_object + 0x18` and a
   // name bound to that same address count as the same code (effectiveHash).
@@ -345,6 +357,14 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     let actual = null;
     let ok = true;
     let reason = null;
+
+    // Inside a protected region the original has nothing to judge a reference by.
+    if (hidden(r.offset)) {
+      const literal = literalOf?.(r.symbol);
+      if (literal) effective.push(`${r.offset}:${r.kind}:=${literalKey(literal, symName)}+${addend}`);
+      else note(r, symName, target, addend);
+      continue;
+    }
 
     if (r.kind === 'abs') {
       if (!absByValue && !baseRelocs.has(addr + r.offset)) {
@@ -399,7 +419,10 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
 
   const sameLength = !origSize || origSize === ours.length;
   // Relocated fields only, before line numbers are masked against the original (effectiveHash).
+  // A protected region is our own code all the same: it counts in the hash.
   const relocMasked = Uint8Array.from(masked);
+  for (const g of regions) relocMasked.fill(0, g.start, g.end);
+  for (const r of fn.relocs) if (hidden(r.offset)) relocMasked.fill(1, r.offset, Math.min(r.offset + r.width, compareLen));
   if (sameLength && proc) maskLineNumbers({ ours, orig, masked, proc });
 
   // Byte comparison outside relocated fields.
@@ -438,6 +461,9 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     ...effectiveFingerprint(ours, relocMasked, effective, unresolvedRefs, pe.is64),
     diffRegions: sameLength ? diffRegions(diffs, ours, orig, proc) : [],
     relocations: relocResults.filter((r) => !r.ok || r.unresolved),
+    // Regions compared by their bounds only, and why markers in our code found no such region.
+    ...(regions.length && { protected: regions.map((g) => ({ offset: g.start, length: g.end - g.start, id: g.id })) }),
+    ...(protectedError && { protectedError }),
     // Where the original points is only meaningful when the code lines up.
     inferred: status === STATUS.MISMATCH ? [] : inferred,
   };

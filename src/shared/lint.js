@@ -2,6 +2,7 @@
 // Everything submitted is untrusted, so this is deliberately strict.
 
 import path from 'node:path';
+import { MARKER_LENGTH, markerId } from './protector.js';
 
 export const DEFAULT_LIMITS = {
   maxFiles: 24,
@@ -140,6 +141,18 @@ export function stripCommentsAndStrings(src) {
   return out;
 }
 
+// A protector's region marker (protector.js) is written as the SDK writes it, eighteen bytes
+// emitted in place. It is the only inline assembly allowed: a jump over sixteen bytes of its own,
+// and compareFunction accepts it only where the original has a protected region.
+const EMIT_RUN_RE = new RegExp(`(?:\\b__asm\\s+_emit\\s+0x[0-9A-Fa-f]{1,2}\\b[\\s\\\\]*){${MARKER_LENGTH}}`, 'g');
+
+function withoutProtectorMarkers(code) {
+  return code.replace(EMIT_RUN_RE, (run) => {
+    const bytes = [...run.matchAll(/0x([0-9A-Fa-f]{1,2})/g)].map((m) => parseInt(m[1], 16));
+    return markerId(bytes) === null ? run : run.replace(/[^\n]/g, ' ');
+  });
+}
+
 function lineOf(text, index) {
   let n = 1;
   for (let i = 0; i < index; i++) if (text.charCodeAt(i) === 10) n++;
@@ -149,7 +162,7 @@ function lineOf(text, index) {
 /** Checks one file's contents. Also used on preprocessed output. */
 export function lintSource(file, text, { allowedPragmas = DEFAULT_PRAGMAS, maxInitializerNumbers = DEFAULT_LIMITS.maxInitializerNumbers } = {}) {
   const errors = [];
-  const code = stripCommentsAndStrings(text);
+  const code = withoutProtectorMarkers(stripCommentsAndStrings(text));
 
   for (const b of BANNED) {
     const re = new RegExp(b.re.source, b.re.flags.includes('m') ? 'gm' : 'g');

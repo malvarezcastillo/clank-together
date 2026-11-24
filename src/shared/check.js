@@ -187,6 +187,8 @@ export function summarizeCheck(result, rec, files = null) {
         diffRegions: f.diffRegions?.slice(0, 12),
         relocations: f.relocations,
         ...(f.deletingDestructor && { deletingDestructor: true }),
+        ...(f.protected && { protected: f.protected }),
+        ...(f.protectedError && { protectedError: f.protectedError }),
       })),
       folded: (u.folded ?? []).map((f) => ({ id: f.id, line: f.line, status: f.status, score: f.score, size: f.size })),
     })),

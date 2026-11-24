@@ -89,6 +89,8 @@ function printCheck(r) {
     for (const e of [...u.lintErrors, ...u.errors]) console.log(`  ! ${e.message}`);
     for (const f of u.functions) {
       console.log(`  ${f.id} ${f.addr ?? '?'} ${(f.name ?? '').padEnd(30)} ${f.status.padEnd(17)} ${(f.score * 100).toFixed(1)}%  size ${f.size?.ours ?? '-'}/${f.size?.original ?? '?'}${f.effectiveHash ? `  ${f.effectiveHash}` : ''}`);
+      for (const g of f.protected ?? []) console.log(`      +0x${g.offset.toString(16)}: protected region, ${g.length} bytes, compared by where it starts and ends`);
+      if (f.protectedError) console.log(`      protector markers do not fit: ${f.protectedError}`);
       if (f.deletingDestructor) console.log(`      ${f.id} is a scalar deleting destructor in the original: remove this annotation and claim it no-decompile (compiler_generated)`);
       for (const d of f.diffRegions ?? []) console.log(`      +0x${d.offset.toString(16)}: ours ${d.ours} orig ${d.original}  ${d.ourInstruction ?? ''}${d.sourceLine ? ` (line ${d.sourceLine})` : ''}`);
       for (const x of f.relocations ?? []) console.log(`      reloc +0x${x.offset.toString(16)} ${x.symbol}: ${x.ok ? `not yet named, original points at 0x${hex(x.actual)}` : x.reason}`);

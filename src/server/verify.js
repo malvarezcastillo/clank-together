@@ -1256,14 +1256,25 @@ export class Verifier {
     } else if (wrongRefs.length) {
       feedback.summary = `references point at the wrong symbols: ${wrongRefs.map((c) => c.message).join('; ')}`;
       state = 'needs_cleanup';
-    } else if (virtual && !(targetAddr && isVirtualizedStub(this.getPe(), targetAddr, target.size?.original))) {
+    } else if (target.protected && !virtual) {
+      feedback.summary = `${targetId} has ${target.protected.length} region(s) the original's protector rewrote: add // VIRTUALIZED: <build date> <address> naming the build their code comes from`;
+      state = 'needs_cleanup';
+    } else if (virtual && !target.protected && !(targetAddr && isVirtualizedStub(this.getPe(), targetAddr, target.size?.original))) {
       feedback.summary = `${targetId} carries // VIRTUALIZED but its original is ordinary code (no jump into a section whose bytes the file lacks): remove the marker and port the function`;
       state = 'needs_cleanup';
+    } else if (virtual && target.protected) {
+      // Marked like the build the protector was given: everything but the regions themselves was
+      // compared with the original. Their code comes from the reference build, for a maintainer.
+      const outside = target.status === STATUS.MISMATCH ? `differs from the original (score ${(score * 100).toFixed(1)}%)` : 'is byte-identical';
+      const bytes = target.protected.reduce((n, g) => n + g.length, 0);
+      feedback.summary = `${target.protected.length} protected region(s), ${bytes} bytes, start and end where the original's do; the code outside them ${outside}. Their code (${virtual.build === 'emulated' ? `recovered by emulating the VM entered at ${virtual.addr}` : `from the ${virtual.build} build at ${virtual.addr}`}) is not in the target: sent to maintainer review`;
+      feedback.virtualized = virtual;
+      state = 'in_review';
     } else if (virtual && (target.status === STATUS.MISMATCH || target.status === STATUS.UNRESOLVED)) {
       // The original is a protector stub, so neither the bytes nor peers reading them can judge the
       // body: it comes from the reference build in the marker (or the protector's emulated VM), and a maintainer approves it.
       const source = virtual.build === 'emulated' ? `recovered by emulating the VM entered at ${virtual.addr}` : `from the ${virtual.build} build at ${virtual.addr}`;
-      feedback.summary = `virtualized in the original (body ${source}), sent to maintainer review: the target only has a protector stub, so it is not compared or peer reviewed`;
+      feedback.summary = `virtualized in the original (body ${source}), sent to maintainer review: the target only has a protector stub, so it is not compared or peer reviewed${target.protectedError ? ` (its markers do not fit: ${target.protectedError})` : ''}`;
       feedback.virtualized = virtual;
       state = 'in_review';
     } else if (target.status === STATUS.EXACT || (target.status === STATUS.UNRESOLVED && policy.reviewAt === 'match_unresolved')) {
