@@ -284,6 +284,16 @@ export function compareLiteral(ours, addr, pe, name) {
   return { ok: false, reason: `constant differs: ours ${show(a)}, original ${show(full)}` };
 }
 
+/**
+ * What a constant is to the code that refers to it (effectiveHash): its bytes, or for a __FILE__
+ * string its file name, as compareLiteral judges it (the directories are the build machine's).
+ */
+function literalKey(bytes, name) {
+  const text = (name.startsWith('??_C@_1') ? bytes.toString('utf16le') : bytes.toString('latin1')).replace(/\0+$/, '');
+  const path = SOURCE_PATH_RE.exec(text);
+  return crypto.createHash('sha1').update(path ? `file:${path[1].toLowerCase()}` : bytes).digest('hex').slice(0, 16);
+}
+
 /** Compares one compiled function with the original bytes at `addr`. */
 export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc, literalOf }) {
   const ours = fn.bytes;
@@ -339,6 +349,8 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     if (literal) {
       const res = compareLiteral(literal, actual, pe, symName);
       relocResults.push({ offset: r.offset, symbol: symName, id: null, ok: res.ok, unresolved: false, actual, reason: res.reason, literal: true });
+      // A constant has no address of its own: what the code reaches is its content.
+      effective.push(`${r.offset}:${r.kind}:=${literalKey(literal, symName)}+${addend}`);
       continue;
     }
 
@@ -591,7 +603,7 @@ export function codeHash(bytes, proc) {
 
 /**
  * Fingerprint of what a function does once linked: its bytes outside relocated fields plus where
- * each reference lands. Renaming a global, or reaching a member of an object through the object's
+ * each reference lands (for a string or numeric constant, what it holds). Renaming a global, or reaching a member of an object through the object's
  * symbol instead of a symbol of its own at that address, leaves it unchanged. Source lines play no
  * part (unlike codeHash): an operand that happens to equal its line number would make moving the
  * function look like changing it.

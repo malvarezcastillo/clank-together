@@ -191,6 +191,38 @@ test('a thread-local variable is checked by its offset in the TLS template', () 
   assert.equal(tlsCase({ field: 0xc, directory: false }).status, STATUS.EXACT);
 });
 
+// `push offset literal; ret`: the same instruction bytes whatever the constant holds.
+function literalCase(content, name = '??_C@_05A@hello@') {
+  const code = Buffer.from([0x68, 0, 0, 0, 0, 0xc3]);
+  const text = Buffer.alloc(0x20, 0xcc);
+  code.copy(text);
+  text.writeUInt32LE(0x402000, 1);
+  const rdata = Buffer.alloc(0x40);
+  rdata.write('hello\0', 'latin1');
+  const pe = new PEImage(buildPe({ sections: [{ name: '.text', rva: 0x1000, data: text }, { name: '.rdata', rva: 0x2000, data: rdata, characteristics: 0x40000040 }], relocsStripped: true }));
+  const obj = new CoffObject(buildCoff({
+    sections: [
+      { name: '.text$mn', data: code, relocs: [{ offset: 1, symbolIndex: 1, type: 0x06 }] },
+      { name: '.rdata', data: Buffer.from(content, 'latin1'), characteristics: 0x40301040 },
+    ],
+    symbols: [{ name: '?Name@@YAPBDXZ', section: 1, type: 0x20 }, { name, section: 2 }],
+  }));
+  return compareFunction({ fn: obj.functions()[0], addr: 0x401000, origSize: 6, pe, resolve: () => null, symbols: new Map(), literalOf: (s) => obj.literal(s) });
+}
+
+test('effectiveHash tells which constant a function refers to', () => {
+  const hello = literalCase('hello\0');
+  assert.equal(hello.status, STATUS.EXACT);
+  const other = literalCase('jello\0');
+  assert.equal(other.status, STATUS.MISMATCH);
+  assert.equal(hello.codeHash, other.codeHash, 'the instructions are the same bytes');
+  assert.notEqual(hello.effectiveHash, other.effectiveHash, 'another string is other code');
+  assert.equal(hello.effectiveHash, literalCase('hello\0', '??_C@_05B@hello@').effectiveHash, 'the same string under another symbol name');
+  // __FILE__ holds the build machine's path: the file name is what counts, as it does when compared.
+  assert.equal(literalCase('z:\\job\\src\\player.cpp\0').effectiveHash, literalCase('d:\\work\\src\\player.cpp\0').effectiveHash);
+  assert.notEqual(literalCase('z:\\job\\src\\player.cpp\0').effectiveHash, literalCase('z:\\job\\src\\enemy.cpp\0').effectiveHash);
+});
+
 test('calling the wrong function is a mismatch', () => {
   const syms = symbols([{ id: 'fn_00003', kind: 'function', addr: 0x401200, size: 1, decorated: '?Callee@@YAXXZ' }]);
   const { fn } = run({ syms, nameIndex: new Map([['?Callee@@YAXXZ', 'fn_00003']]) });
