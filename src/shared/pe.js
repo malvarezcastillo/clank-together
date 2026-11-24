@@ -48,6 +48,7 @@ export class PEImage {
     this.relocsStripped = (buf.readUInt16LE(coff + 18) & 0x0001) !== 0;
     this._relocs = null;
     this._imports = null;
+    this._tls = undefined;
   }
 
   sectionForRva(rva) {
@@ -121,6 +122,25 @@ export class PEImage {
     }
     this._relocs = set;
     return set;
+  }
+
+  /**
+   * Start of the section that holds the TLS template (the TLS directory's raw data), or null when
+   * the image has no thread-local data. A thread-local variable is addressed by its offset from
+   * here: the linker writes section-relative offsets, and the template starts its section.
+   */
+  tlsBase() {
+    if (this._tls !== undefined) return this._tls;
+    this._tls = null;
+    const dir = this.dataDirs[9];
+    if (dir && dir.rva && dir.size) {
+      try {
+        const start = this.is64 ? this.readU64(this.imageBase + dir.rva) : this.readU32(this.imageBase + dir.rva);
+        const s = this.sectionForVa(start);
+        if (s) this._tls = this.imageBase + s.rva;
+      } catch {}
+    }
+    return this._tls;
   }
 
   /**

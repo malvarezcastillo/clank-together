@@ -8,7 +8,9 @@ export const MACHINE_AMD64 = 0x8664;
 //   abs  absolute address of the target (+ addend stored in place), `width` bytes
 //   rva  target address minus the image base
 //   rel  target minus the address `bias` bytes after the 4-byte field
-//   other  section index / section-relative and similar: masked, not checked
+//   secrel  target minus the start of its section: in code, the offset of a thread-local variable
+//           in the TLS template (mov eax, [ecx + _var@SECREL])
+//   other  section index and similar: masked, not checked
 const RELOCS = {
   [MACHINE_I386]: {
     0x01: { kind: 'other', width: 2 }, // DIR16
@@ -16,7 +18,7 @@ const RELOCS = {
     0x06: { kind: 'abs', width: 4 }, // DIR32
     0x07: { kind: 'rva', width: 4 }, // DIR32NB
     0x0a: { kind: 'other', width: 2 }, // SECTION
-    0x0b: { kind: 'other', width: 4 }, // SECREL
+    0x0b: { kind: 'secrel', width: 4 }, // SECREL
     0x0c: { kind: 'other', width: 4 }, // TOKEN
     0x0d: { kind: 'other', width: 1 }, // SECREL7
     0x14: { kind: 'rel', width: 4, bias: 0 }, // REL32
@@ -32,7 +34,7 @@ const RELOCS = {
     0x08: { kind: 'rel', width: 4, bias: 4 }, // REL32_4
     0x09: { kind: 'rel', width: 4, bias: 5 }, // REL32_5
     0x0a: { kind: 'other', width: 2 }, // SECTION
-    0x0b: { kind: 'other', width: 4 }, // SECREL
+    0x0b: { kind: 'secrel', width: 4 }, // SECREL
     0x0c: { kind: 'other', width: 1 }, // SECREL7
     0x0d: { kind: 'other', width: 4 }, // TOKEN
     0x0e: { kind: 'other', width: 4 }, // SREL32

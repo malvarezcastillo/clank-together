@@ -5,7 +5,7 @@ import { PEImage } from '../src/shared/pe.js';
 import { CoffObject } from '../src/shared/coff.js';
 import { parseListing } from '../src/shared/listing.js';
 import { parseAnnotations } from '../src/shared/annotations.js';
-import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash, sameTarget } from '../src/shared/compare.js';
+import { compareObject, compareFunction, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash, sameTarget } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 
 const FILE = 'src/player.cpp';
@@ -146,6 +146,49 @@ test('a reference to data with no symbol stays unresolved and is reported', () =
   const rec = reconcile({ units: [result], annotationErrors: [] }, syms);
   assert.equal(result.functions[0].status, STATUS.UNRESOLVED);
   assert.deepEqual(rec.unknown, [{ decorated: '?g_val@@3HA', addr: GLOBAL_ADDR }]);
+});
+
+// `mov eax, [ecx + t_count@SECREL]; ret` at 0x401000, with the TLS template in .tls at 0x403000:
+// the field holds the variable's offset in the template.
+function tlsCase({ field, directory = true, known = true }) {
+  const code = Buffer.from([0x8b, 0x81, 0, 0, 0, 0, 0xc3]);
+  const text = Buffer.alloc(0x20, 0xcc);
+  code.copy(text);
+  text.writeUInt32LE(field, 2);
+  const tls = Buffer.alloc(0x40);
+  tls.writeUInt32LE(0x403000, 0x20); // the directory: where the template starts and ends
+  tls.writeUInt32LE(0x403020, 0x24);
+  const pe = new PEImage(buildPe({
+    sections: [{ name: '.text', rva: 0x1000, data: text }, { name: '.tls', rva: 0x3000, data: tls, characteristics: 0xc0000040 }],
+    relocsStripped: true,
+    tls: directory ? { rva: 0x3020, size: 24 } : null,
+  }));
+  const obj = new CoffObject(buildCoff({
+    sections: [{ name: '.text$mn', data: code, relocs: [{ offset: 2, symbolIndex: 1, type: 0x0b }] }],
+    symbols: [{ name: '?Get@@YAHXZ', section: 1, type: 0x20 }, { name: '?t_count@@3HA', section: 0 }],
+  }));
+  const syms = new Map([['gl_00007', { id: 'gl_00007', kind: 'global', addr: 0x403008, size: 4 }]]);
+  return compareFunction({ fn: obj.functions()[0], addr: 0x401000, origSize: 7, pe, resolve: (name) => (known && name === '?t_count@@3HA' ? 'gl_00007' : null), symbols: syms });
+}
+
+test('a thread-local variable is checked by its offset in the TLS template', () => {
+  const pe = new PEImage(fixture().pe);
+  assert.equal(pe.tlsBase(), null, 'an image without thread-local data');
+
+  const right = tlsCase({ field: 8 });
+  assert.equal(right.status, STATUS.EXACT);
+  const wrong = tlsCase({ field: 0xc });
+  assert.equal(wrong.status, STATUS.MISMATCH, 'the original reads another thread-local variable');
+  assert.match(wrong.relocations[0].reason, /references gl_00007 \(0x00403008\) but original references 0x0040300c/);
+  assert.notEqual(right.effectiveHash, tlsCase({ field: 8, known: false }).effectiveHash);
+
+  // A name the database does not know yet is learned from where the original points, like any other.
+  const unknown = tlsCase({ field: 8, known: false });
+  assert.equal(unknown.status, STATUS.UNRESOLVED);
+  assert.deepEqual(unknown.inferred, [{ symbol: '?t_count@@3HA', addr: 0x403008 }]);
+
+  // Without a TLS directory there is nothing to measure the offset from: masked, as before.
+  assert.equal(tlsCase({ field: 0xc, directory: false }).status, STATUS.EXACT);
 });
 
 test('calling the wrong function is a mismatch', () => {

@@ -32,7 +32,8 @@ Forgejo sign-up is disabled. Contributors clone from there; `/repo.git` on the c
 - **Same pipeline everywhere.** `td check` (local) and the server verifier run the same
   code: compile with the pinned MSVC, read the COFF object and `/FAcs` listing, compare
   bytes against the original with relocations masked, then check that every relocation
-  points where the original points (calls via REL32, data via DIR32 + the PE's base relocations).
+  points where the original points (calls via REL32, data via DIR32 + the PE's base relocations,
+  thread-local variables via SECREL + the TLS template).
 - **Learning references.** A call to a not-yet-decompiled function is checked against
   the database's address for that function; on merge the decorated name is learned.
   References to data without a symbol create new symbols automatically.

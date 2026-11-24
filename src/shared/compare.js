@@ -303,10 +303,12 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
 
   // x86 address arithmetic wraps at 32 bits; x64 image addresses do not wrap.
   const wrap = pe.is64 ? (x) => x : (x) => x >>> 0;
+  // Thread-local variables are reached by their offset in the TLS template, not by address.
+  const tlsBase = pe.tlsBase();
 
   for (const r of fn.relocs) {
     for (let k = 0; k < r.width && r.offset + k < compareLen; k++) masked[r.offset + k] = 1;
-    if (r.kind === 'other' || r.offset + r.width > compareLen) continue;
+    if (r.kind === 'other' || (r.kind === 'secrel' && tlsBase === null) || r.offset + r.width > compareLen) continue;
 
     const symName = r.symbol?.name ?? '?';
     const id = resolve(symName);
@@ -325,6 +327,8 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
       actual = wrap(value - addend);
     } else if (r.kind === 'rva') {
       actual = wrap(pe.imageBase + orig.readUInt32LE(r.offset) - addend);
+    } else if (r.kind === 'secrel') {
+      actual = wrap(tlsBase + orig.readUInt32LE(r.offset) - addend);
     } else {
       // rel: value = target + addend - (field end + bias)
       actual = wrap(addr + r.offset + 4 + r.bias + orig.readInt32LE(r.offset) - addend);
