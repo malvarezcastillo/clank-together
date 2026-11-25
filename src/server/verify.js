@@ -38,10 +38,19 @@ export const BUILD_READY = "COALESCE(json_extract(result_json, '$.buildRetry.ret
 export const encodeCheck = (value) => gzipSync(JSON.stringify(value), { level: 6 });
 export const decodeCheck = (stored) => JSON.parse(typeof stored === 'string' ? stored : gunzipSync(stored).toString('utf8'));
 
+/**
+ * A unit the compiler crashed on (fatal error C1001, internal compiler error): under wine the
+ * compiler occasionally dies on code that compiles fine on a rerun. Not the submission's fault, so
+ * it is retried like a timeout, up to MAX_CRASH_RETRIES times in a row; after that the crash is
+ * the code's and it goes back as a compile error.
+ */
+export const compilerCrashed = (u) => !u.compiled && /\bfatal error C1001\b/.test(u.log ?? '');
+const MAX_CRASH_RETRIES = 3;
+
 export class BuildRetryError extends Error {
   constructor(check, stage) {
     const failed = check.units.filter((u) => !u.compiled || u.timedOut);
-    const kind = failed.some((u) => u.timedOut) ? 'timeout' : 'baseline_failed';
+    const kind = failed.some((u) => u.timedOut) ? 'timeout' : failed.some(compilerCrashed) ? 'compiler_crash' : 'baseline_failed';
     super(`${stage}: ${kind}`);
     this.diagnostic = { kind, stage, retryAt: now() + 60_000, files: failed.map((u) => u.file),
       errors: failed.map((u) => ({ file: u.file, log: u.log })) };
@@ -1053,7 +1062,13 @@ export class Verifier {
     // units that only include a changed header are compiled when the batch merges.
     const { check, rec, changedHeaders, cacheSnapshot } = await this.check(merged.files, `batch-${batch.id}`, { dependents: false, targets: attempts.map((a) => a.symbol_id) });
     try {
-      if (check.units.some((u) => u.timedOut)) throw new BuildRetryError(check, 'verification');
+      const crashes = this.store.get(`SELECT json_extract(result_json, '$.buildRetry.crashes') AS n FROM batches WHERE id = ?`, batch.id)?.n ?? 0;
+      const crashed = check.units.some(compilerCrashed) && crashes < MAX_CRASH_RETRIES;
+      if (check.units.some((u) => u.timedOut) || crashed) {
+        const e = new BuildRetryError(check, 'verification');
+        if (crashed) e.diagnostic.crashes = crashes + 1;
+        throw e;
+      }
       if (check.units.every((u) => u.compiled)) await this.refreshBaselines(check, merged.files, `batch-${batch.id}`);
     } catch (e) {
       if (!(e instanceof BuildRetryError)) throw e;
