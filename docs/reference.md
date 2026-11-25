@@ -293,6 +293,25 @@ and conditional configurations. These checks establish source ownership, not the
 correct binary address, object extent, initializer values or constructor order.
 Those require original-binary evidence and review.
 
+### Free text: protector-only strings and vendored libraries
+
+A submission may add only annotations and string literals found in the original executable.
+Two `decomp.json` settings, editable only by maintainers (submissions cannot change `data/`),
+cover what that rule cannot see:
+
+- `vmLiterals`: exact narrow strings the original keeps only inside a protector's encrypted VM
+  data, decrypted at run time. List each with its evidence in the commit; nothing else is allowed.
+  A body recovered by emulating such a VM carries `// VIRTUALIZED: emulated 0x<VM entry>` (the
+  date form names a reference build with plain code); both forms send the function to maintainer
+  review after the server proves the stub.
+- `vendored`: `{ "path": "sha256" }` for an unchanged copy of an upstream library file. The hash is
+  of the file without annotation lines, so only annotations may be added. A matching file keeps its
+  upstream comments and strings and skips the unannotated-definition, global-variable and
+  undefined-declaration rules; any other edit breaks the hash and every rule applies again.
+
+A unit whose compile hits `fatal error C1001` (internal compiler error) is retried up to three
+times in a row before the batch goes back as a compile error.
+
 ### Structural maintenance
 
 Maintainers can use `td maintenance submit --files a.cpp,b.h --notes "reason"`
