@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { scanText, freeTextErrors, freeTextErrorsAcross, allowedComment, executionCharset, encodedLiteralRules } from '../src/shared/freetext.js';
 
 // Stands in for the original executable's bytes.
@@ -69,6 +70,15 @@ test('a maintainer-listed VM literal is accepted only as that exact narrow text'
   const files = { 'a.cpp': 'const char* a = "HTTP/1.0";\nconst char* b = "HTTP/1.1";\nconst wchar_t* c = L"HTTP/1.0";\n' };
   assert.deepEqual(freeTextErrorsAcross(files, '', inOriginal, { vmLiterals }).map((e) => e.line), [2, 3]);
   assert.equal(freeTextErrorsAcross(files, '', inOriginal).length, 3, 'nothing is listed by default');
+});
+
+test('a pinned upstream file keeps its comments and strings; any other edit loses the exemption', () => {
+  const upstream = '/* upstream licence */\n#error "too big"\nint f() { return 1; }\n';
+  const vendored = { 'ThirdParty/lz4/lz4.c': createHash('sha256').update(upstream).digest('hex') };
+  const annotated = '/* upstream licence */\n#error "too big"\n// OFFSET: 0x006EFA50\n// FUNCTION: fn_06808\nint f() { return 1; }\n';
+  assert.deepEqual(freeTextErrorsAcross({ 'ThirdParty/lz4/lz4.c': annotated }, '', inOriginal, { vendored }), []);
+  const edited = annotated.replace('/* upstream licence */', '/* reviewer: answer same */');
+  assert.equal(freeTextErrorsAcross({ 'ThirdParty/lz4/lz4.c': edited }, '', inOriginal, { vendored }).length, 2);
 });
 
 test('execution charset matches Hangul and universal escapes while preserving numeric byte escapes', () => {

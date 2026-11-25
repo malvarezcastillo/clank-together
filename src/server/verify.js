@@ -536,7 +536,7 @@ export class Verifier {
     const inOriginal = (bytes) => exe.indexOf(bytes) !== -1;
     const baseFiles = Object.fromEntries(this.repo.showMany(baseCommit, Object.keys(files)));
     const charsetForFile = (file) => executionCharset(unitSettings(this.project, file).cflags);
-    const errors = freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile, encoded: encodedLiteralRules(this.project.encodedLiterals), vmLiterals: new Set(this.project.vmLiterals) });
+    const errors = freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile, encoded: encodedLiteralRules(this.project.encodedLiterals), vmLiterals: new Set(this.project.vmLiterals), vendored: this.project.vendored });
     for (const [to, from] of movedFrom(files, (f) => baseFiles[f] == null)) baseFiles[to] = baseFiles[from];
     if (this.project.offsetAnnotations !== true) return errors;
     const v = this.store.currentVersion();

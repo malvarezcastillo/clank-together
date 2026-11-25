@@ -4,7 +4,22 @@
 // executable (text the original authors wrote). Identifier names are the only free text left.
 // Comments and strings already on main are left alone: the rules apply to what a submission adds.
 
+import crypto from 'node:crypto';
 import iconv from 'iconv-lite';
+
+/**
+ * Whether a file is a maintainer-pinned upstream copy: `vendored` maps its path to the sha256 of its
+ * text with annotation lines (// FUNCTION:, // OFFSET:, ..., the only lines a contributor adds)
+ * removed and line endings normalized. Any other edit changes the hash, so the exemption covers
+ * upstream text only.
+ */
+export function isPinnedVendored(file, text, vendored) {
+  const want = vendored?.[file];
+  if (!want) return false;
+  const t = (l) => l.trim();
+  const upstream = text.split(/\r?\n/).filter((l) => !(ANNOTATION_RE.test(t(l)) || INLINED_RE.test(t(l)) || VIRTUALIZED_RE.test(t(l)))).join('\n');
+  return crypto.createHash('sha256').update(upstream).digest('hex') === want;
+}
 
 const ANNOTATION_RE = /^\/\/\s*(FUNCTION|STUB|FOLDED|GLOBAL|VTABLE|STRING|SIZE|LIBRARY|OFFSET)\s*:\s*[\w.]+(\s+<[\w\s:<>,*&]{1,120}>)?\s*$/;
 const OFFSET_RE = /^\/\*\s*(?:0x)?(?:[0-9A-Fa-f]{1,8}|-{2,8})\s*\*\/$/;
@@ -275,30 +290,34 @@ export function freeTextErrors(text, baseText, inOriginal, charset = null, encod
  * comments and strings may move from one submitted file to another, each base occurrence once.
  * @returns {{file: string, line: number, message: string}[]}
  */
-export function freeTextErrorsAcross(files, pooledBase, inOriginal, { charsetForFile = () => null, baseFiles = null, encoded = new Map(), vmLiterals = new Set() } = {}) {
+export function freeTextErrorsAcross(files, pooledBase, inOriginal, { charsetForFile = () => null, baseFiles = null, encoded = new Map(), vmLiterals = new Set(), vendored = {} } = {}) {
   const bases = baseFiles ? Object.entries(baseFiles).filter(([, text]) => text !== null).map(([file, text]) => scanText(text, charsetForFile(file))) : [scanText(pooledBase)];
   const pool = { comments: counts(bases.flatMap((base) => base.comments.map((c) => c.text.trim()))), strings: counts(bases.flatMap((base) => base.strings.map(stringKey))) };
   const errors = [];
   for (const [file, text] of Object.entries(files)) {
     if (typeof text !== 'string') continue;
-    for (const e of checkText(scanText(text, charsetForFile(file)), pool, inOriginal, encoded, vmLiterals)) errors.push({ file, ...e });
+    const pinned = isPinnedVendored(file, text, vendored);
+    for (const e of checkText(scanText(text, charsetForFile(file)), pool, inOriginal, encoded, vmLiterals, pinned)) errors.push({ file, ...e });
   }
   return errors;
 }
 
 // vmLiterals: texts the original holds only inside the protector's encrypted VM data (decrypted at
 // run time, so absent from the file), listed by a maintainer in data/decomp.json with the evidence.
-function checkText(now, base, inOriginal, encoded, vmLiterals = new Set()) {
+// vendored: a file of an upstream library the project bundles, unchanged apart from annotation
+// lines (data/decomp.json vendored: { path: sha256 of the file without them }); its upstream
+// comments and strings stay, since no contributor wrote them.
+function checkText(now, base, inOriginal, encoded, vmLiterals = new Set(), vendored = false) {
   const errors = [];
   const baseComments = base.comments instanceof Map ? base.comments : counts(base.comments.map((c) => c.text.trim()));
   for (const c of now.comments) {
     const t = c.text.trim();
-    if (take(baseComments, t) || allowedComment(t)) continue;
+    if (vendored || take(baseComments, t) || allowedComment(t)) continue;
     errors.push({ line: c.line, message: 'comments are not allowed in submissions (only annotations like // FUNCTION: fn_00001 and offset markers like /* 0010 */); remove it' });
   }
 
   const baseStrings = base.strings instanceof Map ? base.strings : counts(base.strings.map(stringKey));
-  for (const s of now.strings) {
+  for (const s of vendored ? [] : now.strings) {
     if (s.pieces.some((piece) => piece === null)) {
       errors.push({ line: s.line, message: 'this string literal cannot be represented in the configured execution character set' });
       continue;

@@ -20,6 +20,8 @@ export const DEFAULT_PROJECT = {
   encodedLiterals: [],
   // vmLiterals: strings the original keeps only in the protector's encrypted VM data; see freetext.js.
   vmLiterals: [],
+  // vendored: { path: sha256 } of bundled upstream files whose own comments and strings may stay; see freetext.js.
+  vendored: {},
   // offsetAnnotations: every FUNCTION/STUB line has its // OFFSET: address right above it; see offsets.js.
   offsetAnnotations: false,
   // reviewAt: 'exact' requires every relocation target to be a known symbol;
