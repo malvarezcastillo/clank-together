@@ -86,6 +86,7 @@ test('banned constructs and paths are rejected', () => {
   }
   assert.ok(lintSubmission({ 'src/other.cpp': 'int x;' }, allowed).length > 0, 'path outside task');
   assert.ok(lintSubmission({ 'src/player.txt': 'int x;' }, { allowedPaths: ['src/**'] }).length > 0, 'extension');
+  assert.deepEqual(lintSubmission({ 'src/table.inc': '  {0, 7, 7, 1079},\n' }, { allowedPaths: ['src/**'] }), [], 'an #included table fragment is source');
   assert.ok(lintSubmission({}, allowed).length > 0, 'empty');
 });
 

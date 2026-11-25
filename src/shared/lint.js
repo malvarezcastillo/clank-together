@@ -10,7 +10,7 @@ export const DEFAULT_LIMITS = {
   maxInitializerNumbers: 256,
 };
 
-const SOURCE_EXT = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.inl']);
+const SOURCE_EXT = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.inl', '.inc']);
 const DEFAULT_PRAGMAS = ['once', 'pack', 'warning', 'intrinsic', 'function', 'inline_depth', 'inline_recursion', 'optimize', 'push_macro', 'pop_macro', 'auto_inline', 'check_stack', 'pointers_to_members', 'vtordisp', 'init_seg'];
 
 // Constructs that could make a "match" without real C++ code, or escape the build.

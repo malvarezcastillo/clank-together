@@ -30,7 +30,7 @@ export const DEFAULT_PROJECT = {
 };
 
 const UNIT_EXT = new Set(['.c', '.cpp', '.cc', '.cxx']);
-const SOURCE_EXT = new Set([...UNIT_EXT, '.h', '.hpp', '.inl']);
+const SOURCE_EXT = new Set([...UNIT_EXT, '.h', '.hpp', '.inl', '.inc']);
 
 export function loadProject(repoDir, readFile = (file) => readProjectFile(repoDir, file)) {
   const cfg = JSON.parse(readFile('data/decomp.json') ?? '{}');
