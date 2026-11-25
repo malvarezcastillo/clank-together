@@ -8,12 +8,18 @@
 // the END marker. A mutated region (MUTATE, id 0x10) keeps the last thirteen bytes of its START
 // marker; a virtualized one has random bytes there too.
 //
+// An UNPROTECTED region (id 0x20) holds code for the build the protector has not been run on, so
+// the protector removes it: the jump over START's first five bytes goes to the end of the region,
+// the rest of START stays, the code is overwritten and END becomes eighteen NOPs.
+//
 // So a function compiled with the same markers lines up with the original everywhere, and all of
 // it but the region itself can be compared.
 
 export const MARKER_LENGTH = 18;
 const WL = [0x57, 0x4c, 0x20, 0x20];
 const MUTATE = 0x10;
+const UNPROTECTED = 0x20;
+const NOP = 0x90;
 
 /** The id of the SDK marker these eighteen bytes are, or null. */
 export function markerId(bytes, at = 0) {
@@ -58,6 +64,7 @@ export function regionMismatch(pe, addr, orig, { start, end, id }) {
   if (end > orig.length) return `the region at ${at} ends past the original function`;
   if (orig[start] !== 0xe9 && orig[start] !== 0xe8) return `the original has no jump at ${at}, where the region starts`;
   const dest = addr + start + 5 + orig.readInt32LE(start + 1);
+  if (id === UNPROTECTED) return unprotectedMismatch(orig, dest - addr, { start, end, id });
   const section = pe.sectionForVa(dest);
   if (!section || section === pe.sectionForVa(addr) || dest - pe.imageBase - section.rva < section.rawSize) {
     return `the original's jump at ${at} does not leave for a section whose bytes the file lacks`;
@@ -73,6 +80,18 @@ export function regionMismatch(pe, addr, orig, { start, end, id }) {
     if (orig[i] !== 0x89 || modrm < 0xc0 || ((modrm >> 3) & 7) !== (modrm & 7)) {
       return `the original's region at ${at} does not end at +0x${end.toString(16)}: its body is not ${end - start - 2 * MARKER_LENGTH} bytes long`;
     }
+  }
+  return null;
+}
+
+/** The same for a region the protector removed instead of rewriting. */
+function unprotectedMismatch(orig, dest, { start, end, id }) {
+  const at = `+0x${start.toString(16)}`;
+  if (orig[start] !== 0xe9 || dest !== end) return `the original's jump at ${at} does not skip the region, which ends at +0x${end.toString(16)}`;
+  const restored = Buffer.concat([Buffer.from([0xeb, 0x10, 0x57, 0x4c, 0x20]), orig.subarray(start + 5, start + MARKER_LENGTH)]);
+  if (markerId(restored) !== id) return `the region at ${at} is marked with id 0x${id.toString(16)}, the original's is not a removed one`;
+  for (let i = end - MARKER_LENGTH; i < end; i++) {
+    if (orig[i] !== NOP) return `the original's region at ${at} does not end at +0x${end.toString(16)}: its body is not ${end - start - 2 * MARKER_LENGTH} bytes long`;
   }
   return null;
 }

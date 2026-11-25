@@ -79,6 +79,8 @@ test('ordinary code is not: a jump within .text or into file-backed bytes', () =
 const marker = (id) => Buffer.from([0xeb, 0x10, 0x57, 0x4c, 0x20, 0x20, id, 0, 0, 0, 0, 0, 0, 0, 0x57, 0x4c, 0x20, 0x20]);
 const VM = 0x0c;
 const MUTATE = 0x10;
+const UNPROTECTED = 0x20;
+const NOPS = Buffer.alloc(18, 0x90);
 const HEAD = Buffer.from([0x55, 0x8b, 0xec]); // push ebp; mov ebp, esp
 const TAIL = Buffer.from([0x5d, 0xc3]); // pop ebp; ret
 const BODY = Buffer.from([0xa1, 0, 0, 0, 0, 0x40, 0xa3, 0, 0, 0, 0]); // mov eax, [g]; inc eax; mov [g], eax
@@ -161,6 +163,47 @@ test('markers the original has no such region for hide nothing', () => {
   const stub = protectedCase({ origSize: HEAD.length + 5, noEnd: true }).result;
   assert.equal(stub.status, STATUS.MISMATCH);
   assert.equal(stub.size.original, HEAD.length + 5);
+});
+
+// An UNPROTECTED region as the protector leaves it: a jump to its end, the rest of START, junk, NOPs.
+function removedCase({ id = UNPROTECTED, dest, end = NOPS, keptId = UNPROTECTED } = {}) {
+  const ours = Buffer.concat([HEAD, marker(id), BODY, marker(id + 1), TAIL]);
+  const start = HEAD.length;
+  const length = 18 + BODY.length + 18;
+  const left = Buffer.alloc(length, 0x5a);
+  left[0] = 0xe9;
+  left.writeInt32LE((dest ?? 0x401000 + start + length) - (0x401000 + start + 5), 1);
+  marker(keptId).copy(left, 5, 5);
+  end.copy(left, length - 18);
+  const text = Buffer.alloc(0x200, 0xcc);
+  Buffer.concat([HEAD, left, TAIL]).copy(text);
+  const pe = new PEImage(buildPe({ sections: [{ name: '.text', rva: 0x1000, data: text }], relocsStripped: true }));
+  const obj = new CoffObject(buildCoff({
+    sections: [{ name: '.text$mn', data: ours, relocs: [{ offset: start + 18 + 1, symbolIndex: 1, type: 0x06 }, { offset: start + 18 + 7, symbolIndex: 1, type: 0x06 }] }],
+    symbols: [{ name: '?Check@@YAHXZ', section: 1, type: 0x20 }, { name: '?g_seed@@3HA', section: 0 }],
+  }));
+  return { start, length, result: compareFunction({ fn: obj.functions()[0], addr: 0x401000, origSize: HEAD.length + length + TAIL.length, pe, resolve: () => null, symbols: new Map() }) };
+}
+
+test('a region the protector removed is skipped by a jump to its end', () => {
+  const { result, start, length } = removedCase();
+  assert.equal(result.protectedError, undefined);
+  assert.deepEqual(result.protected, [{ offset: start, length, id: UNPROTECTED }]);
+  assert.equal(result.status, STATUS.EXACT);
+
+  const cases = {
+    'a jump that lands elsewhere': [{ dest: 0x401000 + start + length + 2 }, /does not skip the region, which ends at/],
+    'a jump out of the file, as for a virtualized region': [{ dest: 0x1000800 }, /does not skip the region/],
+    'END not turned into NOPs': [{ end: Buffer.alloc(18, 0x5a) }, /its body is not 11 bytes long/],
+    'another macro left in the original': [{ keptId: MUTATE }, /marked with id 0x20, the original's is not a removed one/],
+    'VM in our source': [{ id: VM }, /does not leave for a section whose bytes the file lacks/],
+  };
+  for (const [name, [options, why]] of Object.entries(cases)) {
+    const bad = removedCase(options).result;
+    assert.equal(bad.status, STATUS.MISMATCH, name);
+    assert.equal(bad.protected, undefined, name);
+    assert.match(bad.protectedError, why, name);
+  }
 });
 
 test('the code inside a region is part of what the function is', () => {
