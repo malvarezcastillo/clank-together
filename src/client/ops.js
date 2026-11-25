@@ -224,7 +224,7 @@ export function localCommitsOnUpstream(ws) {
  * Named files are compiled over a clean copy of HEAD, so other edits in a shared checkout (another
  * agent's unfinished work) are not part of the check. Without files: the working tree as it is.
  */
-export async function check(ws, files, { wait = true, includers = false } = {}) {
+export async function check(ws, files, { wait = true, includers = false, strict = false } = {}) {
   const project = ws.project;
   const explicit = !!files?.length;
   const targets = explicit ? files.map((f) => f.replace(/\\/g, '/')) : ws.changedFiles();
@@ -262,6 +262,7 @@ export async function check(ws, files, { wait = true, includers = false } = {}) 
     nameIndex: ws.nameIndex,
     pe: ws.pe,
     runners: ws.config.runners,
+    strict,
   });
   const rec = reconcile(result, ws.symbols, ws.pe);
   return summarizeCheck(result, rec, new Set(targets));

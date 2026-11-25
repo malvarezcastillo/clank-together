@@ -4,6 +4,7 @@
 import crypto from 'node:crypto';
 import { insnAt, normalizePath } from './listing.js';
 import { FUNCTION_KINDS, hex } from './annotations.js';
+import { reachOf } from './reach.js';
 
 export const STATUS = {
   EXACT: 'exact', // every byte and every relocation target matches
@@ -158,7 +159,8 @@ export function bindAnnotations({ listing, file, annotations, nameIndex = new Ma
  * @param {Map<string, string>} p.nameIndex decorated name -> ID, learned from already-merged code
  * @param {import('./pe.js').PEImage} p.pe
  */
-export function compareObject({ obj, listing, file, annotations, symbols, nameIndex = new Map(), pe }) {
+// strict: also compare what each matching function reaches (reach.js).
+export function compareObject({ obj, listing, file, annotations, symbols, nameIndex = new Map(), pe, strict = false, symbolAt = () => null }) {
   const objFns = new Map(obj.functions().map((f) => [f.name, f]));
   const sizes = new Map([...objFns].map(([n, f]) => [n, f.bytes.length]));
   const found = bindAnnotations({ listing, file, annotations, nameIndex, symbols, sizes, locations: obj.functionLines() });
@@ -209,7 +211,12 @@ export function compareObject({ obj, listing, file, annotations, symbols, nameIn
     inferred.push(...r.inferred);
     delete r.inferred;
     const deletingDestructor = /^\?\?1/.test(symbol) && isDeletingDestructor(pe, sym.addr, sym.size);
-    functions.push({ ...base, addr: sym.addr, ...r, ...(deletingDestructor && { deletingDestructor: true }), asm: procText(proc) });
+    const reach = strict && r.status !== STATUS.MISMATCH
+      ? reachOf({ obj, fn, addr: sym.addr, pe, resolve, qualify, symbols, symbolAt })
+      : null;
+    // Names without an ID that the reached pieces refer to are claims like the function's own.
+    if (reach?.pending) inferred.push(...reach.pending.map((p) => ({ symbol: p.symbol, addr: p.actual })));
+    functions.push({ ...base, addr: sym.addr, ...r, ...(reach && { reach }), ...(deletingDestructor && { deletingDestructor: true }), asm: procText(proc) });
   }
 
   const boundSymbols = new Set([...bindings.keys(), ...byAnn.values()]);

@@ -33,8 +33,10 @@ Work (a region: a source file, a class, or a run of unplaced functions, done as 
   td region claim <file> | --class <Name> | --range 0xA-0xB   claim a region (several agents may share one)
   td region release <file> | --class <Name> | --range 0xA-0xB give a region back
   td place <taskId>=<file.cpp>[:Class::Method] ...  put held functions that are in no source file into one
-  td check [files...] [--includers]           compile + compare on this machine; named files over a clean HEAD
-                                              (--includers: every unit that includes a changed header)
+  td check [files...] [--includers] [--strict]  compile + compare on this machine; named files over a clean HEAD
+                                              (--includers: every unit that includes a changed header;
+                                              --strict: also compare what each matching function reaches:
+                                              tables, vtables, exception handlers. verified / code-exact / unknown)
   td compile [--out DIR] [--jobs N] [--link-only]   build the whole program on this machine with the
                                               project's exeBuild command (data/decomp.json); incremental
   td submit [--notes T]                       submit the region's work as one batch
@@ -92,6 +94,11 @@ function printCheck(r) {
       if (f.deletingDestructor) console.log(`      ${f.id} is a scalar deleting destructor in the original: remove this annotation and claim it no-decompile (compiler_generated)`);
       for (const d of f.diffRegions ?? []) console.log(`      +0x${d.offset.toString(16)}: ours ${d.ours} orig ${d.original}  ${d.ourInstruction ?? ''}${d.sourceLine ? ` (line ${d.sourceLine})` : ''}`);
       for (const x of f.relocations ?? []) console.log(`      reloc +0x${x.offset.toString(16)} ${x.symbol}: ${x.ok ? `not yet named, original points at 0x${hex(x.actual)}` : x.reason}`);
+      if (f.reach) {
+        console.log(`      strict: ${f.reach.verdict}${f.reach.pieces ? ` (${f.reach.pieces} reached piece(s), ${f.reach.bytes} bytes)` : ''}`);
+        for (const w of f.reach.findings) console.log(`        ${w.kind === 'differs' ? 'differs' : 'undecided'}: ${w.where}: ${w.reason}`);
+        for (const p of f.reach.pending ?? []) console.log(`        not yet named: ${p.where}, original points at 0x${hex(p.actual)}`);
+      }
     }
     for (const f of u.folded ?? []) console.log(`  FOLDED ${f.id} (line ${f.line})${''.padEnd(22)} ${f.status.padEnd(17)} ${(f.score * 100).toFixed(1)}%  size ${f.size?.ours ?? '-'}/${f.size?.original ?? '?'}`);
     if (u.unannotated.length) console.log(`  unannotated: ${u.unannotated.join(', ')}`);
@@ -203,6 +210,7 @@ async function main() {
       json: { type: 'boolean', default: false },
       free: { type: 'boolean', default: false },
       includers: { type: 'boolean', default: false },
+      strict: { type: 'boolean', default: false },
       prefix: { type: 'string' },
       class: { type: 'string' },
       force: { type: 'boolean', default: false },
@@ -315,7 +323,7 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       return print(r);
     }
     case 'check': {
-      const r = await ops.check(ws, args.map((f) => ops.relPath(ws, f)), { includers: values.includers });
+      const r = await ops.check(ws, args.map((f) => ops.relPath(ws, f)), { includers: values.includers, strict: values.strict });
       return values.json ? print(r) : printCheck(r);
     }
     case 'compile': {
