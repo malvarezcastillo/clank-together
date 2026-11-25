@@ -536,7 +536,7 @@ export class Verifier {
     const inOriginal = (bytes) => exe.indexOf(bytes) !== -1;
     const baseFiles = Object.fromEntries(this.repo.showMany(baseCommit, Object.keys(files)));
     const charsetForFile = (file) => executionCharset(unitSettings(this.project, file).cflags);
-    const errors = freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile, encoded: encodedLiteralRules(this.project.encodedLiterals) });
+    const errors = freeTextErrorsAcross(files, '', inOriginal, { baseFiles, charsetForFile, encoded: encodedLiteralRules(this.project.encodedLiterals), vmLiterals: new Set(this.project.vmLiterals) });
     for (const [to, from] of movedFrom(files, (f) => baseFiles[f] == null)) baseFiles[to] = baseFiles[from];
     if (this.project.offsetAnnotations !== true) return errors;
     const v = this.store.currentVersion();
@@ -1237,8 +1237,9 @@ export class Verifier {
       state = 'needs_cleanup';
     } else if (virtual && (target.status === STATUS.MISMATCH || target.status === STATUS.UNRESOLVED)) {
       // The original is a protector stub, so neither the bytes nor peers reading them can judge the
-      // body: it comes from the reference build in the marker, and a maintainer approves it.
-      feedback.summary = `virtualized in the original (body from the ${virtual.build} build at ${virtual.addr}), sent to maintainer review: the target only has a protector stub, so it is not compared or peer reviewed`;
+      // body: it comes from the reference build in the marker (or the protector's emulated VM), and a maintainer approves it.
+      const source = virtual.build === 'emulated' ? `recovered by emulating the VM entered at ${virtual.addr}` : `from the ${virtual.build} build at ${virtual.addr}`;
+      feedback.summary = `virtualized in the original (body ${source}), sent to maintainer review: the target only has a protector stub, so it is not compared or peer reviewed`;
       feedback.virtualized = virtual;
       state = 'in_review';
     } else if (target.status === STATUS.EXACT || (target.status === STATUS.UNRESOLVED && policy.reviewAt === 'match_unresolved')) {

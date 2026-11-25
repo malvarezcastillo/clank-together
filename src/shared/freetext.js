@@ -11,9 +11,11 @@ const OFFSET_RE = /^\/\*\s*(?:0x)?(?:[0-9A-Fa-f]{1,8}|-{2,8})\s*\*\/$/;
 const BLANK_RE = /^(?:\/\/[\s\-=*\/]*|\/\*[\s\-=*]*\*\/)$/;
 // The project marks inlined copies: // INLINED, optionally with the address range.
 const INLINED_RE = /^\/\/\s*INLINED(?::\s*\[?\s*0x[0-9A-Fa-f]+\s*->\s*0x[0-9A-Fa-f]+\s*\]?)?\s*$/;
-// A function whose original body is protector-virtualized: the reference build and address its
-// source comes from, e.g. // VIRTUALIZED: 2025-06-04 0x0060C460 (verify.js checks the stub).
-export const VIRTUALIZED_RE = /^\/\/\s*VIRTUALIZED:\s*(\d{4}-\d{2}-\d{2})\s+(0x[0-9A-Fa-f]{1,16})\s*$/;
+// A function whose original body is protector-virtualized: where its source comes from, either a
+// reference build and address (// VIRTUALIZED: 2025-06-04 0x0060C460) or, for a body recovered by
+// emulating the protector's VM, the VM entry (// VIRTUALIZED: emulated 0x01A42000). verify.js
+// checks the stub.
+export const VIRTUALIZED_RE = /^\/\/\s*VIRTUALIZED:\s*(\d{4}-\d{2}-\d{2}|emulated)\s+(0x[0-9A-Fa-f]{1,16})\s*$/;
 const INCLUDE_RE = /^\s*#\s*include\s*$/;
 const INCLUDE_PATH_RE = /^[\w.\/-]{1,200}$/;
 const LINKAGE = new Set(['C', 'C++']);
@@ -273,18 +275,20 @@ export function freeTextErrors(text, baseText, inOriginal, charset = null, encod
  * comments and strings may move from one submitted file to another, each base occurrence once.
  * @returns {{file: string, line: number, message: string}[]}
  */
-export function freeTextErrorsAcross(files, pooledBase, inOriginal, { charsetForFile = () => null, baseFiles = null, encoded = new Map() } = {}) {
+export function freeTextErrorsAcross(files, pooledBase, inOriginal, { charsetForFile = () => null, baseFiles = null, encoded = new Map(), vmLiterals = new Set() } = {}) {
   const bases = baseFiles ? Object.entries(baseFiles).filter(([, text]) => text !== null).map(([file, text]) => scanText(text, charsetForFile(file))) : [scanText(pooledBase)];
   const pool = { comments: counts(bases.flatMap((base) => base.comments.map((c) => c.text.trim()))), strings: counts(bases.flatMap((base) => base.strings.map(stringKey))) };
   const errors = [];
   for (const [file, text] of Object.entries(files)) {
     if (typeof text !== 'string') continue;
-    for (const e of checkText(scanText(text, charsetForFile(file)), pool, inOriginal, encoded)) errors.push({ file, ...e });
+    for (const e of checkText(scanText(text, charsetForFile(file)), pool, inOriginal, encoded, vmLiterals)) errors.push({ file, ...e });
   }
   return errors;
 }
 
-function checkText(now, base, inOriginal, encoded) {
+// vmLiterals: texts the original holds only inside the protector's encrypted VM data (decrypted at
+// run time, so absent from the file), listed by a maintainer in data/decomp.json with the evidence.
+function checkText(now, base, inOriginal, encoded, vmLiterals = new Set()) {
   const errors = [];
   const baseComments = base.comments instanceof Map ? base.comments : counts(base.comments.map((c) => c.text.trim()));
   for (const c of now.comments) {
@@ -308,7 +312,7 @@ function checkText(now, base, inOriginal, encoded) {
     }
     if (s.linkage && LINKAGE.has(s.text)) continue;
     const whole = Buffer.concat(s.pieces);
-    if (inOriginal(whole) || (s.pieces.length > 1 && s.pieces.every((p) => inOriginal(p))) || inOriginalEncoded(s, encoded, inOriginal)) continue;
+    if (inOriginal(whole) || (s.pieces.length > 1 && s.pieces.every((p) => inOriginal(p))) || inOriginalEncoded(s, encoded, inOriginal) || (!s.wide && vmLiterals.has(s.text))) continue;
     errors.push({ line: s.line, message: "this string literal does not occur in the original executable; submissions may only use the original's strings" });
   }
   return errors;

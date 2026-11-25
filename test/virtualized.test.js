@@ -32,6 +32,9 @@ function jmpTo(at, dest) {
 
 test('the VIRTUALIZED marker is an allowed comment only in its exact form', () => {
   assert.ok(allowedComment('// VIRTUALIZED: 2025-06-04 0x0060C460'));
+  assert.ok(allowedComment('// VIRTUALIZED: emulated 0x01A42000'));
+  assert.ok(!allowedComment('// VIRTUALIZED: emulated'));
+  assert.ok(!allowedComment('// VIRTUALIZED: emulated 0x01A42000 by hand'));
   assert.ok(!allowedComment('// VIRTUALIZED: 2025-06-04 0x0060C460 copied from the patched client'));
   assert.ok(!allowedComment('// VIRTUALIZED: june 0x0060C460'));
   assert.ok(!allowedComment('// VIRTUALIZED: 2025-06-04'));

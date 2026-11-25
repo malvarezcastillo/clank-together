@@ -64,6 +64,13 @@ test('pieces of a concatenated literal may each come from the original', () => {
   assert.equal(freeTextErrors('const char* s = "%d" "made up";\n', null, inOriginal).length, 1);
 });
 
+test('a maintainer-listed VM literal is accepted only as that exact narrow text', () => {
+  const vmLiterals = new Set(['HTTP/1.0']);
+  const files = { 'a.cpp': 'const char* a = "HTTP/1.0";\nconst char* b = "HTTP/1.1";\nconst wchar_t* c = L"HTTP/1.0";\n' };
+  assert.deepEqual(freeTextErrorsAcross(files, '', inOriginal, { vmLiterals }).map((e) => e.line), [2, 3]);
+  assert.equal(freeTextErrorsAcross(files, '', inOriginal).length, 3, 'nothing is listed by default');
+});
+
 test('execution charset matches Hangul and universal escapes while preserving numeric byte escapes', () => {
   const original = Buffer.from('c0afc0fa005769646500', 'hex');
   const found = (bytes) => original.includes(bytes);
