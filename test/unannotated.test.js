@@ -63,6 +63,33 @@ void run() {
   assert.deepEqual(lines(unannotatedErrors(src, null)), [7]);
 });
 
+test('if constexpr is control flow, and a multi-line template header sits between annotation and definition', () => {
+  const src = `// INLINED
+template <bool BY_NAME>
+inline void Transform(int a) {
+  if constexpr (BY_NAME) {
+    call(a);
+  }
+}
+
+// OFFSET: 0x00653160
+// FUNCTION: fn_46745
+template <
+  int ID, class CIPHER,
+  std::size_t BLOCK_SIZE>
+bool Body<ID, CIPHER, BLOCK_SIZE>::Decrypt(int a) {
+  return true;
+}
+
+template <
+  int ID>
+int Unmarked<ID>::Id() const {
+  return ID;
+}
+`;
+  assert.deepEqual(lines(unannotatedErrors(src, null)), [20]);
+});
+
 test('only definitions a submission adds or changes are checked', () => {
   const legacy = 'void A::old() {\n}\n';
   assert.deepEqual(unannotatedErrors(`${legacy}\nint x;\n`, legacy), [], 'kept as it is on main');

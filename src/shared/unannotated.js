@@ -16,6 +16,8 @@ const NOT_A_DEFINITION = new Set(['if', 'for', 'while', 'switch', 'catch', 'retu
 function definitionAt(lines, i) {
   const line = lines[i].replace(/\/\/.*$/, '').replace(/__declspec\s*\([^()]*\)|\[\[[^\]]*\]\]/g, ' ');
   if (/^\s*#/.test(line) || /[;=]\s*$/.test(line) || /^\s*[:,]/.test(line)) return false;
+  // A control statement with a qualifier (`if constexpr (...)`, `else if (...)`) is not a definition.
+  if (/^\s*(?:else\s+)?(?:if|for|while|switch)\b/.test(line)) return false;
   const m = /^\s*(?:[\w:<>,*&~\s]+?\s+)?([~\w][\w:<>~]*)\s*\(/.exec(line);
   if (!m) return false;
   const name = m[1].split('::').pop();
@@ -49,12 +51,24 @@ function definitionAt(lines, i) {
   return /^\s*(?:const|noexcept|override|final|volatile|&|&&|->\s*[\w:<>*&\s]+|\s)*(?::[^;]*)?\{/.test(tail) && !/^\s*(?:const\s*)?=/.test(tail);
 }
 
-/** The annotation lines right above line `i` (comments, `template<...>` and attribute lines in between). */
+/**
+ * The annotation lines right above line `i` (comments, `template<...>` and attribute lines in
+ * between). A template header may span lines: `template <` ... `>` with its parameters between.
+ */
 function annotated(lines, i) {
   for (let j = i - 1; j >= 0; j--) {
     const t = lines[j].trim();
     if (ANNOTATED_RE.test(t)) return true;
     if (t.startsWith('//') || /^template\s*</.test(t) || /^\[\[.*\]\]$/.test(t)) continue;
+    // The tail of a multi-line template header: skip back to its `template <` line.
+    if (/>\s*$/.test(t)) {
+      let k = j;
+      while (k >= 0 && !/^\s*template\s*</.test(lines[k]) && j - k < 12) k--;
+      if (k >= 0 && /^\s*template\s*</.test(lines[k])) {
+        j = k;
+        continue;
+      }
+    }
     return false;
   }
   return false;
