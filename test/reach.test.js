@@ -8,6 +8,7 @@ import { parseAnnotations } from '../src/shared/annotations.js';
 import { compareObject, STATUS } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 import { reachOf, REACH } from '../src/shared/reach.js';
+import { selfcheckFunction } from '../src/shared/selfcheck.js';
 
 // Thing::Init at 0x401000 stores the address of a table; the table holds a pointer to Helper
 // (0x401100) and the number 42. The function's own bytes say nothing of what the table holds.
@@ -90,10 +91,21 @@ test('a reached name without an ID leaves the function unknown until the name is
 });
 
 test('writable data that differs is undecided: a memory dump holds what the program stored there', () => {
-  const r = reach({ number: 43, tableSection: DATA, tableName: '?table@@3UEntry@@A' });
+  const syms = symbols([{ id: 'gl_00001', kind: 'global', addr: TABLE_ADDR, size: 8 }]);
+  const names = new Map([['?Helper@@YAXXZ', 'fn_00002'], ['?table@@3UEntry@@A', 'gl_00001']]);
+  const r = reach({ number: 43, tableSection: DATA, tableName: '?table@@3UEntry@@A' }, { names, syms });
   assert.equal(r.verdict, REACH.UNKNOWN);
   assert.equal(r.findings[0].kind, 'undecided');
   assert.match(r.findings[0].reason, /in writable data$/);
+});
+
+test('writable data without an ID is not decided by what it holds', () => {
+  // Equal bytes would prove nothing (zeroes mostly): which address the name stands for stays the
+  // function's own open reference, for compare.js and reconcile to settle.
+  const r = reach({ tableSection: DATA, tableName: '?table@@3UEntry@@A' });
+  assert.deepEqual([r.pieces, r.decided, r.findings], [0, undefined, []]);
+  const readOnly = reach();
+  assert.deepEqual([readOnly.pieces, readOnly.decided], [1, ['?table@@3QBUEntry@@B']]);
 });
 
 test('a type descriptor is compared by its name, whatever the runtime wrote before it', () => {
@@ -132,10 +144,10 @@ test('the strict verdict joins the result and settles with the names reconcile a
     '_TEXT\tENDS',
     'END',
   ].join('\r\n');
-  const check = (opts, strict = true) => {
+  const check = (opts, strict = true, selfcheck = null) => {
     const f = build(opts);
     const syms = symbols();
-    const unit = compareObject({ obj: new CoffObject(f.obj), listing: parseListing(listing), file: FILE, annotations: parseAnnotations(source, FILE).annotations, symbols: syms, pe: new PEImage(f.pe), strict, symbolAt: (a) => [...syms].find(([, s]) => s.addr === a)?.[0] ?? null });
+    const unit = compareObject({ obj: new CoffObject(f.obj), listing: parseListing(listing), file: FILE, annotations: parseAnnotations(source, FILE).annotations, symbols: syms, pe: new PEImage(f.pe), strict, selfcheck, symbolAt: (a) => [...syms].find(([, s]) => s.addr === a)?.[0] ?? null });
     reconcile({ units: [unit] }, syms, new PEImage(f.pe));
     return unit.functions[0];
   };
@@ -148,4 +160,24 @@ test('the strict verdict joins the result and settles with the names reconcile a
   assert.equal(check({ number: 43 }).reach.verdict, REACH.CODE_EXACT);
   // Nothing is known at the address the original's table points to: the name stays open.
   assert.equal(check({ slot: OTHER_ADDR }).reach.verdict, REACH.UNKNOWN);
+
+  // Selfcheck: each of the function's 7 bytes and the table's 8 is damaged in the original, and
+  // each time the result changes.
+  assert.deepEqual(check({}, true, { stride: 1 }).selfcheck, { bytes: 15, tried: 15, exempt: {}, survived: [] });
+  // Without the strict check only the function's own bytes are evidence.
+  assert.deepEqual(check({}, false, { stride: 1 }).selfcheck, { bytes: 7, tried: 7, exempt: {}, survived: [] });
+  assert.equal(check({}, true, { stride: 4 }).selfcheck.tried, 4);
+});
+
+test('selfcheck reports the damage a comparison does not notice, and counts what is exempt', () => {
+  const pe = new PEImage(build().pe);
+  // A comparison that looks at the first four bytes only, and declares the last one exempt.
+  const judge = (image, trace) => {
+    trace?.exempt.push({ start: 6, end: 7, why: 'by rule' });
+    const same = image.read(FN_ADDR, 4).equals(pe.read(FN_ADDR, 4));
+    return { r: { status: same ? STATUS.EXACT : STATUS.MISMATCH, score: 1 }, reach: null };
+  };
+  const r = selfcheckFunction({ pe, addr: FN_ADDR, length: 7, judge });
+  assert.deepEqual([r.bytes, r.tried, r.exempt], [6, 6, { 'by rule': 1 }]);
+  assert.deepEqual(r.survived, [{ addr: FN_ADDR + 4, what: 'code' }, { addr: FN_ADDR + 5, what: 'code' }]);
 });

@@ -32,7 +32,7 @@ import { scanAnnotations, unitSettings } from './project.js';
 // incremental: update a job directory left by an earlier check instead of copying the tree anew
 // (prepareJobDir); for a job directory only ever filled from the same repoDir.
 // compileCache: {dir, capMb} of a compile-output cache for docker runners (compileUnits).
-export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, bindGlobals = null, cachedUnits = [], unitOrder = null, incremental = false, compileCache = null, strict = false, scan = scanAnnotations(repoDir, project, overrides) }) {
+export async function checkUnits({ repoDir, jobDir, project, units, overrides = {}, symbols, nameIndex, pe, runners, timeoutMs, scaleTimeout = false, lintUnits = null, analyze = null, bindGlobals = null, cachedUnits = [], unitOrder = null, incremental = false, compileCache = null, strict = false, selfcheck = null, scan = scanAnnotations(repoDir, project, overrides) }) {
   const annotationErrors = [...scan.errors, ...lintAnnotations(scan.annotations, symbols)];
 
   prepareJobDir({ repoDir, jobDir, project, overrides, incremental });
@@ -57,7 +57,7 @@ export async function checkUnits({ repoDir, jobDir, project, units, overrides = 
   for (const file of analysisOrder) for (const [name, id] of evidence.get(file) ?? []) if (!names.has(name)) names.set(name, id);
   const results = analyze
     ? await analyze({ compiled, annotations: scan.annotations, roots, nameIndex: names })
-    : analyzeCompiled({ compiled, annotations: scan.annotations, roots, symbols, nameIndex: names, pe, strict });
+    : analyzeCompiled({ compiled, annotations: scan.annotations, roots, symbols, nameIndex: names, pe, strict, selfcheck });
   for (const u of results) u.globalBindings = evidence.get(u.file) ?? [];
   return { annotationErrors, units: results, annotations: scan.annotations, analysisNames: [...names], analysisOrder };
 }
@@ -134,7 +134,7 @@ function addressIndex(symbols) {
 }
 
 /** Lints and compares the compiler output of each unit against the original. */
-export function analyzeCompiled({ compiled, annotations, roots, symbols, nameIndex, pe, strict = false }) {
+export function analyzeCompiled({ compiled, annotations, roots, symbols, nameIndex, pe, strict = false, selfcheck = null }) {
   const projectRoots = [...roots.sourceDirs, ...roots.includeDirs].map((d) => '/' + normalizePath(d) + '/');
   const isProjectFile = (f) => projectRoots.some((r) => f.includes(r));
 
@@ -147,7 +147,8 @@ export function analyzeCompiled({ compiled, annotations, roots, symbols, nameInd
     const addresses = new Map();
     const symbolAt = (addr) => {
       const id = addressIndex(symbols).get(addr) ?? null;
-      addresses.set(addr, id);
+      // A damaged original asks about addresses the real one never names.
+      if (!selfcheck) addresses.set(addr, id);
       return id;
     };
     if (c.pre) unit.lintErrors = lintPreprocessed(fs.readFileSync(c.pre, 'latin1'), isProjectFile);
@@ -155,7 +156,7 @@ export function analyzeCompiled({ compiled, annotations, roots, symbols, nameInd
       try {
         const obj = new CoffObject(fs.readFileSync(c.obj));
         const listing = parseListing(c.cod ? fs.readFileSync(c.cod, 'latin1') : '');
-        Object.assign(unit, compareObject({ obj, listing, file: c.file, annotations, symbols: read, nameIndex: names, pe, strict, symbolAt }));
+        Object.assign(unit, compareObject({ obj, listing, file: c.file, annotations, symbols: read, nameIndex: names, pe, strict, symbolAt, selfcheck }));
       } catch (e) {
         unit.errors.push({ file: c.file, message: `could not analyze compiler output: ${e.message}` });
       }
@@ -208,6 +209,7 @@ export function summarizeCheck(result, rec, files = null) {
         relocations: f.relocations,
         ...(f.deletingDestructor && { deletingDestructor: true }),
         ...(f.reach && { reach: f.reach }),
+        ...(f.selfcheck && { selfcheck: f.selfcheck }),
       })),
       folded: (u.folded ?? []).map((f) => ({ id: f.id, line: f.line, status: f.status, score: f.score, size: f.size })),
     })),

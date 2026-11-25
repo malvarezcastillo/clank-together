@@ -71,6 +71,7 @@ function pieceAt(obj, secIndex, offset) {
  * @param {(name: string) => string} p.qualify       a file-local name as the name index knows it
  * @param {Map<string, object>} p.symbols
  * @param {(addr: number) => string|null} [p.symbolAt]  the ID of the symbol at an address
+ * @param {object} [p.trace]  collects the pieces that agreed (selfcheck.js)
  */
 // MSVC's vector deleting destructor tests bit 1 of its flags argument first (`test byte ptr [ebp+8], 2`).
 function isVectorDeleting(code) {
@@ -83,7 +84,7 @@ export function reachVerdict(reach) {
   return reach.undecided || reach.pending?.length ? REACH.UNKNOWN : REACH.VERIFIED;
 }
 
-export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbols, symbolAt = () => null }) {
+export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbols, symbolAt = () => null, trace = null }) {
   const wrap = pe.is64 ? (x) => x : (x) => x >>> 0;
   const tlsBase = pe.tlsBase();
   const findings = [];
@@ -137,6 +138,8 @@ export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbol
         else report('differs', where, opts.describe?.(orig) ?? what);
         return;
       }
+      const from = opts.from ?? 0;
+      trace?.pieces.push({ addr: origStart + from, len: ours.length - from, what: where });
     }
     for (const r of relocs) {
       if (skip?.(r.at) || r.at + r.width > ours.length) continue;
@@ -164,6 +167,7 @@ export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbol
       if (top) return;
       const res = compareLiteral(literal, actual, pe, name);
       if (!res.ok) report('differs', to, res.reason);
+      else trace?.pieces.push({ addr: actual, len: literal.length, what: to });
       return;
     }
     const id = resolve(qualify(name));
@@ -197,6 +201,13 @@ export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbol
       if (!known && !top) pending.push({ symbol: qualify(name), actual, where: to });
       return;
     }
+    // Writable data without an ID is not told apart by what it holds: zeroes prove nothing, and the
+    // program has written to it since. Which address the name stands for is a claim. (A type
+    // descriptor is writable too, but it is its name.)
+    if (!known && (sec.characteristics & IMAGE_SCN_MEM_WRITE) !== 0 && !name.startsWith('??_R0')) {
+      if (!top) pending.push({ symbol: qualify(name), actual, where: to });
+      return;
+    }
     if (top && !known) decided.add(qualify(name));
     // A reference to the section itself (a file-local table, a switch table) names its piece by the addend.
     const isSection = sym.storageClass === 3 && sym.value === 0 && sym.numAux > 0 && name.startsWith('.');
@@ -217,6 +228,7 @@ export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbol
   // The function's own bytes are compareFunction's to judge: only its references are followed.
   piece(fn.section, fn.offset, fn.offset + fn.bytes.length, addr, 'code', () => false);
 
+  if (trace) trace.findings = findings;
   const differs = findings.filter((f) => f.kind === 'differs');
   const out = {
     pieces,

@@ -36,7 +36,9 @@ Work (a region: a source file, a class, or a run of unplaced functions, done as 
   td check [files...] [--includers] [--strict]  compile + compare on this machine; named files over a clean HEAD
                                               (--includers: every unit that includes a changed header;
                                               --strict: also compare what each matching function reaches:
-                                              tables, vtables, exception handlers. verified / code-exact / unknown)
+                                              tables, vtables, exception handlers. verified / code-exact / unknown;
+                                              --selfcheck [--every N]: damage each byte (each N-th) of the original
+                                              a matching result rests on, and list the damage it does not notice)
   td compile [--out DIR] [--jobs N] [--link-only]   build the whole program on this machine with the
                                               project's exeBuild command (data/decomp.json); incremental
   td submit [--notes T]                       submit the region's work as one batch
@@ -99,11 +101,21 @@ function printCheck(r) {
         for (const w of f.reach.findings) console.log(`        ${w.kind === 'differs' ? 'differs' : 'undecided'}: ${w.where}: ${w.reason}`);
         for (const p of f.reach.pending ?? []) console.log(`        not yet named: ${p.where}, original points at 0x${hex(p.actual)}`);
       }
+      for (const s of f.selfcheck?.survived ?? []) console.log(`      selfcheck: damage at 0x${hex(s.addr)} not noticed (${s.what})`);
     }
     for (const f of u.folded ?? []) console.log(`  FOLDED ${f.id} (line ${f.line})${''.padEnd(22)} ${f.status.padEnd(17)} ${(f.score * 100).toFixed(1)}%  size ${f.size?.ours ?? '-'}/${f.size?.original ?? '?'}`);
     if (u.unannotated.length) console.log(`  unannotated: ${u.unannotated.join(', ')}`);
   }
   for (const c of r.referenceConflicts) console.log(`conflict: ${c.message ?? c}`);
+  const damaged = r.units.flatMap((u) => u.functions).filter((f) => f.selfcheck);
+  if (damaged.length) {
+    const sum = (pick) => damaged.reduce((n, f) => n + pick(f.selfcheck), 0);
+    const exempt = {};
+    for (const f of damaged) for (const [why, n] of Object.entries(f.selfcheck.exempt)) exempt[why] = (exempt[why] ?? 0) + n;
+    const survived = sum((s) => s.survived.length + (s.moreSurvived ?? 0));
+    console.log(`\nselfcheck: ${damaged.length} matching function(s) rest on ${sum((s) => s.bytes)} bytes of the original; ${sum((s) => s.tried)} damaged one at a time, ${survived} not noticed`);
+    for (const [why, n] of Object.entries(exempt)) console.log(`  exempt: ${n} bytes, ${why}`);
+  }
 }
 
 function printImprovable(r, json) {
@@ -211,6 +223,8 @@ async function main() {
       free: { type: 'boolean', default: false },
       includers: { type: 'boolean', default: false },
       strict: { type: 'boolean', default: false },
+      selfcheck: { type: 'boolean', default: false },
+      every: { type: 'string' },
       prefix: { type: 'string' },
       class: { type: 'string' },
       force: { type: 'boolean', default: false },
@@ -323,7 +337,7 @@ connect your AI with:  td connect --workspace "${ws.dir}"`);
       return print(r);
     }
     case 'check': {
-      const r = await ops.check(ws, args.map((f) => ops.relPath(ws, f)), { includers: values.includers, strict: values.strict });
+      const r = await ops.check(ws, args.map((f) => ops.relPath(ws, f)), { includers: values.includers, strict: values.strict, selfcheck: values.selfcheck ? { stride: Math.max(1, Number(values.every) || 1) } : null });
       return values.json ? print(r) : printCheck(r);
     }
     case 'compile': {
