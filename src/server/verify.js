@@ -48,6 +48,15 @@ export class BuildRetryError extends Error {
   }
 }
 
+/**
+ * The submitted files minus hash-pinned upstream copies (freetext.js isPinnedVendored): the source
+ * rules that govern what contributors write (annotations, globals, declarations) do not apply to
+ * an unchanged upstream library.
+ */
+function ownFiles(files, vendored) {
+  return Object.fromEntries(Object.entries(files).filter(([f, text]) => typeof text !== 'string' || !isPinnedVendored(f, text, vendored)));
+}
+
 // The longest prologue a protector stub keeps before it jumps into the virtual machine.
 const STUB_MAX = 96;
 
@@ -544,7 +553,6 @@ export class Verifier {
     for (const [file, text] of Object.entries(files)) {
       if (typeof text !== 'string') continue;
       for (const e of offsetErrors(text, baseFiles[file] ?? null, addressOf)) errors.push({ file, ...e });
-      // A pinned upstream file defines library functions the original inlined or never linked.
       if (!isPinnedVendored(file, text, this.project.vendored)) for (const e of unannotatedErrors(text, baseFiles[file] ?? null)) errors.push({ file, ...e });
     }
     return errors;
@@ -597,9 +605,7 @@ export class Verifier {
       }
     };
     const moved = movedFrom(files, (f) => this.repo.show(baseCommit, f) === null);
-    // A pinned upstream file declares functions for configurations this build never compiles.
-    const own = Object.fromEntries(Object.entries(files).filter(([f, text]) => typeof text !== 'string' || !isPinnedVendored(f, text, this.project.vendored)));
-    return undefinedDeclarations(own, { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), existsElsewhere, known });
+    return undefinedDeclarations(ownFiles(files, this.project.vendored), { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), existsElsewhere, known });
   }
 
   /** Definitions come from the effective source tree, never from symbol metadata or pending work. */
@@ -615,7 +621,7 @@ export class Verifier {
       this.globalSourceHead = head;
     }
     const moved = movedFrom(files, (f) => this.repo.show(baseCommit, f) === null);
-    return globalViolations(files, { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), repository: this.globalSources });
+    return globalViolations(ownFiles(files, this.project.vendored), { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), repository: this.globalSources });
   }
 
   /**
