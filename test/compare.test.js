@@ -117,6 +117,25 @@ test('effectiveHash identifies a label of the function by where it lands, not by
   assert.notEqual(hash('$LN2792@Update', 13, 0), hash('$LN2790@Update', 13, 0), 'a label outside the function still hashes by name');
 });
 
+test('a reference to a label of the function is checked by where the original points', () => {
+  // A switch table's entry: nothing names the label, the place in the function is all there is.
+  const known = new Map([['?Callee@@YAXXZ', 'fn_00002']]);
+  const compare = (pointsTo) => {
+    const f = fixture();
+    f.pe.writeUInt32LE(pointsTo, f.pe.indexOf(Buffer.from('558bec', 'hex')) + 9);
+    const obj = new CoffObject(f.obj);
+    Object.assign(obj.symbols[3], { name: '$LN7@Update', value: 13, section: 1, storageClass: 6 });
+    const { annotations } = parseAnnotations(f.source, FILE);
+    return compareObject({ obj, listing: parseListing(f.listing), file: FILE, annotations, symbols: symbols(), nameIndex: known, pe: new PEImage(f.pe) }).functions[0];
+  };
+  const same = compare(FN_ADDR + 13);
+  assert.equal(same.status, STATUS.EXACT, 'the same place in the function: nothing left unresolved');
+  assert.deepEqual(same.relocations, []);
+  const other = compare(FN_ADDR + 2);
+  assert.equal(other.status, STATUS.MISMATCH, 'the original sends that case elsewhere');
+  assert.match(other.relocations[0].reason, /refers to \+0xd of the function .* but original references 0x0*40\w+/);
+});
+
 test('a caller of a renamed function has the same effective code once the new name is bound', () => {
   const known = new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00001']]);
   const before = run({ nameIndex: known }).fn;

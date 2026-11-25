@@ -316,6 +316,22 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
   // Thread-local variables are reached by their offset in the TLS template, not by address.
   const tlsBase = pe.tlsBase();
 
+  // What a reference stands for in effectiveHash.
+  // MSVC names an anonymous namespace (?A0x0c4fce31) and a lambda's closure wrapper
+  // (_Closure_wrapper_63e67006_4) after the unit's contents: editing the file renames these
+  // file-local symbols, which is no change to the code that calls them.
+  // A label inside the function itself ($LN12@Name, a jump-table target) is numbered by the
+  // compiler across the whole unit: it is identified by where it lands in the function instead.
+  const note = (r, symName, target, addend) => {
+    const s = r.symbol;
+    const ownLabel = s && symName.startsWith('$') && s.section === fn.section && s.value >= fn.offset && s.value < fn.offset + ours.length;
+    const stable = ownLabel
+      ? `$@${s.value - fn.offset}`
+      : symName.replace(/\?A0x[0-9a-f]{8}@/g, '?A@').replace(/_Closure_wrapper_[0-9a-f]{8}_/g, '_Closure_wrapper__');
+    effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `?${stable}+${addend}`}`);
+    if (!(target && target.addr != null)) unresolvedRefs.push({ index: effective.length - 1, name: symName, addend, prefix: `${r.offset}:${r.kind}:` });
+  };
+
   for (const r of fn.relocs) {
     for (let k = 0; k < r.width && r.offset + k < compareLen; k++) masked[r.offset + k] = 1;
     if (r.kind === 'other' || (r.kind === 'secrel' && tlsBase === null) || r.offset + r.width > compareLen) continue;
@@ -354,6 +370,17 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
       continue;
     }
 
+    // A label of the function itself (a switch table's entry) has no name to look up: it is the
+    // same place in the original's function, or the table sends that case somewhere else.
+    const label = r.symbol;
+    if (ok && !target && label && symName.startsWith('$') && label.section === fn.section && label.value >= fn.offset && label.value < fn.offset + ours.length) {
+      const at = label.value - fn.offset;
+      const same = actual === wrap(addr + at);
+      relocResults.push({ offset: r.offset, symbol: symName, id: null, ok: same, unresolved: false, actual, reason: same ? null : `refers to +0x${at.toString(16)} of the function (0x${hex(wrap(addr + at))}) but original references 0x${hex(actual)}` });
+      note(r, symName, target, addend);
+      continue;
+    }
+
     if (ok && target && target.addr != null) {
       if (target.addr !== actual && !sameTarget(pe, target, actual)) {
         ok = false;
@@ -365,18 +392,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
       if (!isSection) inferred.push({ symbol: symName, addr: actual });
     }
     relocResults.push({ offset: r.offset, symbol: symName, id, ok, unresolved: ok && !(target && target.addr != null), actual, reason });
-    // MSVC names an anonymous namespace (?A0x0c4fce31) and a lambda's closure wrapper
-    // (_Closure_wrapper_63e67006_4) after the unit's contents: editing the file renames these
-    // file-local symbols, which is no change to the code that calls them.
-    // A label inside the function itself ($LN12@Name, a jump-table target) is numbered by the
-    // compiler across the whole unit: it is identified by where it lands in the function instead.
-    const s = r.symbol;
-    const ownLabel = s && symName.startsWith('$') && s.section === fn.section && s.value >= fn.offset && s.value < fn.offset + ours.length;
-    const stable = ownLabel
-      ? `$@${s.value - fn.offset}`
-      : symName.replace(/\?A0x[0-9a-f]{8}@/g, '?A@').replace(/_Closure_wrapper_[0-9a-f]{8}_/g, '_Closure_wrapper__');
-    effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `?${stable}+${addend}`}`);
-    if (!(target && target.addr != null)) unresolvedRefs.push({ index: effective.length - 1, name: symName, addend, prefix: `${r.offset}:${r.kind}:` });
+    note(r, symName, target, addend);
   }
 
   const sameLength = !origSize || origSize === ours.length;
