@@ -5,7 +5,7 @@ import { PEImage } from '../src/shared/pe.js';
 import { CoffObject } from '../src/shared/coff.js';
 import { parseListing } from '../src/shared/listing.js';
 import { parseAnnotations } from '../src/shared/annotations.js';
-import { compareObject, compareFunction, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash, sameTarget } from '../src/shared/compare.js';
+import { compareObject, compareFunction, compareLiteral, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash, sameTarget } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 
 const FILE = 'src/player.cpp';
@@ -134,6 +134,16 @@ test('a reference to a label of the function is checked by where the original po
   const other = compare(FN_ADDR + 2);
   assert.equal(other.status, STATUS.MISMATCH, 'the original sends that case elsewhere');
   assert.match(other.relocations[0].reason, /refers to \+0xd of the function .* but original references 0x0*40\w+/);
+});
+
+test('a constant of zeroes is not matched by zero-filled storage', () => {
+  // "" is one zero byte: any zero-filled address would hold it. A constant is in the file.
+  const data = Buffer.alloc(0x10);
+  const pe = new PEImage(buildPe({ sections: [{ name: '.text', rva: 0x1000, data: Buffer.alloc(0x10, 0xcc) }, { name: '.data', rva: 0x5000, data, virtualSize: 0x4000 }] }));
+  const empty = Buffer.from([0]);
+  assert.equal(compareLiteral(empty, GLOBAL_ADDR + 4, pe, '??_C@_00CNPNBAHC@?$AA@').ok, true);
+  const beyond = compareLiteral(empty, GLOBAL_ADDR + 0x1000, pe, '??_C@_00CNPNBAHC@?$AA@');
+  assert.deepEqual(beyond, { ok: false, reason: 'original points at uninitialized storage, not at a constant' });
 });
 
 test('a caller of a renamed function has the same effective code once the new name is bound', () => {

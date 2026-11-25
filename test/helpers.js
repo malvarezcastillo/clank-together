@@ -116,7 +116,7 @@ export function buildDebugS(functions) {
 }
 
 /**
- * @param {{imageBase?: number, sections: Array<{name, rva, data, characteristics?}>, baseRelocs?: number[], relocsStripped?: boolean}} p
+ * @param {{imageBase?: number, sections: Array<{name, rva, data, virtualSize?, characteristics?}>, baseRelocs?: number[], relocsStripped?: boolean}} p
  *        baseRelocs are virtual addresses of HIGHLOW fixups. relocsStripped marks the image as linked
  *        without a relocation table (IMAGE_FILE_RELOCS_STRIPPED), as a packer leaves it.
  *        imports, tls: {rva, size} of the import and TLS directories (data the sections hold).
@@ -185,7 +185,7 @@ export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], reloc
   placed.forEach((s, i) => {
     const o = secTable + i * 40;
     buf.write(s.name, o, 'latin1');
-    buf.writeUInt32LE(s.data.length, o + 8);
+    buf.writeUInt32LE(s.virtualSize ?? s.data.length, o + 8);
     buf.writeUInt32LE(s.rva, o + 12);
     buf.writeUInt32LE(s.rawSize, o + 16);
     buf.writeUInt32LE(s.rawPtr, o + 20);

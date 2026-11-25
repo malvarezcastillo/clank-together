@@ -266,6 +266,8 @@ export function compareLiteral(ours, addr, pe, name) {
   } catch {
     return { ok: false, reason: 'original points outside the image' };
   }
+  // A constant is initialized data. Zero-filled storage would pass for any constant of zeros ("", 0.0).
+  if (!pe.inFile(addr)) return { ok: false, reason: 'original points at uninitialized storage, not at a constant' };
   if (orig.equals(ours)) return { ok: true, reason: null };
   const wide = name.startsWith('??_C@_1');
   const decode = (b) => (wide ? b.toString('utf16le') : b.toString('latin1')).replace(/\0+$/, '');

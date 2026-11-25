@@ -86,6 +86,12 @@ export class PEImage {
     return Number(this.read(va, 8).readBigUInt64LE(0));
   }
 
+  /** Whether the file holds the byte at `va` (the rest of a section is zero-filled when loaded). */
+  inFile(va) {
+    const s = this.sectionForVa(va);
+    return !!s && va - this.imageBase - s.rva < s.rawSize;
+  }
+
   isCode(va) {
     const s = this.sectionForVa(va);
     return !!s && (s.characteristics & 0x20000000) !== 0; // IMAGE_SCN_MEM_EXECUTE
