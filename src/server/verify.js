@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { lintAnnotations } from '../shared/annotations.js';
 import { lintSubmission, movedFrom } from '../shared/lint.js';
-import { freeTextErrorsAcross, executionCharset, encodedLiteralRules, VIRTUALIZED_RE } from '../shared/freetext.js';
+import { freeTextErrorsAcross, executionCharset, encodedLiteralRules, isPinnedVendored, VIRTUALIZED_RE } from '../shared/freetext.js';
 import { offsetErrors } from '../shared/offsets.js';
 import { unannotatedErrors } from '../shared/unannotated.js';
 import { checkUnits, inputsCurrent } from '../shared/check.js';
@@ -544,7 +544,8 @@ export class Verifier {
     for (const [file, text] of Object.entries(files)) {
       if (typeof text !== 'string') continue;
       for (const e of offsetErrors(text, baseFiles[file] ?? null, addressOf)) errors.push({ file, ...e });
-      for (const e of unannotatedErrors(text, baseFiles[file] ?? null)) errors.push({ file, ...e });
+      // A pinned upstream file defines library functions the original inlined or never linked.
+      if (!isPinnedVendored(file, text, this.project.vendored)) for (const e of unannotatedErrors(text, baseFiles[file] ?? null)) errors.push({ file, ...e });
     }
     return errors;
   }
