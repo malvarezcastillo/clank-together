@@ -9,6 +9,7 @@ import { compareObject, STATUS } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 import { reachOf, REACH } from '../src/shared/reach.js';
 import { selfcheckFunction } from '../src/shared/selfcheck.js';
+import { ledger, LEDGER_CLASSES } from '../src/shared/ledger.js';
 
 // Thing::Init at 0x401000 stores the address of a table; the table holds a pointer to Helper
 // (0x401100) and the number 42. The function's own bytes say nothing of what the table holds.
@@ -180,4 +181,27 @@ test('selfcheck reports the damage a comparison does not notice, and counts what
   const r = selfcheckFunction({ pe, addr: FN_ADDR, length: 7, judge });
   assert.deepEqual([r.bytes, r.tried, r.exempt], [6, 6, { 'by rule': 1 }]);
   assert.deepEqual(r.survived, [{ addr: FN_ADDR + 4, what: 'code' }, { addr: FN_ADDR + 5, what: 'code' }]);
+});
+
+test('the ledger puts every byte of the original in exactly one class', () => {
+  const f = build();
+  const pe = new PEImage(f.pe);
+  const obj = new CoffObject(f.obj);
+  const syms = symbols([{ id: 'fn_00003', kind: 'function', addr: OTHER_ADDR, size: 1, library: true }]);
+  const reach = reachOf({ obj, fn: obj.functions()[0], addr: FN_ADDR, pe, resolve: (n) => (n === '?Helper@@YAXXZ' ? 'fn_00002' : null), symbols: syms });
+  assert.deepEqual(reach.ranges, [[TABLE_ADDR, 8]]);
+  const fn = { addr: FN_ADDR, status: STATUS.EXACT, size: { ours: 7, original: 7 }, reach };
+  const l = ledger({ pe, symbols: syms, functions: [fn] });
+  const row = (name) => l.sections.find((s) => s.name === name).classes;
+  // Thing::Init is proven with the table it reaches; Helper is in the database but not in the tree.
+  assert.deepEqual([row('.text').proven, row('.text').missing, row('.text').library, row('.text').padding], [7, 1, 1, 0x200 - 9]);
+  assert.deepEqual([row('.rdata').proven, row('.rdata').open], [8, 0x200 - 8]);
+  assert.equal(LEDGER_CLASSES.reduce((n, c) => n + l.total[c], 0), f.pe.length, 'the classes add up to the file');
+  assert.equal(l.copied.headers, f.pe.length - 3 * 0x200);
+
+  // Without the strict verdict the function is matched, not proven; a patch in it is copied.
+  const plain = ledger({ pe, symbols: syms, functions: [{ ...fn, reach: undefined }], manifest: { patches: [{ addr: FN_ADDR + 2, length: 4 }], sections: [{ name: '.reloc', class: 'dump' }] } });
+  const text = plain.sections.find((s) => s.name === '.text').classes;
+  assert.deepEqual([text.proven, text.matched, text.copied], [0, 3, 4]);
+  assert.deepEqual(plain.copied, { dump: 0x200, patch: 4, headers: f.pe.length - 3 * 0x200 });
 });

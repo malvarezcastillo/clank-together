@@ -93,6 +93,8 @@ export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbol
   const pending = [];
   // The function's own references to names without an ID that are decided here, by content.
   const decided = new Set();
+  // Where in the original the pieces and constants that agreed are: [address, length] (ledger.js).
+  const ranges = [];
   let pieces = 0;
   let bytes = 0;
   const report = (kind, where, reason, extra = {}) => findings.push({ kind, where, reason, ...extra });
@@ -139,6 +141,7 @@ export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbol
         return;
       }
       const from = opts.from ?? 0;
+      ranges.push([origStart + from, ours.length - from]);
       trace?.pieces.push({ addr: origStart + from, len: ours.length - from, what: where });
     }
     for (const r of relocs) {
@@ -164,10 +167,14 @@ export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbol
     const to = `${where} -> ${name}`;
     const literal = obj.literal(sym);
     if (literal) {
-      if (top) return;
+      // The function's own constants agreed, or it would not be here.
+      if (top) return void ranges.push([actual, literal.length]);
       const res = compareLiteral(literal, actual, pe, name);
       if (!res.ok) report('differs', to, res.reason);
-      else trace?.pieces.push({ addr: actual, len: literal.length, what: to });
+      else {
+        ranges.push([actual, literal.length]);
+        trace?.pieces.push({ addr: actual, len: literal.length, what: to });
+      }
       return;
     }
     const id = resolve(qualify(name));
@@ -237,6 +244,7 @@ export function reachOf({ obj, fn, addr, pe, resolve, qualify = (n) => n, symbol
     undecided: findings.length - differs.length,
     ...(pending.length && { pending }),
     ...(decided.size && { decided: [...decided] }),
+    ...(ranges.length && { ranges }),
     findings: [...differs, ...findings.filter((f) => f.kind !== 'differs')].slice(0, MAX_FINDINGS),
   };
   return { verdict: reachVerdict(out), ...out };
