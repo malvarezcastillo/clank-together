@@ -597,7 +597,9 @@ export class Verifier {
       }
     };
     const moved = movedFrom(files, (f) => this.repo.show(baseCommit, f) === null);
-    return undefinedDeclarations(files, { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), existsElsewhere, known });
+    // A pinned upstream file declares functions for configurations this build never compiles.
+    const own = Object.fromEntries(Object.entries(files).filter(([f, text]) => typeof text !== 'string' || !isPinnedVendored(f, text, this.project.vendored)));
+    return undefinedDeclarations(own, { before: (f) => this.repo.show(baseCommit, moved.get(f) ?? f), existsElsewhere, known });
   }
 
   /** Definitions come from the effective source tree, never from symbol metadata or pending work. */
