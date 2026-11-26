@@ -663,8 +663,10 @@ export class Merger {
       }
     }
     // EH handlers, unwind funclets and deleting destructors are made by the compiler from the
-    // function that uses them: a symbol for one would be a task nobody can port.
-    for (const u of rec.unknown.filter((x) => !isCompilerGenerated(x.decorated))) {
+    // function that uses them: a symbol for one would be a task nobody can port. Data the runtime
+    // defines (__Init_thread_epoch) is no task: unnamed, the functions that use it stay unresolved.
+    const isData = (addr) => !!pe.sectionForVa(addr) && !pe.isCode(addr);
+    for (const u of rec.unknown.filter((x) => !isCompilerGenerated(x.decorated) || isData(x.addr))) {
       const kind = u.decorated.startsWith('??_C@') ? 'string' : u.decorated.startsWith('??_7') ? 'vtable' : pe.isCode(u.addr) ? 'function' : 'global';
       const { symbol } = this.store.ensureSymbol({ kind, versionId: v.id, addr: u.addr, userId });
       this.store.run('UPDATE symbols SET decorated = ? WHERE id = ? AND decorated IS NULL', u.decorated, symbol.id);

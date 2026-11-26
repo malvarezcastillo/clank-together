@@ -116,11 +116,12 @@ export function buildDebugS(functions) {
 }
 
 /**
- * @param {{imageBase?: number, sections: Array<{name, rva, data, characteristics?}>, baseRelocs?: number[], relocsStripped?: boolean}} p
+ * @param {{imageBase?: number, sections: Array<{name, rva, data, virtualSize?, characteristics?}>, baseRelocs?: number[], relocsStripped?: boolean}} p
  *        baseRelocs are virtual addresses of HIGHLOW fixups. relocsStripped marks the image as linked
  *        without a relocation table (IMAGE_FILE_RELOCS_STRIPPED), as a packer leaves it.
+ *        imports, tls: {rva, size} of the import and TLS directories (data the sections hold).
  */
-export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], relocsStripped = false, imports = null }) {
+export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], relocsStripped = false, imports = null, tls = null }) {
   const all = [...sections];
   if (baseRelocs.length) {
     const pages = new Map();
@@ -172,6 +173,10 @@ export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], reloc
     buf.writeUInt32LE(imports.rva, opt + 96 + 1 * 8);
     buf.writeUInt32LE(imports.size, opt + 100 + 1 * 8);
   }
+  if (tls) {
+    buf.writeUInt32LE(tls.rva, opt + 96 + 9 * 8);
+    buf.writeUInt32LE(tls.size, opt + 100 + 9 * 8);
+  }
   const reloc = placed.find((s) => s.isReloc);
   if (reloc) {
     buf.writeUInt32LE(reloc.rva, opt + 96 + 5 * 8);
@@ -180,7 +185,7 @@ export function buildPe({ imageBase = 0x400000, sections, baseRelocs = [], reloc
   placed.forEach((s, i) => {
     const o = secTable + i * 40;
     buf.write(s.name, o, 'latin1');
-    buf.writeUInt32LE(s.data.length, o + 8);
+    buf.writeUInt32LE(s.virtualSize ?? s.data.length, o + 8);
     buf.writeUInt32LE(s.rva, o + 12);
     buf.writeUInt32LE(s.rawSize, o + 16);
     buf.writeUInt32LE(s.rawPtr, o + 20);

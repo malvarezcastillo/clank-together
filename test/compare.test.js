@@ -5,7 +5,7 @@ import { PEImage } from '../src/shared/pe.js';
 import { CoffObject } from '../src/shared/coff.js';
 import { parseListing } from '../src/shared/listing.js';
 import { parseAnnotations } from '../src/shared/annotations.js';
-import { compareObject, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash, sameTarget } from '../src/shared/compare.js';
+import { compareObject, compareFunction, compareLiteral, bindAnnotations, STATUS, lcsRatio, sameOriginal, isDeletingDestructor, resolvedEffectiveHash, sameTarget } from '../src/shared/compare.js';
 import { reconcile } from '../src/shared/reconcile.js';
 
 const FILE = 'src/player.cpp';
@@ -117,6 +117,35 @@ test('effectiveHash identifies a label of the function by where it lands, not by
   assert.notEqual(hash('$LN2792@Update', 13, 0), hash('$LN2790@Update', 13, 0), 'a label outside the function still hashes by name');
 });
 
+test('a reference to a label of the function is checked by where the original points', () => {
+  // A switch table's entry: nothing names the label, the place in the function is all there is.
+  const known = new Map([['?Callee@@YAXXZ', 'fn_00002']]);
+  const compare = (pointsTo) => {
+    const f = fixture();
+    f.pe.writeUInt32LE(pointsTo, f.pe.indexOf(Buffer.from('558bec', 'hex')) + 9);
+    const obj = new CoffObject(f.obj);
+    Object.assign(obj.symbols[3], { name: '$LN7@Update', value: 13, section: 1, storageClass: 6 });
+    const { annotations } = parseAnnotations(f.source, FILE);
+    return compareObject({ obj, listing: parseListing(f.listing), file: FILE, annotations, symbols: symbols(), nameIndex: known, pe: new PEImage(f.pe) }).functions[0];
+  };
+  const same = compare(FN_ADDR + 13);
+  assert.equal(same.status, STATUS.EXACT, 'the same place in the function: nothing left unresolved');
+  assert.deepEqual(same.relocations, []);
+  const other = compare(FN_ADDR + 2);
+  assert.equal(other.status, STATUS.MISMATCH, 'the original sends that case elsewhere');
+  assert.match(other.relocations[0].reason, /refers to \+0xd of the function .* but original references 0x0*40\w+/);
+});
+
+test('a constant of zeroes is not matched by zero-filled storage', () => {
+  // "" is one zero byte: any zero-filled address would hold it. A constant is in the file.
+  const data = Buffer.alloc(0x10);
+  const pe = new PEImage(buildPe({ sections: [{ name: '.text', rva: 0x1000, data: Buffer.alloc(0x10, 0xcc) }, { name: '.data', rva: 0x5000, data, virtualSize: 0x4000 }] }));
+  const empty = Buffer.from([0]);
+  assert.equal(compareLiteral(empty, GLOBAL_ADDR + 4, pe, '??_C@_00CNPNBAHC@?$AA@').ok, true);
+  const beyond = compareLiteral(empty, GLOBAL_ADDR + 0x1000, pe, '??_C@_00CNPNBAHC@?$AA@');
+  assert.deepEqual(beyond, { ok: false, reason: 'original points at uninitialized storage, not at a constant' });
+});
+
 test('a caller of a renamed function has the same effective code once the new name is bound', () => {
   const known = new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00001']]);
   const before = run({ nameIndex: known }).fn;
@@ -146,6 +175,81 @@ test('a reference to data with no symbol stays unresolved and is reported', () =
   const rec = reconcile({ units: [result], annotationErrors: [] }, syms);
   assert.equal(result.functions[0].status, STATUS.UNRESOLVED);
   assert.deepEqual(rec.unknown, [{ decorated: '?g_val@@3HA', addr: GLOBAL_ADDR }]);
+});
+
+// `mov eax, [ecx + t_count@SECREL]; ret` at 0x401000, with the TLS template in .tls at 0x403000:
+// the field holds the variable's offset in the template.
+function tlsCase({ field, directory = true, known = true }) {
+  const code = Buffer.from([0x8b, 0x81, 0, 0, 0, 0, 0xc3]);
+  const text = Buffer.alloc(0x20, 0xcc);
+  code.copy(text);
+  text.writeUInt32LE(field, 2);
+  const tls = Buffer.alloc(0x40);
+  tls.writeUInt32LE(0x403000, 0x20); // the directory: where the template starts and ends
+  tls.writeUInt32LE(0x403020, 0x24);
+  const pe = new PEImage(buildPe({
+    sections: [{ name: '.text', rva: 0x1000, data: text }, { name: '.tls', rva: 0x3000, data: tls, characteristics: 0xc0000040 }],
+    relocsStripped: true,
+    tls: directory ? { rva: 0x3020, size: 24 } : null,
+  }));
+  const obj = new CoffObject(buildCoff({
+    sections: [{ name: '.text$mn', data: code, relocs: [{ offset: 2, symbolIndex: 1, type: 0x0b }] }],
+    symbols: [{ name: '?Get@@YAHXZ', section: 1, type: 0x20 }, { name: '?t_count@@3HA', section: 0 }],
+  }));
+  const syms = new Map([['gl_00007', { id: 'gl_00007', kind: 'global', addr: 0x403008, size: 4 }]]);
+  return compareFunction({ fn: obj.functions()[0], addr: 0x401000, origSize: 7, pe, resolve: (name) => (known && name === '?t_count@@3HA' ? 'gl_00007' : null), symbols: syms });
+}
+
+test('a thread-local variable is checked by its offset in the TLS template', () => {
+  const pe = new PEImage(fixture().pe);
+  assert.equal(pe.tlsBase(), null, 'an image without thread-local data');
+
+  const right = tlsCase({ field: 8 });
+  assert.equal(right.status, STATUS.EXACT);
+  const wrong = tlsCase({ field: 0xc });
+  assert.equal(wrong.status, STATUS.MISMATCH, 'the original reads another thread-local variable');
+  assert.match(wrong.relocations[0].reason, /references gl_00007 \(0x00403008\) but original references 0x0040300c/);
+  assert.notEqual(right.effectiveHash, tlsCase({ field: 8, known: false }).effectiveHash);
+
+  // A name the database does not know yet is learned from where the original points, like any other.
+  const unknown = tlsCase({ field: 8, known: false });
+  assert.equal(unknown.status, STATUS.UNRESOLVED);
+  assert.deepEqual(unknown.inferred, [{ symbol: '?t_count@@3HA', addr: 0x403008 }]);
+
+  // Without a TLS directory there is nothing to measure the offset from: masked, as before.
+  assert.equal(tlsCase({ field: 0xc, directory: false }).status, STATUS.EXACT);
+});
+
+// `push offset literal; ret`: the same instruction bytes whatever the constant holds.
+function literalCase(content, name = '??_C@_05A@hello@') {
+  const code = Buffer.from([0x68, 0, 0, 0, 0, 0xc3]);
+  const text = Buffer.alloc(0x20, 0xcc);
+  code.copy(text);
+  text.writeUInt32LE(0x402000, 1);
+  const rdata = Buffer.alloc(0x40);
+  rdata.write('hello\0', 'latin1');
+  const pe = new PEImage(buildPe({ sections: [{ name: '.text', rva: 0x1000, data: text }, { name: '.rdata', rva: 0x2000, data: rdata, characteristics: 0x40000040 }], relocsStripped: true }));
+  const obj = new CoffObject(buildCoff({
+    sections: [
+      { name: '.text$mn', data: code, relocs: [{ offset: 1, symbolIndex: 1, type: 0x06 }] },
+      { name: '.rdata', data: Buffer.from(content, 'latin1'), characteristics: 0x40301040 },
+    ],
+    symbols: [{ name: '?Name@@YAPBDXZ', section: 1, type: 0x20 }, { name, section: 2 }],
+  }));
+  return compareFunction({ fn: obj.functions()[0], addr: 0x401000, origSize: 6, pe, resolve: () => null, symbols: new Map(), literalOf: (s) => obj.literal(s) });
+}
+
+test('effectiveHash tells which constant a function refers to', () => {
+  const hello = literalCase('hello\0');
+  assert.equal(hello.status, STATUS.EXACT);
+  const other = literalCase('jello\0');
+  assert.equal(other.status, STATUS.MISMATCH);
+  assert.equal(hello.codeHash, other.codeHash, 'the instructions are the same bytes');
+  assert.notEqual(hello.effectiveHash, other.effectiveHash, 'another string is other code');
+  assert.equal(hello.effectiveHash, literalCase('hello\0', '??_C@_05B@hello@').effectiveHash, 'the same string under another symbol name');
+  // __FILE__ holds the build machine's path: the file name is what counts, as it does when compared.
+  assert.equal(literalCase('z:\\job\\src\\player.cpp\0').effectiveHash, literalCase('d:\\work\\src\\player.cpp\0').effectiveHash);
+  assert.notEqual(literalCase('z:\\job\\src\\player.cpp\0').effectiveHash, literalCase('z:\\job\\src\\enemy.cpp\0').effectiveHash);
 });
 
 test('calling the wrong function is a mismatch', () => {

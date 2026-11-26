@@ -17,10 +17,14 @@ const DEFAULT_PRAGMAS = ['once', 'pack', 'warning', 'intrinsic', 'function', 'in
 const BANNED = [
   { re: /\b_{1,2}asm\b/, message: 'inline assembly is not allowed' },
   { re: /\b_{1,2}emit\b/, message: '__emit is not allowed' },
-  { re: /__declspec\s*\(\s*(allocate|naked)\b/, message: '__declspec(allocate/naked) is not allowed' },
   { re: /^\s*#\s*(import|using|line)\b/m, message: '#import, #using and #line are not allowed' },
   { re: /^\s*#\s*pragma\s+(comment|section|code_seg|data_seg|const_seg|bss_seg|alloc_text|include_alias)\b/m, message: 'this #pragma is not allowed' },
 ];
+
+// __declspec takes several modifiers at once (__declspec(noinline naked)) and _declspec is the same
+// keyword, so the whole list is read. code_seg is #pragma code_seg for one function.
+const DECLSPEC_RE = /\b_{1,2}declspec\s*\(/g;
+const BANNED_DECLSPEC_RE = /\b(allocate|naked|code_seg)\b/;
 
 export function globToRegExp(glob) {
   let re = '';
@@ -52,7 +56,30 @@ export function normalizeRepoPath(p) {
   return n;
 }
 
-/** Removes comments and string/char literal contents, keeping line structure. */
+const isDigit = (c) => c >= '0' && c <= '9';
+const isWord = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isDigit(c) || c === '_';
+const RAW_PREFIX_RE = /^(?:u8|u|U|L)?R$/;
+
+/**
+ * Where the raw string whose opening quote is at `quote` ends (R"delim( ... )delim"), or -1 when
+ * what follows the quote is not a raw string's delimiter. Unterminated: the end of the text.
+ */
+function rawStringEnd(src, quote) {
+  let p = quote + 1;
+  while (p < src.length && p - quote <= 16 && !/[()\\\s"]/.test(src[p])) p++;
+  if (src[p] !== '(') return -1;
+  const close = `)${src.slice(quote + 1, p)}"`;
+  const end = src.indexOf(close, p + 1);
+  return end < 0 ? src.length : end + close.length;
+}
+
+/**
+ * Removes comments and string/char literal contents, keeping line structure.
+ * A quote is read as the compiler reads it: a raw string (R"x( ... )x") ends at its delimiter, not
+ * at the first quote inside it, and an apostrophe inside a number (1'000) separates digits and
+ * opens no character literal. Read any other way, the code that follows is taken for the inside
+ * of a literal and no rule sees it. The digraph %: is written out as the # it stands for.
+ */
 export function stripCommentsAndStrings(src) {
   let out = '';
   let i = 0;
@@ -69,6 +96,30 @@ export function stripCommentsAndStrings(src) {
       }
       i += 2;
       out += ' ';
+    } else if (isDigit(c) || (c === '.' && n !== undefined && isDigit(n))) {
+      // A number as the preprocessor takes it: digits, letters, dots, exponent signs, and
+      // apostrophes that have a digit or letter after them.
+      let j = i + 1;
+      for (; j < src.length; j++) {
+        const d = src[j];
+        if (isWord(d) || d === '.') continue;
+        if (d === "'" && j + 1 < src.length && isWord(src[j + 1])) continue;
+        if ((d === '+' || d === '-') && /[eEpP]/.test(src[j - 1])) continue;
+        break;
+      }
+      out += src.slice(i, j).replaceAll("'", '');
+      i = j;
+    } else if (isWord(c)) {
+      let j = i + 1;
+      while (j < src.length && isWord(src[j])) j++;
+      const word = src.slice(i, j);
+      out += word;
+      i = j;
+      const end = src[i] === '"' && RAW_PREFIX_RE.test(word) ? rawStringEnd(src, i) : -1;
+      if (end >= 0) {
+        out += '"' + '\n'.repeat(src.slice(i, end).split('\n').length - 1) + '"';
+        i = end;
+      }
     } else if (c === '"' || c === "'") {
       out += c;
       i++;
@@ -78,6 +129,9 @@ export function stripCommentsAndStrings(src) {
       }
       out += c;
       i++;
+    } else if (c === '%' && n === ':') {
+      out += '#';
+      i += 2;
     } else {
       out += c;
       i++;
@@ -101,6 +155,13 @@ export function lintSource(file, text, { allowedPragmas = DEFAULT_PRAGMAS, maxIn
     const re = new RegExp(b.re.source, b.re.flags.includes('m') ? 'gm' : 'g');
     let m;
     while ((m = re.exec(code))) errors.push({ file, line: lineOf(code, m.index), message: b.message });
+  }
+
+  DECLSPEC_RE.lastIndex = 0;
+  for (let d; (d = DECLSPEC_RE.exec(code)); ) {
+    let p = DECLSPEC_RE.lastIndex;
+    for (let depth = 1; p < code.length && depth > 0; p++) depth += code[p] === '(' ? 1 : code[p] === ')' ? -1 : 0;
+    if (BANNED_DECLSPEC_RE.test(code.slice(DECLSPEC_RE.lastIndex, p))) errors.push({ file, line: lineOf(code, d.index), message: '__declspec(allocate/naked/code_seg) is not allowed' });
   }
 
   const pragmaRe = /^\s*#\s*pragma\s+([A-Za-z_]+)/gm;

@@ -266,6 +266,8 @@ export function compareLiteral(ours, addr, pe, name) {
   } catch {
     return { ok: false, reason: 'original points outside the image' };
   }
+  // A constant is initialized data. Zero-filled storage would pass for any constant of zeros ("", 0.0).
+  if (!pe.inFile(addr)) return { ok: false, reason: 'original points at uninitialized storage, not at a constant' };
   if (orig.equals(ours)) return { ok: true, reason: null };
   const wide = name.startsWith('??_C@_1');
   const decode = (b) => (wide ? b.toString('utf16le') : b.toString('latin1')).replace(/\0+$/, '');
@@ -282,6 +284,16 @@ export function compareLiteral(ours, addr, pe, name) {
   if (pa && pb && pa[1].toLowerCase() === pb[1].toLowerCase()) return { ok: true, reason: null };
   const show = (s) => JSON.stringify(s.length > 60 ? s.slice(0, 57) + '...' : s);
   return { ok: false, reason: `constant differs: ours ${show(a)}, original ${show(full)}` };
+}
+
+/**
+ * What a constant is to the code that refers to it (effectiveHash): its bytes, or for a __FILE__
+ * string its file name, as compareLiteral judges it (the directories are the build machine's).
+ */
+function literalKey(bytes, name) {
+  const text = (name.startsWith('??_C@_1') ? bytes.toString('utf16le') : bytes.toString('latin1')).replace(/\0+$/, '');
+  const path = SOURCE_PATH_RE.exec(text);
+  return crypto.createHash('sha1').update(path ? `file:${path[1].toLowerCase()}` : bytes).digest('hex').slice(0, 16);
 }
 
 /** Compares one compiled function with the original bytes at `addr`. */
@@ -303,10 +315,28 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
 
   // x86 address arithmetic wraps at 32 bits; x64 image addresses do not wrap.
   const wrap = pe.is64 ? (x) => x : (x) => x >>> 0;
+  // Thread-local variables are reached by their offset in the TLS template, not by address.
+  const tlsBase = pe.tlsBase();
+
+  // What a reference stands for in effectiveHash.
+  // MSVC names an anonymous namespace (?A0x0c4fce31) and a lambda's closure wrapper
+  // (_Closure_wrapper_63e67006_4) after the unit's contents: editing the file renames these
+  // file-local symbols, which is no change to the code that calls them.
+  // A label inside the function itself ($LN12@Name, a jump-table target) is numbered by the
+  // compiler across the whole unit: it is identified by where it lands in the function instead.
+  const note = (r, symName, target, addend) => {
+    const s = r.symbol;
+    const ownLabel = s && symName.startsWith('$') && s.section === fn.section && s.value >= fn.offset && s.value < fn.offset + ours.length;
+    const stable = ownLabel
+      ? `$@${s.value - fn.offset}`
+      : symName.replace(/\?A0x[0-9a-f]{8}@/g, '?A@').replace(/_Closure_wrapper_[0-9a-f]{8}_/g, '_Closure_wrapper__');
+    effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `?${stable}+${addend}`}`);
+    if (!(target && target.addr != null)) unresolvedRefs.push({ index: effective.length - 1, name: symName, addend, prefix: `${r.offset}:${r.kind}:` });
+  };
 
   for (const r of fn.relocs) {
     for (let k = 0; k < r.width && r.offset + k < compareLen; k++) masked[r.offset + k] = 1;
-    if (r.kind === 'other' || r.offset + r.width > compareLen) continue;
+    if (r.kind === 'other' || (r.kind === 'secrel' && tlsBase === null) || r.offset + r.width > compareLen) continue;
 
     const symName = r.symbol?.name ?? '?';
     const id = resolve(symName);
@@ -325,6 +355,8 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
       actual = wrap(value - addend);
     } else if (r.kind === 'rva') {
       actual = wrap(pe.imageBase + orig.readUInt32LE(r.offset) - addend);
+    } else if (r.kind === 'secrel') {
+      actual = wrap(tlsBase + orig.readUInt32LE(r.offset) - addend);
     } else {
       // rel: value = target + addend - (field end + bias)
       actual = wrap(addr + r.offset + 4 + r.bias + orig.readInt32LE(r.offset) - addend);
@@ -335,6 +367,19 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     if (literal) {
       const res = compareLiteral(literal, actual, pe, symName);
       relocResults.push({ offset: r.offset, symbol: symName, id: null, ok: res.ok, unresolved: false, actual, reason: res.reason, literal: true });
+      // A constant has no address of its own: what the code reaches is its content.
+      effective.push(`${r.offset}:${r.kind}:=${literalKey(literal, symName)}+${addend}`);
+      continue;
+    }
+
+    // A label of the function itself (a switch table's entry) has no name to look up: it is the
+    // same place in the original's function, or the table sends that case somewhere else.
+    const label = r.symbol;
+    if (ok && !target && label && symName.startsWith('$') && label.section === fn.section && label.value >= fn.offset && label.value < fn.offset + ours.length) {
+      const at = label.value - fn.offset;
+      const same = actual === wrap(addr + at);
+      relocResults.push({ offset: r.offset, symbol: symName, id: null, ok: same, unresolved: false, actual, reason: same ? null : `refers to +0x${at.toString(16)} of the function (0x${hex(wrap(addr + at))}) but original references 0x${hex(actual)}` });
+      note(r, symName, target, addend);
       continue;
     }
 
@@ -349,18 +394,7 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
       if (!isSection) inferred.push({ symbol: symName, addr: actual });
     }
     relocResults.push({ offset: r.offset, symbol: symName, id, ok, unresolved: ok && !(target && target.addr != null), actual, reason });
-    // MSVC names an anonymous namespace (?A0x0c4fce31) and a lambda's closure wrapper
-    // (_Closure_wrapper_63e67006_4) after the unit's contents: editing the file renames these
-    // file-local symbols, which is no change to the code that calls them.
-    // A label inside the function itself ($LN12@Name, a jump-table target) is numbered by the
-    // compiler across the whole unit: it is identified by where it lands in the function instead.
-    const s = r.symbol;
-    const ownLabel = s && symName.startsWith('$') && s.section === fn.section && s.value >= fn.offset && s.value < fn.offset + ours.length;
-    const stable = ownLabel
-      ? `$@${s.value - fn.offset}`
-      : symName.replace(/\?A0x[0-9a-f]{8}@/g, '?A@').replace(/_Closure_wrapper_[0-9a-f]{8}_/g, '_Closure_wrapper__');
-    effective.push(`${r.offset}:${r.kind}:${target && target.addr != null ? wrap(target.addr + addend) : `?${stable}+${addend}`}`);
-    if (!(target && target.addr != null)) unresolvedRefs.push({ index: effective.length - 1, name: symName, addend, prefix: `${r.offset}:${r.kind}:` });
+    note(r, symName, target, addend);
   }
 
   const sameLength = !origSize || origSize === ours.length;
@@ -587,7 +621,7 @@ export function codeHash(bytes, proc) {
 
 /**
  * Fingerprint of what a function does once linked: its bytes outside relocated fields plus where
- * each reference lands. Renaming a global, or reaching a member of an object through the object's
+ * each reference lands (for a string or numeric constant, what it holds). Renaming a global, or reaching a member of an object through the object's
  * symbol instead of a symbol of its own at that address, leaves it unchanged. Source lines play no
  * part (unlike codeHash): an operand that happens to equal its line number would make moving the
  * function look like changing it.
