@@ -20,7 +20,7 @@ import { sourceIncluders } from './includers.js';
 import { globalViolations } from './globals.js';
 import { functionRegions } from './split.js';
 import { className } from './grouping.js';
-import { now } from './db.js';
+import { now, hardReferenceConflicts, recordFunctionStatus } from './db.js';
 import { returnBatch, batchAttempts, settleBatch, holdFor, AUTHOR_HOLD_MS } from './batches.js';
 import { analyzeInWorkers, bindGlobalsInWorkers } from './analyze.js';
 import { foldedErrors } from '../shared/folded.js';
@@ -37,6 +37,9 @@ export const BUILD_READY = "COALESCE(json_extract(result_json, '$.buildRetry.ret
  */
 export const encodeCheck = (value) => gzipSync(JSON.stringify(value), { level: 6 });
 export const decodeCheck = (stored) => JSON.parse(typeof stored === 'string' ? stored : gunzipSync(stored).toString('utf8'));
+
+const CHECK_FORMAT = 4;
+const LEGACY_CHECK_FORMAT = 3;
 
 /**
  * A unit the compiler crashed on (fatal error C1001, internal compiler error): under wine the
@@ -651,7 +654,8 @@ export class Verifier {
   /** Capture before compilation: comparison inputs are as important as source dependencies. */
   checkSnapshot(files, { version = this.store.currentVersion(), symbols = this.store.symbolMap(version.id), scan = scanAnnotations(this.repo.dir, this.project, files) } = {}) {
     return {
-      format: 3, head: this.repo.head(), overrides: { ...files },
+      format: CHECK_FORMAT, head: this.repo.head(), overrides: { ...files },
+      version: version.id,
       context: this.checkContext(files, version),
       annotationErrors: [...scan.errors, ...lintAnnotations(scan.annotations, symbols)],
     };
@@ -678,11 +682,11 @@ export class Verifier {
 
   // Store evidence only, never evaluation, ownership, regression or review approvals.
   rememberCheck(batchId, { check, rec, changedHeaders, cacheSnapshot }) {
-    if (!cacheSnapshot || cacheSnapshot.format !== 3) return;
+    if (cacheSnapshot?.format !== CHECK_FORMAT) return;
     const compact = {
       annotationErrors: check.annotationErrors,
       analysisNames: check.analysisNames,
-      units: check.units.map((u) => ({ ...u, functions: u.functions.map(({ asm, diffRegions, ...f }) => f) })),
+      units: check.units,
     };
     this.store.run('INSERT OR REPLACE INTO batch_checks (batch_id, head, check_json) VALUES (?, ?, ?)', batchId, cacheSnapshot.head,
       encodeCheck({ check: compact, rec, changedHeaders, cacheSnapshot }));
@@ -692,19 +696,21 @@ export class Verifier {
   async mergeCheck(batch, files, fromBatch = batch) {
     const snapshot = this.checkSnapshot(files);
     let saved = null;
+    const required = new Set();
     for (const id of new Set([batch.id, fromBatch.id])) {
       const row = this.store.get('SELECT head, check_json FROM batch_checks WHERE batch_id = ?', id);
       if (!row) continue;
       try {
         const candidate = decodeCheck(row.check_json);
         const s = candidate.cacheSnapshot;
-        if (s?.format === 3 && s.head === row.head && s.context === snapshot.context && s.overrides && candidate.check?.units) {
-          saved = candidate;
-          break;
-        }
+        if ((s?.format !== CHECK_FORMAT && s?.format !== LEGACY_CHECK_FORMAT) || s.head !== row.head || s.context !== snapshot.context || !s.overrides || !Array.isArray(candidate.check?.units)) continue;
+        for (const u of candidate.check.units) required.add(u.file);
+        // Older checks know which units emitted these functions, but lack the measurements.
+        if (s.format !== CHECK_FORMAT) continue;
+        saved = candidate;
+        break;
       } catch { /* Unknown/legacy provenance is a cache miss. */ }
     }
-    const required = new Set((saved?.check.units ?? []).map((u) => u.file));
     for (const file of Object.keys(files).filter(isUnit)) required.add(file);
     // Verification may have compiled a template/inline emitter outside the submitted units.
     // Its old results are not reusable without provenance, but its coverage is still required.
@@ -785,29 +791,34 @@ export class Verifier {
     const found = this.regressions(check, files);
     if (!found.length) return 0;
     const head = this.repo.head();
+    const version = this.store.currentVersion().id;
+    const baseline = `${version}:${head}`;
     this.baselineAt ??= new Map();
-    const units = [...new Set(found.map((r) => r.file))].filter((u) => isUnit(u) && this.baselineAt.get(u) !== head);
+    const units = [...new Set(found.map((r) => r.file))].filter((u) => isUnit(u) && this.baselineAt.get(u) !== baseline);
     if (!units.length) return 0;
-    const { check: main } = await this.check({}, `baseline-${jobName}`, { onlyUnits: units, lint: false });
+    const { check: main, rec, cacheSnapshot } = await this.check({}, `baseline-${jobName}`, { onlyUnits: units, lint: false });
     if (main.units.some((u) => !u.compiled || u.timedOut)) throw new BuildRetryError(main, 'baseline');
-    if (this.repo.head() !== head) return 0; // main moved meanwhile: the next check measures again
+    if (this.repo.head() !== head || this.store.currentVersion().id !== version || this.inputsChanged(main, cacheSnapshot, {})) return 0;
     const compiled = new Set(main.units.filter((u) => u.compiled).map((u) => u.file));
-    const ids = new Set(found.map((r) => r.id));
+    const addressOf = boundAddresses(main, this.store.symbolMap(version));
+    const hardConflicts = hardReferenceConflicts(rec);
     let changed = 0;
     for (const [id, { f, unit }] of bestResults(main)) {
-      if (!ids.has(id) || !compiled.has(unit)) continue;
-      const old = this.store.get('SELECT status, score, code_hash FROM func_status WHERE symbol_id = ?', id);
-      if (!old || (old.status === f.status && Math.abs(old.score - f.score) <= 1e-4 && old.code_hash === (f.codeHash ?? old.code_hash))) continue;
-      this.store.run(
-        `UPDATE func_status SET file = ?, status = ?, score = ?, code_hash = COALESCE(?, code_hash), commit_hash = ?, updated_at = ?,
-           confirmed = CASE WHEN ? IN ('exact', 'match_unresolved') THEN 0 WHEN status IN ('exact', 'match_unresolved') THEN 1 ELSE confirmed END WHERE symbol_id = ?`,
-        unit, f.status, f.score, f.codeHash ?? null, head, now(), f.status, id,
-      );
-      this.store.event('baseline_refreshed', null, { id, was: old.status, wasScore: old.score, now: f.status, score: f.score, commit: head });
-      this.log.info(`baseline of ${id} was stale (${old.status} ${(old.score * 100).toFixed(1)}%); main builds it as ${f.status} ${(f.score * 100).toFixed(1)}%`);
+      if (!compiled.has(unit)) continue;
+      const old = this.store.get('SELECT file, status, score, code_hash, comparison_version FROM func_status WHERE symbol_id = ?', id);
+      if (old && !compiled.has(old.file) && RANK[old.status] > RANK[f.status]) continue;
+      const stale = old && (old.status !== f.status || Math.abs(old.score - f.score) > 1e-4 || old.code_hash !== (f.codeHash ?? old.code_hash));
+      // Fresh comparisons refresh evidence even when the score and code are unchanged. A missing
+      // or no-address result must not leave an older measurement attached to the updated status.
+      if (f.size == null && old?.comparison_version == null && !stale) continue;
+      recordFunctionStatus(this.store, f, unit, { commit: head, version, effectiveHash: resolvedEffectiveHash(f, addressOf), hardConflicts });
+      if (stale) {
+        this.store.event('baseline_refreshed', null, { id, was: old.status, wasScore: old.score, now: f.status, score: f.score, commit: head });
+        this.log.info(`baseline of ${id} was stale (${old.status} ${(old.score * 100).toFixed(1)}%); main builds it as ${f.status} ${(f.score * 100).toFixed(1)}%`);
+      }
       changed++;
     }
-    for (const u of compiled) this.baselineAt.set(u, head);
+    for (const u of compiled) this.baselineAt.set(u, baseline);
     return changed;
   }
 
@@ -818,7 +829,7 @@ export class Verifier {
     const compiledFiles = new Set(check.units.flatMap((u) => (moves.has(u.file) ? [u.file, moves.get(u.file)] : [u.file])));
     const out = [];
     // An accepted "no decompile" claim retires the function: removing its old annotation is the fix.
-    for (const row of this.store.all(`SELECT * FROM func_status WHERE (status IN ('exact', 'match_unresolved') OR confirmed = 1) AND symbol_id NOT IN (SELECT symbol_id FROM tasks WHERE state = 'skipped')`)) {
+    for (const row of this.store.all(`SELECT symbol_id, file, status, score, confirmed FROM func_status WHERE (status IN ('exact', 'match_unresolved') OR confirmed = 1) AND symbol_id NOT IN (SELECT symbol_id FROM tasks WHERE state = 'skipped')`)) {
       if (!compiledFiles.has(row.file)) continue;
       const now_ = results.get(row.symbol_id);
       // Exact and match_unresolved are the same bytes: whether a referenced label resolves depends

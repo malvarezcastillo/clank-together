@@ -128,7 +128,8 @@ export class Maintenance {
     // batch is checked, and written to the build list with it on merge.
     const moves = movedUnits(this.project.compile?.units, merged.files);
     const listedBefore = this.project.compile?.units;
-    if (moves.size) this.project.compile.units = withMovedUnits(listedBefore, moves);
+    const movedListing = moves.size ? withMovedUnits(listedBefore, moves) : null;
+    if (moves.size) this.project.compile.units = movedListing;
     let checked;
     try {
       // Every unit the change can affect: the submitted ones, and every includer of a changed header.
@@ -136,7 +137,7 @@ export class Maintenance {
     } finally {
       if (moves.size) this.project.compile.units = listedBefore;
     }
-    const { check, rec, changedHeaders } = checked;
+    const { check, rec, changedHeaders, cacheSnapshot } = checked;
     if (check.units.some((u) => u.timedOut)) throw new BuildRetryError(check, 'maintenance');
     const failed = check.units.filter((u) => !u.compiled);
     if (failed.length) return back('compilation failed', { compileErrors: failed.map((u) => ({ file: u.file, log: u.log })) });
@@ -147,15 +148,23 @@ export class Maintenance {
     if (lint.length) return back('banned constructs found after preprocessing', { lintErrors: lint });
     await this.verifier.refreshBaselines(check, merged.files, `maintenance-${batch.id}`);
     const forced = JSON.parse(batch.result_json ?? '{}').forced === true;
+    const staleCheck = () => {
+      if (moves.size) this.project.compile.units = movedListing;
+      try {
+        return this.repo.head() !== startHead || this.verifier.inputsChanged(check, cacheSnapshot, merged.files);
+      } finally {
+        if (moves.size) this.project.compile.units = listedBefore;
+      }
+    };
+    const requeue = () => ({ state: 'queued', result: { note: 'main or comparison inputs changed while verifying; checking again', ...(forced && { forced: true }) } });
+    if (staleCheck()) return requeue();
     const regressions = this.verifier.regressions(check, merged.files, moves);
     if (regressions.length && !forced) return back(`breaks ${regressions.length} function(s) that matched before`, { regressions });
     const changed = await this.changedFunctions(check, merged.files, startHead, moves);
+    if (staleCheck()) return requeue();
     if (changed.length && !forced) {
       return back(`changes the compiled code of ${changed.length} function(s): that is function work; submit those functions with their tasks`, { changedFunctions: changed.slice(0, 200) });
     }
-
-    // Another merge committed while this one compiled: check again on the new main.
-    if (this.repo.head() !== startHead) return { state: 'queued', result: { note: 'main moved while verifying; checking again', ...(forced && { forced: true }) } };
     // Cancelled by its author while it compiled: nothing is committed.
     if (this.cancelled(batch.id)) return { state: 'returned', result: { returned: 'cancelled' } };
 
@@ -184,7 +193,7 @@ export class Maintenance {
         this.store.run(`UPDATE OR IGNORE region_claims SET key = ? WHERE kind = 'unit' AND key = ?`, to, from);
         this.store.run(`DELETE FROM region_claims WHERE kind = 'unit' AND key = ?`, from);
       }
-      this.merger.applyCheckToDatabase(check, rec, commit, batch.user_id);
+      this.merger.applyCheckToDatabase(check, rec, commit, batch.user_id, { comparisonVersion: cacheSnapshot?.version });
     });
     if (moves.size) this.store.event('units_moved', batch.user_id, { batch: batch.id, moves: Object.fromEntries(moves) });
     if (forced) this.store.event('maintenance_forced', batch.user_id, { batch: batch.id, commit, regressions: regressions.map((r) => r.id), changed: changed.map((c) => c.id ?? c) });

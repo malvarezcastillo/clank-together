@@ -416,10 +416,15 @@ async function main() {
     const ctx = openServer(dataDir);
     const t0 = Date.now();
     // A full build of a large project takes a while; allow up to 6 hours.
-    const { check, rec } = await ctx.verifier.check({}, 'rebuild', { allUnits: true, timeoutMs: 6 * 3600_000 });
+    const { check, rec, cacheSnapshot } = await ctx.verifier.check({}, 'rebuild', { allUnits: true, timeoutMs: 6 * 3600_000 });
     console.log(`compiled ${check.units.length} units in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
     for (const u of check.units) if (!u.compiled) console.error(`FAILED ${u.file}\n${u.log}`);
-    ctx.store.tx(() => ctx.merger.applyCheckToDatabase(check, rec, ctx.repo.head(), null));
+    ctx.store.tx(() => {
+      if (ctx.repo.head() !== cacheSnapshot.head || ctx.verifier.inputsChanged(check, cacheSnapshot, {})) {
+        throw new Error('main or target inputs changed while rebuilding; run `td-server rebuild` again');
+      }
+      ctx.merger.applyCheckToDatabase(check, rec, cacheSnapshot.head, null, { comparisonVersion: cacheSnapshot.version });
+    });
     ctx.tasks.generate();
     const counts = {};
     for (const u of check.units) for (const f of u.functions) counts[f.status] = (counts[f.status] ?? 0) + 1;

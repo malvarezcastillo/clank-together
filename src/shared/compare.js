@@ -434,6 +434,8 @@ export function compareFunction({ fn, addr, origSize, pe, resolve, symbols, proc
     status,
     score: Math.round(score * 10000) / 10000,
     size: { ours: ours.length, original: origSize ?? null },
+    // Regions can include equal positions between differences and are capped for display.
+    differingBytes: origSize > 0 && sameLength ? diffs.length : null,
     codeHash: codeHash(ours, proc),
     ...effectiveFingerprint(ours, relocMasked, effective, unresolvedRefs, pe.is64),
     diffRegions: sameLength ? diffRegions(diffs, ours, orig, proc) : [],

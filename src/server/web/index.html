@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>Clank Together</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=grant-20261115">
+  <link rel="stylesheet" href="/style.css?v=atlas-file-hover">
 </head>
 <body>
   <header class="topbar">
@@ -28,6 +28,7 @@
       </a>
       <nav class="mainnav" aria-label="Main">
         <a href="#/" data-route="home">Home</a>
+        <a href="#/map" data-route="map">Byte map</a>
         <a href="#/guide" data-route="guide">Get started</a>
         <a href="#/review" data-route="review" data-role="contributor" hidden>Review</a>
         <a href="#/batches" data-route="batches" data-role="contributor" hidden>Batches</a>
@@ -77,31 +78,25 @@
         </section>
       </div>
 
-      <section id="map" class="plate">
+      <section id="match-progress" class="plate">
         <div class="plate-head">
           <h2>The binary, function by function</h2>
-          <div class="map-tools">
-            <input id="map-search" type="search" placeholder="Highlight a file or folder…" aria-label="Highlight a file or folder">
-            <label class="approval-switch map-toggle"><input id="map-by-match" type="checkbox" role="switch"> Byte match %</label>
-          </div>
+          <a href="#/map" class="cta">Open full atlas &rarr;</a>
         </div>
-        <p class="hint">Every square is one function of the original, in address order. Watch it fill up.</p>
-        <div class="map-wrap" id="map-wrap">
-          <canvas id="map-canvas" aria-label="Map of all functions by state" role="img"></canvas>
-          <div id="map-tip" class="map-tip" hidden></div>
+        <p class="hint">One cell per known-size function, grouped by source. Select a function to inspect it or a location label to explore it.</p>
+        <div id="home-atlas" data-view="map">
+          <p id="home-atlas-loading" class="muted" role="status">Loading byte map…</p>
         </div>
-        <div class="map-legend" id="map-legend"></div>
-        <div id="map-detail" class="map-detail" hidden></div>
         <div class="match-history">
           <div class="match-history-head">
-            <h3>Whole binary, byte match over time</h3>
+            <h3>Match score over time</h3>
             <span id="match-now" class="match-now"></span>
           </div>
           <div class="match-chart-wrap" id="match-chart-wrap">
-            <svg id="match-chart" role="img" aria-label="Whole-binary byte match percentage by date"></svg>
+            <svg id="match-chart" role="img" aria-label="Size-weighted match score by date"></svg>
             <div id="match-tip" class="map-tip" hidden></div>
           </div>
-          <p class="hint">Size-weighted byte match of every counted function after each commit to main.</p>
+          <p class="hint">Score weighted by original function size. Includes similarity estimates for size mismatches; unmeasured functions contribute zero.</p>
         </div>
       </section>
 
@@ -127,6 +122,158 @@
       </details>
     </div>
 
+    <div class="view" data-view="map" hidden>
+      <div class="match-explorer">
+        <nav id="map-crumbs" class="match-crumbs" aria-label="Byte map location"></nav>
+        <div id="map-browse">
+          <header class="match-header">
+            <div>
+              <h2 id="map-panel-title" tabindex="-1">Binary atlas</h2>
+              <p id="map-summary" class="match-subtitle" role="status">Loading byte map…</p>
+            </div>
+          </header>
+          <section class="match-workspace" id="map-workspace" aria-label="Explore this location" hidden>
+            <div class="match-toolbar">
+              <div id="map-modes" class="match-modes" role="group" aria-label="Chart view">
+                <button type="button" data-mode="tree">Source treemap</button>
+                <button type="button" data-mode="address">Address atlas</button>
+              </div>
+              <div class="match-controls">
+                <input id="map-search" type="search" placeholder="Find a function in this location…" aria-label="Find functions by name, file, symbol ID or address">
+                <select id="map-filter" aria-label="Match status">
+                  <option value="">All statuses</option>
+                  <option value="work">Needs work</option>
+                  <option value="exact">Exact</option>
+                  <option value="unresolved">Unresolved references</option>
+                  <option value="same">Equal-size differences</option>
+                  <option value="size">Size mismatch</option>
+                  <option value="unknown">Details not recorded</option>
+                  <option value="unmeasured">Unmeasured</option>
+                  <option value="reloc">Relocation-only</option>
+                  <option value="excluded">Not counted toward progress</option>
+                </select>
+              </div>
+            </div>
+            <section class="match-section" id="map-overview" aria-labelledby="map-folder-title">
+              <div class="match-section-head">
+                <div>
+                  <h3 id="map-folder-title">Function map</h3>
+                  <p id="map-tree-caption"></p>
+                </div>
+                <div class="match-controls">
+                  <label class="match-area" id="map-area-control">Size by
+                    <select id="map-area">
+                      <option value="size">Original size</option>
+                      <option value="gap">Remaining work</option>
+                    </select>
+                  </label>
+                  <button type="button" id="binary-highlight" aria-pressed="false" title="Highlight functions with remaining work without moving them">Highlight gaps</button>
+                </div>
+              </div>
+              <div id="explorer-atlas" hidden></div>
+              <div id="map-tree" class="binary-stage">
+                <div class="binary-color-tools">
+                  <label class="approval-switch"><input type="checkbox" role="switch" id="binary-by-match" checked> Byte match %</label>
+                  <span id="binary-color-caption" class="muted"></span>
+                </div>
+                <div class="binary-display">
+                  <div class="binary-map-frame">
+                    <canvas id="binary-canvas" tabindex="0" aria-label="Interactive function map" aria-describedby="binary-controls-help"></canvas>
+                    <div id="binary-file-outline" aria-hidden="true" hidden></div>
+                    <div id="binary-tooltip" hidden></div>
+                  </div>
+                  <div class="binary-map-tools">
+                    <div class="binary-zoom-tools" role="group" aria-label="Map zoom">
+                      <button type="button" id="binary-zoom-out" aria-label="Zoom out">−</button>
+                      <output id="binary-zoom-level" aria-label="Zoom level">1×</output>
+                      <button type="button" id="binary-zoom-in" aria-label="Zoom in">+</button>
+                      <button type="button" id="binary-fit">Fit map</button>
+                    </div>
+                    <span id="binary-map-position"></span>
+                  </div>
+                </div>
+                <aside class="binary-inspector" aria-label="Map inspector">
+                  <div id="binary-selection" aria-live="polite"></div>
+                  <section class="binary-hotspots" aria-labelledby="binary-hotspot-title">
+                    <h4 id="binary-hotspot-title">Largest byte gaps</h4>
+                    <p>Select one to locate it on the map.</p>
+                    <div id="binary-hotspot-list"></div>
+                  </section>
+                </aside>
+                <div id="binary-match-key" class="binary-map-key" aria-label="Byte match colors">
+                  <span class="binary-key-exact">Byte-identical</span><span class="binary-key-unresolved">Unresolved references</span>
+                  <span class="binary-key-score">0% to 100% similarity</span><span class="binary-key-reloc">Relocation-only</span>
+                  <span class="binary-key-excluded">Not counted toward progress</span><span class="binary-key-unmeasured">No result yet</span>
+                </div>
+                <div id="binary-workflow-key" class="binary-map-key" aria-label="Workflow colors and function counts" hidden></div>
+                <p id="binary-highlight-key" class="binary-map-help" hidden><strong>Gold = known remaining work.</strong> Other functions are dimmed; the layout has not changed.</p>
+                <p class="binary-map-help" id="binary-controls-help">Select a cell to inspect; select a source label to enter its folder. Scroll or use + / − to zoom, then drag to pan. Arrow keys select a function, Enter compares, and Escape resets the view.</p>
+              </div>
+              <div id="map-ranked"></div>
+              <details class="match-explanation match-location-list" id="map-locations">
+                <summary>Browse all folders and files</summary>
+                <div id="map-files"></div>
+              </details>
+            </section>
+            <section class="match-section" id="map-function-panel" aria-labelledby="map-function-title" hidden>
+              <div class="match-section-head">
+                <div><h3 id="map-function-title">Functions</h3><p id="map-function-note">In original address order.</p></div>
+              </div>
+              <div id="map-strip"></div>
+            </section>
+            <section class="match-section" id="map-work-panel" aria-labelledby="map-work-title" hidden>
+              <div class="match-section-head">
+                <div><h3 id="map-work-title">Worklist</h3><p>Largest remaining gaps first. Select a function to compare.</p></div>
+                <button type="button" data-move="worst">Open top priority</button>
+              </div>
+              <div id="map-work"></div>
+            </section>
+            <nav id="map-inspect-links" class="match-inspect-links" aria-label="Inspect individual functions"></nav>
+          </section>
+          <section class="match-progress" id="map-progress" aria-label="Match progress" hidden>
+            <dl id="map-metrics" class="match-metrics"></dl>
+          </section>
+          <details class="match-explanation match-method" id="map-method" hidden>
+            <summary>How progress is measured</summary>
+            <p>The match score is weighted by original function size. It includes estimates for functions of different sizes. A high score is not the same as an exact match.</p>
+            <p>Remaining work combines observed byte differences, the weight of failed references, and estimated gaps. Unmeasured functions count at their original size.</p>
+            <p>Library functions and functions marked as needing no source still appear on the map, but they don’t count toward matching progress.</p>
+            <div id="map-progress-breakdown"></div>
+            <p id="map-progress-counts"></p>
+          </details>
+        </div>
+      </div>
+      <section class="match-compare" id="map-compare" aria-labelledby="map-compare-title" hidden>
+        <a id="map-compare-back" class="match-back" href="#/map">← Back to chart</a>
+        <header class="match-header">
+          <div>
+            <p class="match-eyebrow">Compare on main</p>
+            <h2 id="map-compare-title" tabindex="-1"></h2>
+          </div>
+          <div class="match-pages" aria-label="Function navigation">
+            <button type="button" data-move="previous">Previous</button>
+            <button type="button" data-move="next">Next</button>
+            <button type="button" data-move="worst">Next priority</button>
+          </div>
+        </header>
+        <p id="map-compare-meta" class="hint"></p>
+        <div class="match-public-finding" id="map-public-finding"></div>
+        <div class="tabs small" id="map-compare-tabs" aria-label="Comparison view" hidden>
+          <button type="button" class="tab" data-view="asm">Assembly vs assembly</button>
+          <button type="button" class="tab" data-view="code">C++ vs pseudocode</button>
+        </div>
+        <label id="map-source-revision" class="match-area" hidden>Source revision
+          <select id="map-source-select">
+            <option value="head">Current main</option>
+            <option value="measured">Verified build</option>
+          </select>
+        </label>
+        <div id="map-compare-body"></div>
+        <div id="map-compare-details"></div>
+        <p class="match-shortcuts keys"><kbd>J</kbd> / <kbd>K</kbd> next / previous by address <span>·</span> <kbd>N</kbd> next priority</p>
+      </section>
+    </div>
+
     <!-- Guide -->
     <div class="view" data-view="guide" hidden>
       <section class="plate narrow guide">
@@ -149,7 +296,7 @@
             <code class="cmd" id="open-linux">cd ~/clank/wowdecomp &amp;&amp; claude</code>
             <p>Type <code>/mcp</code>: <strong>clank-together</strong> should be connected. <strong>Other apps:</strong> paste the <code>"mcpServers"</code> block the installer printed (or <code>td connect</code>) into the app's MCP settings.</p></div></li>
           <li><span class="bolt">4</span><div><strong>Give it a job</strong>
-            <p>Paste one of the prompts below. That's it: watch the map on the home page fill up. To stop, just stop your AI.</p></div></li>
+            <p>Paste one of the prompts below. Track what lands on main in the <a href="#/map">byte map</a>. To stop, just stop your AI.</p>
         </ol>
 
         <h3 class="guide-h">Pick a job for your AI</h3>
@@ -497,6 +644,9 @@
     <div class="hazard thin" aria-hidden="true"></div>
     <p>Clank Together · source is open: <code id="clone-cmd">git clone https://clank.rodecomp.online/git/clank/game-decomp.git</code></p>
   </footer>
-  <script src="/app.js?v=grant-20261115"></script>
+  <script src="/binary-map-geometry.js?v=atlas-file-hover"></script>
+  <script src="/binary-map.js?v=atlas-file-hover"></script>
+  <script src="/match-map.js?v=home-byte-match-default"></script>
+  <script src="/app.js?v=home-byte-match-default"></script>
 </body>
 </html>

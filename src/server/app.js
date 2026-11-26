@@ -21,7 +21,7 @@ import { CheckQueue, WorkerUnavailable } from './checks.js';
 import { withGuidance } from './guidance.js';
 import { reviewerStats } from './reviewers.js';
 import { inferUnits } from './grouping.js';
-import { retireSentBack } from './batches.js';
+import { LIVE_STATES, retireSentBack } from './batches.js';
 import { Router, HttpError, readJson, sendJson, RateLimiter } from './http.js';
 import { Regions } from './regions.js';
 import { Credits, SLOT_TABLE } from './credits.js';
@@ -843,54 +843,51 @@ export function createApp(ctx) {
     }
   };
 
-  // Every function in address order, one letter each: d byte-identical, c peer-confirmed, s needs no
-  // decompilation, f on its way to main, l claimed, b sent back, o open; plus its source file.
-  const mapData = () =>
-    cached('map', 15_000, () => {
-      const v = store.currentVersion();
-      if (!v) return { functions: 0, states: '', units: [], unitOf: [], scores: [], ids: [] };
-      const rows = store.all(
-        `SELECT t.symbol_id, t.state, s.unit, a.size, fs.status, fs.score, fs.confirmed FROM tasks t JOIN symbols s ON s.id = t.symbol_id
-           JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ?
-           LEFT JOIN func_status fs ON fs.symbol_id = s.id ORDER BY a.addr`,
-        v.id,
-      );
-      const code = (r) => {
-        if (r.state === 'skipped') return 's';
-        if (r.state === 'done') return r.status === 'exact' || r.status === 'match_unresolved' ? 'd' : 'c';
-        if (['verifying', 'peer_review', 'in_review', 'approved', 'merging'].includes(r.state)) return 'f';
-        if (r.state === 'leased') return 'l';
-        if (r.state === 'needs_cleanup' || r.state === 'hard') return 'b';
-        return 'o';
-      };
-      const units = [];
-      const index = new Map();
-      const unitOf = rows.map((r) => {
-        const u = r.unit ?? '(not placed yet)';
-        if (!index.has(u)) index.set(u, units.push(u) - 1);
-        return index.get(u);
+  // Main's measurements and the live workflow are independent. Include even unbudgeted symbols.
+  const mapData = () => {
+    const version = store.currentVersion()?.id ?? null;
+    return cached('map', 15_000, () => {
+      const claimed = new Set(store.all(`SELECT DISTINCT key FROM region_claims WHERE kind = 'unit' AND expires_at > ?`, now()).map((r) => r.key));
+      const live = LIVE_STATES.map(() => '?').join(', ');
+      const rows = version == null ? [] : store.all(
+        `SELECT s.id, s.name, s.decorated, a.addr, a.size, COALESCE(fs.file, s.unit) AS unit, s.unit AS assigned_unit,
+                s.library = 1 OR s.skip_reason IS NOT NULL AS excluded, t.state,
+                fs.status, fs.score, fs.confirmed, fs.reloc_only, fs.our_size, fs.differing_bytes, fs.failing_references,
+                fs.comparison_version, fs.comparison_addr, fs.comparison_size, fs.updated_at,
+                t.state = 'done' AND EXISTS (
+                  SELECT 1 FROM attempts x WHERE x.task_id = t.id AND x.state IN (${live})
+                ) AS revision_queued
+           FROM symbol_addresses a JOIN symbols s ON s.id = a.symbol_id
+           LEFT JOIN tasks t ON t.symbol_id = s.id LEFT JOIN func_status fs ON fs.symbol_id = s.id
+          WHERE a.version_id = ? AND s.kind = 'function' ORDER BY a.addr`,
+        ...LIVE_STATES, version,
+      ).map((r) => {
+        const measured = mapMeasurementCurrent(r, version);
+        // Old rows still have scores, but not a trustworthy size/diff breakdown.
+        const current = measured || r.comparison_version == null;
+        let workflow = r.state;
+        if (r.revision_queued) workflow = 'queued';
+        else if ((workflow === 'open' || workflow === 'done') && claimed.has(r.assigned_unit)) workflow = 'claimed';
+        return [r.id, qualifiedName(r.decorated) ?? r.name, r.addr, r.size, r.unit, workflow,
+          current ? r.status : null, current ? r.score : null, current ? r.reloc_only ?? 0 : 0,
+          measured ? r.our_size : null, measured ? r.differing_bytes : null, measured ? r.failing_references : null, r.excluded,
+          measured ? r.updated_at : null, current ? r.confirmed ?? 0 : 0];
       });
-      // Byte-match score in percent (0..100) of functions with a compiled match status, -1 without.
-      const scores = rows.map((r) => (r.status == null ? -1 : Math.round(r.score * 100)));
-      return { functions: rows.length, states: rows.map(code).join(''), units, unitOf, scores, ids: rows.map((r) => r.symbol_id), sizes: rows.map((r) => r.size ?? 0) };
-    });
-  router.on('GET', '/api/map', () => {
+      const json = JSON.stringify(rows);
+      const revision = crypto.createHash('sha256').update(JSON.stringify(version)).update(json).digest('hex');
+      return { version, revision, rows, body: `{"version":${JSON.stringify(version)},"functions":${rows.length},"revision":"${revision}","rows":${json}}` };
+    }, version);
+  };
+  router.on('GET', '/api/map', ({ req, res }) => {
     const m = mapData();
-    return { functions: m.functions, states: m.states, units: m.units, unitOf: m.unitOf, scores: m.scores };
-  });
-  router.on('GET', '/api/map/:i', ({ params }) => {
-    const m = mapData();
-    const i = intParam(params.i);
-    if (i < 0 || i >= m.functions) throw new HttpError(404, 'no such function');
-    const s = store.get(
-      `SELECT s.id, s.name, s.decorated, s.unit, t.state, a.addr, u.name AS holder FROM symbols s JOIN tasks t ON t.symbol_id = s.id
-         LEFT JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ?
-         LEFT JOIN users u ON u.id = t.lease_user AND t.state = 'leased' WHERE s.id = ?`,
-      store.currentVersion()?.id,
-      m.ids[i],
-    );
-    const name = qualifiedName(s?.decorated) ?? s?.name ?? null;
-    return { index: i, symbol: s?.id, name, addr: s?.addr ?? null, unit: s?.unit ?? null, state: s?.state, holder: s?.holder ?? null, size: m.sizes[i] };
+    const etag = `"${m.revision}"`;
+    const headers = { etag, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' };
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      return void res.end();
+    }
+    res.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' });
+    res.end(m.body);
   });
 
   // --- regions: a source file or class, claimed and worked on as a whole (regions.js)
@@ -957,6 +954,52 @@ export function createApp(ctx) {
     }
     return null;
   }
+
+  // Never substitute a submission for main's verified build. Pair its listing with source from
+  // the same commit, and let the C++ tab independently show the committed source at HEAD.
+  router.on('GET', '/api/map/:symbol/compare', async ({ req, params }) => {
+    auth(req);
+    const version = store.currentVersion()?.id;
+    const row = version && store.get(
+      `SELECT s.id, s.name, s.decorated, s.unit, a.addr, a.size, fs.file, fs.status, fs.score, fs.commit_hash,
+              fs.comparison_version, fs.comparison_addr, fs.comparison_size, fs.comparison_json, fs.differing_bytes, fs.reloc_only
+         FROM symbols s JOIN symbol_addresses a ON a.symbol_id = s.id AND a.version_id = ?
+         LEFT JOIN func_status fs ON fs.symbol_id = s.id WHERE s.id = ? AND s.kind = 'function'`,
+      version, params.symbol,
+    );
+    if (!row) throw new HttpError(404, 'no such function in the current target');
+    const sourceAt = async (commit, files) => {
+      for (const file of new Set(files.filter(Boolean))) {
+        const text = await repo.readGit(['show', `${commit}:${file}`]).catch(() => null);
+        const source = text != null && targetSource(row.id, { [file]: text });
+        if (source) return source;
+      }
+      return null;
+    };
+    const target = mapMeasurementCurrent(row, version) && row.comparison_json ? JSON.parse(row.comparison_json) : null;
+    const files = [target?.file, row.file, row.unit];
+    const [head, measuredSource] = await Promise.all([
+      repo.readGit(['rev-parse', 'HEAD']).then((s) => s.trim()),
+      target ? sourceAt(row.commit_hash, files) : null,
+    ]);
+    const measurement = target ? {
+      commit: row.commit_hash,
+      target: { ...target, status: row.status, score: row.score, differingBytes: row.differing_bytes, relocOnly: row.reloc_only === 1 },
+      source: measuredSource,
+    } : null;
+    let source = measurement?.commit === head ? measuredSource : await sourceAt(head, files);
+    if (!source && row.status) {
+      // Older records may only know the emitting unit, not the header containing the annotation.
+      let hits = '';
+      try { hits = await repo.readGit(['grep', '-l', '-z', '-E', `^[[:space:]]*//[[:space:]]*(FUNCTION|STUB)[[:space:]]*:[[:space:]]*${row.id}([[:space:]]|$)`, head, '--']); }
+      catch (e) { if (e.code !== 1) throw e; }
+      source = await sourceAt(head, hits.split('\0').filter((f) => f.startsWith(`${head}:`)).map((f) => f.slice(head.length + 1)));
+    }
+    return {
+      version, head, symbol: { id: row.id, name: qualifiedName(row.decorated) ?? row.name, addr: `0x${hex(row.addr)}`, size: row.size, unit: row.file ?? row.unit },
+      measurement, source,
+    };
+  });
 
   router.on('POST', '/api/attempts/:id/withdraw', ({ req, params }) => {
     const user = auth(req);
@@ -1514,6 +1557,10 @@ export function createApp(ctx) {
   return server;
 }
 
+function mapMeasurementCurrent(row, version) {
+  return row.comparison_version === version && row.comparison_addr === row.addr && row.comparison_size === row.size;
+}
+
 // Public downloads: td binaries (tools/build-td output) and Dockerfile.clank, published to <dataDir>/downloads.
 const DOWNLOADS = new Set(['td-windows-x64.exe', 'td-linux-x64', 'td-linux-arm64', 'SHA256SUMS', 'Dockerfile.clank']);
 let downloadsRoot = null;
@@ -1566,7 +1613,7 @@ function serveDownload(name, req, res) {
   fs.createReadStream(sent).pipe(res);
 }
 
-const STATIC = { '/': 'index.html', '/review': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg' };
+const STATIC = { '/': 'index.html', '/review': 'index.html', '/app.js': 'app.js', '/match-map.js': 'match-map.js', '/binary-map-geometry.js': 'binary-map-geometry.js', '/binary-map.js': 'binary-map.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg' };
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 
 function serveStatic(pathname, res) {

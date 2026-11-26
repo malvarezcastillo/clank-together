@@ -49,7 +49,7 @@ export function reconcile(check, symbols, pe = null) {
       ok.add(decorated);
     } else if (named && named.addr !== addr) {
       // Definitive: the name is known to live elsewhere, so the reference is wrong.
-      conflicts.push({ symbol: decorated, hard: true, message: `${decorated} is ${named.id} at 0x${hex(named.addr)}, but the original references 0x${hex(addr)}` });
+      conflicts.push({ symbol: decorated, actual: addr, hard: true, message: `${decorated} is ${named.id} at 0x${hex(named.addr)}, but the original references 0x${hex(addr)}` });
     } else if (atAddr && atAddr.decorated && atAddr.decorated !== decorated) {
       // Another name at a known address: the linker folded identical functions or data into one.
       // Accepted, but not learned (the address keeps the name it has).

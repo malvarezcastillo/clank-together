@@ -180,6 +180,57 @@ they are peer reviewed as revisions, and main stays as it is if one goes back.
 Scores come from the last merge that compiled the unit, so a listed score can lag behind; `td check`
 gives the current one.
 
+### Byte matching explorer
+
+Home shows the interactive byte map in **The binary, function by function**. **Open full atlas**
+(`#/map`) adds the address view, filtering and other exploration controls. The default
+**Source treemap** divides each source group into individual functions; it also works
+inside a file. **Address atlas** packs functions in original address order along a
+Hilbert curve, keeping nearby addresses visually close. Neither view shows raw file bytes,
+padding, or the byte offsets of mismatches. Fills represent recorded function-level evidence.
+In the source treemap, hover a function to outline its source file and see its full path.
+Hover a group label to outline the location it opens. Unplaced functions have no file outline.
+
+Home starts with **Byte match %** on each time you open it. You can turn it off for workflow
+colors; live updates leave your choice alone. With the switch on, measured differences
+range from red (0%) to cyan (100%); exact, unresolved, relocation-only, unmeasured and
+excluded code have separate colors. Off, colors and function counts show workflow: gold
+byte-identical, blue peer-confirmed, gray needs no source, purple on its way to main,
+green claimed, red sent back and dark gray open. Unresolved references and other functions
+on main are reported separately when present. Current work on a revision takes precedence
+over its previous result; a similarity score alone never counts as peer confirmation.
+Changing colors keeps the layout, selection and zoom.
+
+Area defaults to original function size, including known-size excluded code. Select
+**Remaining work** under **Size by** to enlarge functions with the greatest estimated
+impact. Zero and unknown weights have no area; the function list remains searchable.
+**Highlight gaps** keeps the layout fixed and lights up only functions with a known positive gap.
+Pan and zoom without leaving the map, select a function for evidence, or use **Largest
+byte gaps** to jump to its footprint. Open **Compare on main** from the function inspector.
+Ranked gap and exact-coverage charts remain available as secondary links. Headline
+progress metrics exclude library/no-source code regardless of map layout.
+
+Search finds functions by path, name, symbol ID or address in the current scope. The
+current view, search text and status filter can be shared in the URL. The worklist and
+address-ordered list are below the chart. Unplaced functions use 64 KiB address ranges.
+
+Remaining work is a prioritization
+weight: at equal size it uses observed non-masked differing bytes plus four per failing
+reference, capped at the function size; at unequal sizes or with older incomplete evidence,
+it uses `size × (1 − score)` as an estimate. Unmeasured functions contribute uncovered bytes.
+Relocation-only exceptions are visible separately but do not rank as source fixes.
+The score weights each function counted toward progress by its original size. An unresolved
+reference is not an exact match. The historical chart retains its original exact-or-unresolved series.
+
+Select a function to compare the last verified build of main against the original. **J/K**
+move by address and **N** advances through the highest remaining eligible work in scope.
+**1/2** switch between C++ and assembly. Byte-region and reference offsets jump to the
+corresponding assembly instruction. The comparison shows the build commit; when main has moved,
+the C++ pane can switch between current and measured source. No submission is required.
+Original assembly and comparison details require an approved account. After upgrading,
+run `td-server rebuild` once with the pinned toolchain to populate listings and diffs for
+functions already on main. Older records retain their scores without inventing a listing.
+
 ### Batch visibility
 
 `#/batches` lists all submissions, including failed and historical batches. The

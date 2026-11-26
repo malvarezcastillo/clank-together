@@ -49,7 +49,9 @@ function fixture(t) {
     calls.push([...selected]);
     const check = { annotationErrors: cacheSnapshot.annotationErrors, analysisNames: [...names], units: selected.map((file) => ({
       file, compiled: !failures.has(file), includes: file === units[0] ? ['src/shared.h', 'src/a.h'] : ['src/shared.h'],
-      lintErrors: [], errors: [], functions: [{ id: file, status: 'mismatch', comparisonStatus: 'mismatch', score: 0.5 }], inferred: [], bindings: {}, unannotated: [], globalBindings: [],
+      lintErrors: [], errors: [], functions: [{ id: file, status: 'mismatch', comparisonStatus: 'mismatch', score: 0.5,
+        asm: '0000  ret', differingBytes: 1, diffRegions: [{ offset: 0, length: 1, ours: 'c3', original: '90' }] }],
+      inferred: [], bindings: {}, unannotated: [], globalBindings: [],
       inputs: reads.get(file) ?? { names: [], symbols: [] },
     })) };
     if (during) { const fn = during; during = null; await fn(); }
@@ -63,7 +65,9 @@ test('expanded retries reuse unchanged units, rebuild private and shared depende
   const f = fixture(t);
   const first = await f.verifier.mergeCheck({ id: 1 }, f.files);
   assert.equal(first.compiled, 2);
-  assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 0);
+  const retry = await f.verifier.mergeCheck({ id: 1 }, f.files);
+  assert.equal(retry.compiled, 0);
+  assert.deepEqual(retry.check.units[0].functions, first.check.units[0].functions, 'warm merges keep the listing, regions and byte count');
   f.commit({ 'src/a.h': '#define A 2\n' });
   const partial = await f.verifier.mergeCheck({ id: 1 }, f.files);
   assert.deepEqual(f.calls.at(-1), ['src/a.cpp']);
@@ -128,6 +132,24 @@ test('failed units retry and legacy or unknown provenance never becomes a hit', 
   delete saved.cacheSnapshot;
   f.rows.set(1, { head: f.verifier.repo.head(), check_json: encodeCheck(saved) });
   assert.equal((await f.verifier.mergeCheck({ id: 1 }, f.files)).compiled, 2);
+});
+
+test('format 3 evidence is rebuilt but its additional emitter coverage is preserved', async (t) => {
+  const f = fixture(t);
+  const files = { 'src/a.cpp': 'int a = 2;\n' };
+  const old = await f.verifier.check(files, 'legacy verification');
+  old.cacheSnapshot.format = 3;
+  for (const u of old.check.units) for (const fn of u.functions) {
+    delete fn.asm;
+    delete fn.diffRegions;
+    delete fn.differingBytes;
+  }
+  f.rows.set(1, { head: old.cacheSnapshot.head, check_json: JSON.stringify(old) });
+  const retry = await f.verifier.mergeCheck({ id: 2 }, files, { id: 1 });
+  assert.equal(retry.reused, 0);
+  assert.deepEqual(f.calls.at(-1), f.units, 'the old parent knew that src/b.cpp was also required');
+  assert.equal(retry.check.units[1].functions[0].differingBytes, 1);
+  assert.equal((await f.verifier.mergeCheck({ id: 2 }, files, { id: 1 })).compiled, 0);
 });
 
 test('compile-start HEAD survives a commit while compilation awaits', async (t) => {

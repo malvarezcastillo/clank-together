@@ -75,6 +75,7 @@ test('ordinary candidate compiler error still routes cleanup without baseline wo
 test('baseline failure is infrastructure, never an accepted incomplete baseline', async () => {
   const v = Object.create(Verifier.prototype);
   v.repo = { head: () => 'head' };
+  v.store = { currentVersion: () => ({ id: 'one' }) };
   v.regressions = () => [{ id: 'fn_00001', file: 'src/a.cpp' }];
   for (const timedOut of [true, false]) {
     v.check = async () => ({ check: analysis(false, timedOut) });

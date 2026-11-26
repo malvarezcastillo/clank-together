@@ -151,21 +151,34 @@ const TASK_STATES = {
 
 // --- router
 
-const VIEWS = { home: null, guide: null, login: null, account: 'contributor', review: 'contributor', batches: 'contributor', pipeline: 'contributor', arcade: 'contributor', admin: 'admin' };
+const VIEWS = { home: null, map: null, guide: null, login: null, account: 'contributor', review: 'contributor', batches: 'contributor', pipeline: 'contributor', arcade: 'contributor', admin: 'admin' };
 let currentView = null;
 
 function route() {
-  const name = (location.hash.replace(/^#\/?/, '').split('/')[0] || 'home').toLowerCase();
+  const name = (location.hash.replace(/^#\/?/, '').split(/[/?]/)[0] || 'home').toLowerCase();
   let view = name in VIEWS ? name : 'home';
   if (VIEWS[view] && !atLeast(VIEWS[view])) view = me ? 'home' : 'login';
   if (view === 'login' && me) view = 'account';
   for (const v of document.querySelectorAll('.view')) v.hidden = v.dataset.view !== view;
   for (const a of document.querySelectorAll('.mainnav a[data-route]')) a.classList.toggle('active', a.dataset.route === view);
   const first = currentView !== view;
+  if (atlasVisible() && first) binaryMap.hide();
   currentView = view;
   if (first) window.scrollTo({ top: 0 });
   const load = { home: loadHome, review: loadReview, batches: loadBatches, pipeline: loadWay, arcade: loadArcade, admin: loadAdmin, account: loadAccount }[view];
   if (load) load().catch((e) => toast(e.message));
+  if (atlasVisible()) {
+    // One interactive surface: move it to its visible host before measuring the canvas.
+    const stage = $('map-tree');
+    if (view === 'home') {
+      if (first) matchMap.enterHome();
+      if (stage.parentElement !== $('home-atlas')) $('home-atlas').append(stage);
+    } else if ($('explorer-atlas').nextElementSibling !== stage) $('explorer-atlas').after(stage);
+    showMap(true);
+    if (first || !mapSnapshot) loadMap().catch((e) => {
+      $(currentView === 'home' ? 'home-atlas-loading' : 'map-summary').textContent = e.message;
+    });
+  } else if (first) mainCompare = null;
   // Deep links: #/review/<attemptId>, #/batches/<batchId>
   const parts = location.hash.replace(/^#\/?/, '').split('/');
   if (view === 'review' && parts[1]) openAttempt(Number(parts[1])).catch((e) => toast(e.message));
@@ -266,8 +279,10 @@ const handlers = {
   feed: (m) => addFeed(m.items, true),
   progress: (m) => renderProgress(m.data),
   board: (m) => applyWay(m.change),
-  map: (m) => applyMapChanges(m.changes),
-  'map-reload': () => loadMap(),
+  map: applyMapChanges,
+  'map-reload': () => {
+    if (atlasVisible()) loadMap().catch(() => {});
+  },
   credits: (m) => setCredits(m.balance),
 };
 
@@ -285,6 +300,7 @@ function connectLive(reconnect = false) {
   ws.onopen = () => {
     socketUp = true;
     retry = 1000;
+    if (atlasVisible()) loadMap().catch(() => {});
   };
   ws.onmessage = (e) => {
     try {
@@ -306,9 +322,9 @@ setInterval(() => {
   if (currentView === 'home') {
     loadProgress().catch(() => {});
     pollFeed().catch(() => {});
-    loadMap().catch(() => {});
     loadMatchHistory().catch(() => {});
   }
+  if (atlasVisible()) loadMap().catch(() => {});
   if (me) api('/api/credits/me').then((w) => setCredits(w.balance)).catch(() => {});
 }, 30_000);
 
@@ -321,7 +337,7 @@ setInterval(() => {
 // --- home
 
 async function loadHome() {
-  await Promise.all([loadProgress(), loadFeed(), loadMap(), loadCrew(), loadBoard(), loadMatchHistory()]);
+  await Promise.all([loadProgress(), loadFeed(), loadCrew(), loadBoard(), loadMatchHistory()]);
 }
 
 async function loadProgress() {
@@ -701,8 +717,8 @@ function addFeed(items, live) {
     if (live) li.classList.add('new');
     list.prepend(li);
     if (live && e.type === 'merged' && currentView === 'home') {
-      const r = $('map-canvas').getBoundingClientRect();
-      sparks(r.left + r.width / 2, r.top + 30, 10);
+      const r = $('match-chart').getBoundingClientRect();
+      if (r.bottom > 0 && r.top < innerHeight) sparks(r.left + r.width / 2, r.top + 30, 10);
       // The new commit's point is recorded as the merge finishes; give it a moment.
       setTimeout(() => loadMatchHistory().catch(() => {}), 3_000);
     }
@@ -714,202 +730,216 @@ setInterval(() => {
   for (const li of $('feed-list').children) li.lastChild.textContent = ago(Number(li.dataset.at));
 }, 30_000);
 
-// Map
+// Byte matching explorer: a full snapshot on entry/reconnect; revision-keyed deltas while open.
+let mapSnapshot = null;
+let mapRequest = null;
+let mainCompare = null;
+let mainCompareView = 'asm';
+let mapNavigate = false;
 
-const STATE_INFO = {
-  d: ['byte-identical', '--st-d'],
-  c: ['peer-confirmed', '--st-c'],
-  s: ['needs no source', '--st-s'],
-  f: ['on its way to main', '--st-f'],
-  l: ['claimed', '--st-l'],
-  b: ['sent back', '--st-b'],
-  o: ['open', '--st-o'],
-};
-const map = { states: '', units: [], unitOf: [], scores: [], cell: 4, cols: 1, colors: {}, highlight: null, pulses: new Map(), byMatch: localStorage.getItem('mapByMatch') === '1' };
-
-async function loadMap() {
-  const m = await api('/api/map');
-  map.states = m.states;
-  map.units = m.units;
-  map.unitOf = m.unitOf;
-  map.scores = m.scores ?? [];
-  drawMap();
+function atlasVisible() {
+  return currentView === 'home' || currentView === 'map';
 }
 
-function mapColors() {
-  const cs = getComputedStyle(document.documentElement);
-  for (const [k, [, v]] of Object.entries(STATE_INFO)) map.colors[k] = cs.getPropertyValue(v).trim();
+function loadMap() {
+  if (mapRequest) return mapRequest;
+  mapRequest = api('/api/map').then((data) => {
+    if (data.revision !== mapSnapshot?.revision) {
+      mapSnapshot = data;
+      matchMap.setData(data);
+      if (atlasVisible()) showMap();
+    }
+  }).finally(() => { mapRequest = null; });
+  return mapRequest;
 }
 
-function drawMap() {
-  const canvas = $('map-canvas');
-  const n = map.states.length;
-  if (!n) return;
-  mapColors();
-  const width = canvas.parentElement.clientWidth;
-  // Cells as big as fit into about 560 px of height, at least 3 px.
-  const cell = Math.max(3, Math.min(14, Math.floor(Math.sqrt((width * 560) / n))));
-  map.cell = cell;
-  map.cols = Math.max(1, Math.floor(width / cell));
-  const rows = Math.ceil(n / map.cols);
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = map.cols * cell * dpr;
-  canvas.height = rows * cell * dpr;
-  canvas.style.setProperty('height', `${rows * cell}px`);
-  canvas.style.setProperty('width', `${map.cols * cell}px`);
-  const g = canvas.getContext('2d');
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, map.cols * cell, rows * cell);
-  for (let i = 0; i < n; i++) drawCell(g, i);
-  renderLegend();
-}
-
-function drawCell(g, i, flash = 0) {
-  const x = (i % map.cols) * map.cell;
-  const y = Math.floor(i / map.cols) * map.cell;
-  const gap = map.cell >= 5 ? 1 : 0;
-  const dim = map.highlight && !map.highlight.has(map.unitOf[i]);
-  g.globalAlpha = dim ? 0.18 : 1;
-  g.fillStyle = cellColor(i);
-  g.fillRect(x, y, map.cell - gap, map.cell - gap);
-  if (flash > 0) {
-    g.globalAlpha = flash;
-    g.fillStyle = '#ffffff';
-    g.fillRect(x, y, map.cell - gap, map.cell - gap);
-  }
-  g.globalAlpha = 1;
-}
-
-// Byte-match view: byte-identical stays yellow, needs-no-source gray, no compiled result open;
-// everything else runs red (0 %) through purple to cyan (100 %), never crossing yellow.
-function cellColor(i) {
-  const st = map.states[i];
-  if (!map.byMatch || st === 'd' || st === 's') return map.colors[st] || map.colors.o;
-  const sc = map.scores[i] ?? -1;
-  return sc < 0 ? map.colors.o : matchColor(sc);
-}
-function matchColor(pct) {
-  return `hsl(${Math.round(360 - pct * 1.7) % 360}, 75%, 55%)`;
-}
-
-function renderLegend() {
-  const box = $('map-legend');
-  box.replaceChildren();
-  if (map.byMatch) {
-    const sw = (label, c) => {
-      const s = el('span', label, 'sw');
-      s.style.setProperty('--c', c);
-      return s;
-    };
-    const grad = el('span', '', 'grad');
-    grad.style.setProperty('--c', `linear-gradient(90deg, ${[0, 25, 50, 75, 100].map(matchColor).join(', ')})`);
-    box.append(sw('byte-identical', `var(--st-d)`), sw('needs no source', `var(--st-s)`), el('span', '0 %', 'n'), grad, el('span', '100 % byte match', 'n'), sw('no result yet', `var(--st-o)`));
+function applyMapChanges({ base, revision, changes }) {
+  if (!atlasVisible() || revision === mapSnapshot?.revision) return;
+  if (mapRequest || base !== mapSnapshot?.revision) {
+    (mapRequest ?? Promise.resolve()).then(() => {
+      if (atlasVisible() && mapSnapshot?.revision !== revision) return loadMap();
+    }).catch(() => {});
     return;
   }
-  const counts = {};
-  for (const c of map.states) counts[c] = (counts[c] ?? 0) + 1;
-  for (const [k, [label, v]] of Object.entries(STATE_INFO)) {
-    const s = el('span', label, 'sw');
-    s.style.setProperty('--c', `var(${v})`);
-    s.append(el('span', fmt(counts[k] ?? 0), 'n'));
-    box.append(s);
+  for (const [i, row] of changes) mapSnapshot.rows[i] = row;
+  mapSnapshot.revision = revision;
+  matchMap.setData(mapSnapshot);
+  showMap();
+}
+
+function showMap(navigate = false) {
+  if (currentView === 'home') {
+    $('home-atlas-loading').hidden = Boolean(mapSnapshot);
+    $('map-tree').hidden = !mapSnapshot;
+    mainCompare = null;
+    if (mapSnapshot) matchMap.showHome();
+    return;
+  }
+  mapNavigate ||= navigate && !mapSnapshot;
+  navigate ||= mapNavigate;
+  if (mapSnapshot) mapNavigate = false;
+  const hadComparison = !$('map-compare').hidden;
+  const browse = $('map-browse');
+  const heading = $('map-panel-title');
+  const previousLocation = heading.textContent;
+  // The atlas measures its container when restoring the view after a comparison.
+  if (hadComparison) browse.hidden = false;
+  const row = matchMap.show(location.hash);
+  const pane = $('map-compare');
+  pane.hidden = !row;
+  browse.hidden = Boolean(row);
+  if (!row) {
+    mainCompare = null;
+    if (navigate && mapSnapshot && (hadComparison || previousLocation !== heading.textContent)) {
+      heading.focus({ preventScroll: true });
+      window.scrollTo({ top: 0 });
+    }
+    return;
+  }
+  // Workflow changes elsewhere do not reset the currently inspected diff or focus.
+  const signature = JSON.stringify([mapSnapshot.version, row.id, row.name, row.addr, row.size, row.unit, row.status, row.score, row.measuredAt, !!me]);
+  if (mainCompare?.signature !== signature) {
+    mainCompare = { signature, row };
+    if (navigate) mainCompareView = 'asm';
+    openMainCompare(mainCompare);
+  }
+  if (navigate) {
+    $('map-compare-title').focus({ preventScroll: true });
+    window.scrollTo({ top: 0 });
   }
 }
 
-// Changed squares flash white and fade back to their new colour.
-function applyMapChanges(changes) {
-  if (!map.states) return;
-  const arr = map.states.split('');
-  for (const [i, c, sc] of changes) {
-    if (sc !== undefined) map.scores[i] = sc;
-    arr[i] = c;
-    map.pulses.set(i, 1);
+async function openMainCompare(selection) {
+  const { row } = selection;
+  $('map-compare-title').textContent = row.name || row.id;
+  $('map-compare-meta').textContent = `${row.id} · 0x${row.addr.toString(16)} · ${row.unit ?? 'unplaced'}`;
+  $('map-compare-details').replaceChildren();
+  $('map-compare-tabs').hidden = true;
+  $('map-source-revision').hidden = true;
+  $('map-source-select').value = 'head';
+  const body = $('map-compare-body');
+  body.replaceChildren();
+  if (!me) {
+    const loginLink = el('a', 'Log in');
+    loginLink.href = '#/login';
+    const line = el('p', null, 'muted');
+    line.append(loginLink, ' with an approved account to compare against the original.');
+    body.append(line);
+    return;
   }
-  map.states = arr.join('');
-  renderLegend();
-  if (!pulsing) requestAnimationFrame(pulseFrame);
-}
-let pulsing = false;
-function pulseFrame() {
-  const g = $('map-canvas').getContext('2d');
-  pulsing = map.pulses.size > 0;
-  for (const [i, v] of map.pulses) {
-    const next = v - 0.04;
-    drawCell(g, i, reducedMotion() ? 0 : Math.max(0, next));
-    if (next <= 0) map.pulses.delete(i);
-    else map.pulses.set(i, next);
+  body.append(el('p', 'Loading comparison on main…', 'muted'));
+  const id = encodeURIComponent(row.id);
+  const active = () => currentView === 'map' && mainCompare === selection;
+  // The original can be generated on demand. Show recorded evidence while it loads.
+  const original = api(`/api/original/${id}`).then((data) => ({ data }), (e) => ({ error: e.message }));
+  try {
+    const result = await api(`/api/map/${id}/compare`);
+    if (!active()) return;
+    if (result.version !== mapSnapshot.version) throw new Error('The target changed. Reopen the function to load the new version.');
+    selection.result = result;
+    $('map-compare-tabs').hidden = false;
+    drawMainCompare();
+    const o = await original;
+    if (!active()) return;
+    if (o.data && (o.data.version !== selection.result.version || Number(o.data.addr) !== Number(selection.result.symbol.addr) || o.data.size !== selection.result.symbol.size)) {
+      selection.error = 'The target address or size changed while loading.';
+    } else {
+      selection.original = o.data;
+      selection.error = o.error;
+    }
+    drawMainCompare();
+  } catch (e) {
+    if (active()) body.replaceChildren(el('p', e.message, 'warn'));
   }
-  if (map.pulses.size) requestAnimationFrame(pulseFrame);
-  else pulsing = false;
 }
 
-function mapIndexAt(ev) {
-  const r = $('map-canvas').getBoundingClientRect();
-  const col = Math.floor((ev.clientX - r.left) / map.cell);
-  const row = Math.floor((ev.clientY - r.top) / map.cell);
-  if (col < 0 || col >= map.cols) return -1;
-  const i = row * map.cols + col;
-  return i >= 0 && i < map.states.length ? i : -1;
+function drawMainCompare() {
+  const { result, original, error, row } = mainCompare;
+  const { measurement, source, head } = result;
+  const t = measurement?.target;
+  const measuredAt = measurement?.commit.slice(0, 10);
+  const size = t?.size;
+  const score = t?.score;
+  const summary = [result.symbol.id, result.symbol.addr, result.symbol.unit, measuredAt && `verified on main at ${measuredAt}`];
+  if (t?.status) summary.push(t.status === 'match_unresolved' ? 'bytes match; references unresolved' : t.status);
+  if (size) summary.push(`compiled / original: ${size.ours ?? '?'} / ${size.original ?? '?'} B`);
+  if (score != null) summary.push(`${(score * 100).toFixed(2)}% ${size?.original == null || size.ours !== size.original ? 'estimated similarity' : 'normalized match'}`);
+  $('map-compare-meta').textContent = summary.filter(Boolean).join(' · ');
+  const canChooseSource = measurement?.source && source && measurement.commit !== head;
+  $('map-source-revision').hidden = mainCompareView !== 'code' || !canChooseSource;
+  const measuredSource = !source || (canChooseSource && $('map-source-select').value === 'measured');
+  const src = measuredSource ? measurement?.source : source;
+  const srcLabel = measuredSource && src ? `Measured C++ · ${measuredAt}` : `C++ on main · ${head.slice(0, 10)}`;
+  const missingAsm = row.status === 'missing' ? 'The compiler did not emit a function for this annotation.'
+    : row.excluded ? 'This function does not count toward matching progress.'
+    : measurement ? 'The verified build had no listing for this function.'
+    : row.status ? 'No verified listing was recorded. A rebuild of main refreshes this evidence.' : 'No compiled result for this function on main.';
+  $('map-compare-body').replaceChildren(compareContent({ source: src, sourceLabel: srcLabel, sourceMissing: 'No annotated C++ found on main.', ourAsm: t?.asm, asmMissing: missingAsm, original, error }, mainCompareView));
+  for (const tab of $('map-compare-tabs').children) tab.classList.toggle('active', tab.dataset.view === mainCompareView);
+  const details = $('map-compare-details');
+  details.replaceChildren();
+  if (!t) return;
+  if (measurement.commit !== head) details.append(el('p', `This is the last recorded build (${measuredAt}), not a fresh build of HEAD.`, 'hint'));
+  if (t.relocOnly) details.append(el('p', 'The surviving differences are references without original base relocations; changing source will not fix this.', 'hint'));
+  if (t.differingBytes != null) details.append(el('p', `${fmt(t.differingBytes)} differing non-masked bytes (reference checks are listed separately).`, 'hint'));
+  if (!t.diffRegions?.length && !t.relocations?.length) return;
+  const asm = $('map-compare-body').querySelector('.asm-body');
+  const instructions = asm?.querySelectorAll('[data-our-offset]');
+  const offset = (n) => {
+    const label = `+0x${n.toString(16)}`;
+    if (!instructions?.length || n >= Number(t.size?.ours)) return label;
+    let lo = 0, hi = instructions.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (Number(instructions[mid].dataset.ourOffset) <= n) lo = mid + 1;
+      else hi = mid;
+    }
+    const instruction = instructions[lo - 1];
+    if (!instruction) return label;
+    return button(label, () => {
+      asm.querySelector('.asm-jump')?.classList.remove('asm-jump');
+      instruction.classList.add('asm-jump');
+      instruction.scrollIntoView({ block: 'center' });
+    }, 'match-offset');
+  };
+  if (t.diffRegions?.length) details.append(el('h3', 'Byte diff regions'), table(['Offset', 'Compiled', 'Original', 'Instruction', 'Source line'],
+    t.diffRegions.map((r) => [offset(r.offset), r.ours, r.original, r.ourInstruction, r.sourceLine])));
+  if (t.relocations?.length) details.append(el('h3', 'References to check'), table(['Offset', 'Symbol', 'Finding'],
+    t.relocations.map((r) => [offset(r.offset), r.symbol, r.ok ? 'Reference target not resolved' : r.reason])));
 }
 
-let tipTimer = null;
-$('map-canvas').addEventListener('mousemove', (ev) => {
-  const i = mapIndexAt(ev);
-  const tip = $('map-tip');
-  if (i < 0) return (tip.hidden = true);
-  const wrap = $('map-wrap').getBoundingClientRect();
-  tip.hidden = false;
-  const sc = map.scores[i] ?? -1;
-  const status = STATE_INFO[map.states[i]][0] + (sc >= 0 && map.states[i] !== 's' ? ` · ${sc} % byte match` : '');
-  tip.replaceChildren(el('div', map.units[map.unitOf[i]]), el('div', status, 'muted'));
-  const x = Math.min(ev.clientX - wrap.left + 14, wrap.width - 240);
-  tip.style.setProperty('left', `${Math.max(4, x)}px`);
-  tip.style.setProperty('top', `${ev.clientY - wrap.top + 14}px`);
-  clearTimeout(tipTimer);
-  tipTimer = setTimeout(async () => {
-    try {
-      const f = await api(`/api/map/${i}`);
-      if (!tip.hidden) tip.prepend(el('div', mapFnLabel(f)));
-    } catch {}
-  }, 250);
-});
-$('map-canvas').addEventListener('mouseleave', () => ($('map-tip').hidden = true));
-$('map-canvas').addEventListener('click', async (ev) => {
-  const i = mapIndexAt(ev);
-  if (i < 0) return;
-  const f = await api(`/api/map/${i}`).catch(() => null);
-  if (!f) return;
-  const d = $('map-detail');
-  d.hidden = false;
-  d.replaceChildren(
-    el('div', `${mapFnLabel(f)}  ·  ${f.size ?? '?'} bytes`),
-    el('div', `${f.unit ?? 'not placed in a source file yet'}  ·  ${f.state}${f.holder ? ` (claimed by ${f.holder})` : ''}`, 'muted'),
-  );
-  if (f.unit) d.append(button(`Highlight ${shortPath(f.unit)}`, () => { $('map-search').value = f.unit; highlight(f.unit); }));
-});
-function mapFnLabel(f) {
-  const addr = f.addr == null ? '' : `  0x${f.addr.toString(16).toUpperCase().padStart(8, '0')}`;
-  return `${f.symbol}  ${f.name ?? '(unnamed)'}${addr}`;
+function selectMainCompare(view) {
+  if (!mainCompare?.result) return;
+  mainCompareView = view;
+  drawMainCompare();
 }
-function highlight(q) {
-  q = q.trim().toLowerCase();
-  if (!q) map.highlight = null;
-  else map.highlight = new Set(map.units.map((u, i) => (u.toLowerCase().includes(q) ? i : -1)).filter((i) => i >= 0));
-  drawMap();
-}
-$('map-search').addEventListener('input', (e) => highlight(e.target.value));
-$('map-by-match').checked = map.byMatch;
-$('map-by-match').addEventListener('change', (e) => {
-  map.byMatch = e.target.checked;
-  localStorage.setItem('mapByMatch', map.byMatch ? '1' : '0');
-  drawMap();
+for (const tab of $('map-compare-tabs').children) tab.addEventListener('click', () => selectMainCompare(tab.dataset.view));
+$('map-source-select').addEventListener('change', drawMainCompare);
+for (const b of document.querySelectorAll('[data-view="map"] [data-move]')) b.addEventListener('click', () => matchMap.move(b.dataset.move));
+document.addEventListener('keydown', (e) => {
+  if (currentView !== 'map' || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.id === 'map-search' && e.key === 'Escape' && matchMap.resetSearch()) {
+    e.preventDefault();
+    return;
+  }
+  if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+  if (e.key === 'j') matchMap.move('next');
+  else if (e.key === 'k') matchMap.move('previous');
+  else if (e.key === 'n') matchMap.move('worst');
+  else if (e.key === '1') selectMainCompare('code');
+  else if (e.key === '2') selectMainCompare('asm');
+  else return;
+  e.preventDefault();
 });
+
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => currentView === 'home' && (drawMap(), drawMatchHistory()), 150);
+  resizeTimer = setTimeout(() => {
+    if (currentView === 'home') drawMatchHistory();
+    if (atlasVisible()) matchMap.resize();
+  }, 150);
 });
-window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => (drawMap(), drawMatchHistory()));
 
 // --- whole-binary byte match over time (/api/match-history, one point per commit, downsampled)
 
@@ -928,7 +958,7 @@ function drawMatchHistory() {
   if (!svg) return;
   const pts = matchHistory.points;
   const now = matchHistory.current;
-  $('match-now').textContent = now ? `${(now.score * 100).toFixed(2)} %` : '';
+  $('match-now').textContent = now ? `${(now.score * 100).toFixed(2)}% weighted score` : '';
   const W = Math.max(320, $('match-chart-wrap').clientWidth || 600);
   const H = 180;
   const pad = { l: 46, r: 12, t: 10, b: 24 };
@@ -996,7 +1026,7 @@ function drawMatchHistory() {
     mark.setAttribute('cy', sy(best.score));
     cursor.setAttribute('visibility', 'visible');
     mark.setAttribute('visibility', 'visible');
-    tip.replaceChildren(el('div', `${(best.score * 100).toFixed(3)} % byte match`), el('div', `${(best.exact * 100).toFixed(2)} % byte-identical`, 'muted'), el('div', date(best.at), 'muted'));
+    tip.replaceChildren(el('div', `${(best.score * 100).toFixed(3)}% weighted score`), el('div', `${(best.exact * 100).toFixed(2)}% exact or unresolved`, 'muted'), el('div', date(best.at), 'muted'));
     tip.hidden = false;
     const wrap = $('match-chart-wrap').getBoundingClientRect();
     tip.style.left = `${Math.min(ev.clientX - wrap.left + 14, wrap.width - 220)}px`;
@@ -1754,8 +1784,10 @@ function showCompare(view) {
   compareView = view;
   for (const tab of document.querySelectorAll('#compare-tabs .tab')) tab.classList.toggle('active', tab.dataset.view === view);
   const body = $('compare-body');
-  body.replaceChildren();
-  if (!compare) return;
+  body.replaceChildren(...(compare ? [compareContent(compare, view)] : []));
+}
+
+function compareContent(compare, view) {
   const o = compare.original;
   const pending = !o && !compare.error ? 'Loading the original…' : `Original not available${compare.error ? `: ${compare.error}` : ''}`;
   if (compare.claim) {
@@ -1763,21 +1795,17 @@ function showCompare(view) {
     const explanation = `No C++ implementation is expected for this claim (${claim.category}).\n\nReason (untrusted):\n${claim.reason}\n\nApprove only if the original instructions support the claim; otherwise request an implementation.`;
     const original = view === 'asm' ? o?.asm : o?.pseudocode;
     const title = view === 'asm' ? 'Original assembly' : 'Original pseudocode (reading aid)';
-    body.append(twoPanes(['No handwritten source required — claim', explanation], [o ? `${title} · ${o.addr}` : title, original ?? (o ? 'No original text is available in this view.' : pending)]));
-    return;
+    return twoPanes(['No handwritten source required — claim', explanation], [o ? `${title} · ${o.addr}` : title, original ?? (o ? 'No original text is available in this view.' : pending)]);
   }
   if (view === 'code') {
-    body.append(
-      twoPanes(
-        [compare.source ? `Submitted C++ · ${compare.source.file}:${compare.source.line}` : 'Submitted C++', compare.source?.text ?? 'The function was not found in the submitted files.'],
-        [o ? `Original pseudocode (Ghidra, a reading aid) · ${o.addr}` : 'Original pseudocode', o ? o.pseudocode ?? 'No pseudocode exported for this function yet; see the assembly view.' : pending],
-      ),
+    const label = compare.sourceLabel ?? 'Submitted C++';
+    return twoPanes(
+      [compare.source ? `${label} · ${compare.source.file}:${compare.source.line}` : label, compare.source?.text ?? compare.sourceMissing ?? 'The function was not found in the submitted files.'],
+      [o ? `Original pseudocode (Ghidra, a reading aid) · ${o.addr}` : 'Original pseudocode', o ? o.pseudocode ?? 'No pseudocode exported for this function yet; see the assembly view.' : pending],
     );
-  } else if (!compare.ourAsm || !o) {
-    body.append(twoPanes(['Our compiled code', compare.ourAsm ?? 'Not recorded for this attempt.'], [o ? `Original at ${o.addr}` : 'Original', o?.asm ?? pending]));
-  } else {
-    body.append(alignedAsm(compare.ourAsm, o.asm, o.addr));
   }
+  if (compare.ourAsm && o?.asm) return alignedAsm(compare.ourAsm, o.asm, o.addr);
+  return twoPanes(['Our compiled code', compare.ourAsm ?? compare.asmMissing ?? 'Not recorded for this attempt.'], [o ? `Original at ${o.addr}` : 'Original', o ? o.asm || 'No original assembly is available.' : pending]);
 }
 
 function twoPanes(left, right) {
@@ -1806,20 +1834,25 @@ function parseOurs(text) {
     .filter(Boolean);
 }
 
-function parseOriginal(text) {
+function parseOriginal(text, addr) {
   const out = [];
   for (const line of text.split('\n')) {
-    const m = /^\s*\+0x([0-9a-f]+)\s+[0-9a-f]+\s+(?:[0-9a-f]{2}\s)+\s*(\S+)\s*(.*)$/i.exec(line);
-    if (m) out.push({ off: m[1].replace(/^0+(?=.)/, '').padStart(4, '0'), key: mnemonic(m[2]), text: `${m[2].toLowerCase()} ${m[3]}`.trim() });
-    else if (/^\w+:$/.test(line.trim())) out.push({ label: line.trim() });
+    const m = /^\s*\+0x([0-9a-f]+)\s+[0-9a-f]+\s+(?:(?:[0-9a-f]{2}|\?\?)\s)+\s*(\S+)\s*(.*)$/i.exec(line);
+    const objdump = !m && /^\s*([0-9a-f]+):[ \t]+(?:[0-9a-f]{2}[ \t]+)+(\S+)(?:[ \t]+(.*))?$/i.exec(line);
+    if (m || objdump) {
+      const off = m ? Number.parseInt(m[1], 16) : Number.parseInt(objdump[1], 16) - Number(addr);
+      const [, , op, operands = ''] = m || objdump;
+      out.push({ off: off.toString(16).padStart(4, '0'), key: mnemonic(op), text: `${op.toLowerCase()} ${operands}`.trim() });
+    } else if (/^\w+:$/.test(line.trim())) out.push({ label: line.trim() });
   }
   return out;
 }
 
 function alignedAsm(oursText, origText, addr) {
   const ours = parseOurs(oursText);
-  const orig = parseOriginal(origText);
+  const orig = parseOriginal(origText, addr);
   const origInsns = orig.filter((x) => !x.label);
+  if (!ours.length || !origInsns.length) return twoPanes(['Our compiled code', oursText], [`Original at ${addr}`, origText]);
   const rows = alignRows(ours, origInsns);
   const labelsBefore = new Map();
   let labels = [];
@@ -1845,6 +1878,7 @@ function alignedAsm(oursText, origText, addr) {
     }
     const cls = !row.a || !row.b ? 'gap' : row.a.key !== row.b.key ? 'differs' : looseOperands(row.a.text) === looseOperands(row.b.text) ? 'same' : 'operands';
     const tr = el('div', null, `asm-row ${cls}`);
+    if (row.a) tr.dataset.ourOffset = Number.parseInt(row.a.off, 16);
     tr.append(asmCell(row.a), asmCell(row.b));
     body.append(tr);
   }

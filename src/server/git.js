@@ -4,12 +4,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { plainDeclaration, FORWARD } from './affected.js';
 import { movedFrom } from '../shared/lint.js';
 
 // `git merge-file -p` prints the whole merged file: the largest units exceed execFileSync's 1 MB default.
 const MERGE_OPTS = { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 };
+const exec = promisify(execFile);
 
 const MARK = 31; // conflict-marker width that ordinary source never contains
 const HEADER = /\.(h|hh|hpp|hxx|inl)$/i;
@@ -80,6 +82,11 @@ export class Repo {
       if (why) e.message = `git ${args.find((a) => !a.startsWith('-') && !a.includes('=')) ?? ''} failed: ${why.slice(0, 2000)}`;
       throw e;
     }
+  }
+
+  async readGit(args) {
+    const { stdout } = await exec('git', ['-c', 'core.ignorecase=false', ...args], { cwd: this.dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    return stdout;
   }
 
   head() {

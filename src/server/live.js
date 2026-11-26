@@ -152,17 +152,24 @@ export class Live {
         this.lastProgress = ps;
         this.broadcast({ type: 'progress', data: p });
       }
-      const m = this.map();
-      if (this.lastMap && this.lastMap.length === m.states.length && this.lastScores?.length === m.scores.length) {
+    }
+    // Sample even without a new event: some changes emit none, and an event may arrive while
+    // the previous snapshot is still cached. A revision detects clients that missed a delta.
+    const m = this.map();
+    const last = this.lastMap;
+    if (!last || last.revision !== m.revision) {
+      if (!last || last.version !== m.version || last.rows.length !== m.rows.length) {
+        this.broadcast({ type: 'map-reload' });
+      } else {
         const changes = [];
-        for (let i = 0; i < m.states.length; i++) {
-          if (m.states[i] !== this.lastMap[i] || m.scores[i] !== this.lastScores[i]) changes.push([i, m.states[i], m.scores[i]]);
+        for (let i = 0; i < m.rows.length && changes.length < 512; i++) {
+          if (m.rows[i].some((v, j) => v !== last.rows[i][j])) changes.push([i, m.rows[i]]);
         }
-        if (changes.length && changes.length < 5000) this.broadcast({ type: 'map', changes });
-        else if (changes.length) this.broadcast({ type: 'map-reload' });
+        this.broadcast(changes.length < 512
+          ? { type: 'map', base: last.revision, revision: m.revision, changes }
+          : { type: 'map-reload' });
       }
-      this.lastMap = m.states;
-      this.lastScores = m.scores;
+      this.lastMap = m;
     }
     // Functions move without events (a build advances one unit at a time), so the board is compared
     // every tick and only what changed goes out: to signed-in viewers only, computed only for them.

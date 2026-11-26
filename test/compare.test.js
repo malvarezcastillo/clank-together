@@ -57,6 +57,7 @@ test('exact match when every referenced symbol is known', () => {
   const { fn } = run({ nameIndex: new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00001']]) });
   assert.equal(fn.status, STATUS.EXACT);
   assert.equal(fn.score, 1);
+  assert.equal(fn.differingBytes, 0);
   assert.equal(fn.symbol, '?Update@Player@@QAEXXZ');
   assert.equal(fn.demangled, 'Player::Update');
 });
@@ -90,6 +91,7 @@ test('with a relocation table, an absolute pointer it does not mark is a mismatc
   const known = new Map([['?Callee@@YAXXZ', 'fn_00002'], ['?g_val@@3HA', 'gl_00001']]);
   const fn = compareObject({ obj: new CoffObject(f.obj), listing: parseListing(f.listing), file: FILE, annotations, symbols: symbols(), nameIndex: known, pe }).functions[0];
   assert.equal(fn.status, STATUS.MISMATCH);
+  assert.equal(fn.differingBytes, 0, 'a failed reference is not a byte difference');
   assert.equal(fn.relocations[0].reason, 'original has no absolute pointer at this offset');
 });
 
@@ -346,6 +348,7 @@ test('reconcile accepts a known name the original reaches through an equivalent 
 test('byte differences are reported with the instruction at that offset', () => {
   const { fn } = run({ objPatch: (b) => (b[13] = 0x90) });
   assert.equal(fn.status, STATUS.MISMATCH);
+  assert.equal(fn.differingBytes, 1);
   assert.equal(fn.diffRegions.length, 1);
   assert.equal(fn.diffRegions[0].offset, 13);
   assert.equal(fn.diffRegions[0].ours, '90');
@@ -355,12 +358,35 @@ test('byte differences are reported with the instruction at that offset', () => 
   assert.ok(fn.score > 0.9 && fn.score < 1);
 });
 
+test('differingBytes counts positions, not merged or capped display regions', () => {
+  const bytes = Buffer.alloc(128);
+  for (let i = 0; i < 26; i++) bytes[i * 4] = 1;
+  bytes[2] = 1; // joins the first two runs without making the intervening bytes different
+  const fn = { bytes, relocs: [] };
+  const pe = { read: () => Buffer.alloc(bytes.length), baseRelocations: () => new Set(), tlsBase: () => null };
+  const result = compareFunction({ fn, addr: FN_ADDR, origSize: bytes.length, pe });
+  assert.equal(result.differingBytes, 27);
+  assert.equal(result.diffRegions.length, 24);
+  assert.equal(result.diffRegions[0].length, 5);
+});
+
 test('size mismatches fall back to a similarity score', () => {
   const syms = symbols();
   syms.get('fn_00001').size = 20;
   const { fn } = run({ syms });
   assert.equal(fn.status, STATUS.MISMATCH);
+  assert.equal(fn.differingBytes, null);
   assert.ok(fn.score > 0.5 && fn.score < 1);
+});
+
+test('unknown original size retains provisional status but has no byte count', () => {
+  const syms = symbols();
+  syms.get('fn_00001').size = null;
+  const { fn } = run({ syms, objPatch: (b) => (b[13] = 0x90) });
+  assert.equal(fn.status, STATUS.MISMATCH);
+  assert.equal(fn.size.original, null);
+  assert.equal(fn.differingBytes, null);
+  assert.equal(fn.diffRegions.length, 1);
 });
 
 test('annotation with an ID that has no address in this version', () => {

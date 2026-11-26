@@ -80,12 +80,9 @@ export class Originals {
   }
 
   async objdump(file, addr, size) {
-    const r = await run('objdump', ['-d', '-M', 'intel', '--no-addresses', `--start-address=0x${hex(addr)}`, `--stop-address=0x${hex(addr + Math.min(size, 65536))}`, file], { timeoutMs: 30_000 });
-    if (r.code !== 0) {
-      // Older binutils lack --no-addresses.
-      const r2 = await run('objdump', ['-d', '-M', 'intel', `--start-address=0x${hex(addr)}`, `--stop-address=0x${hex(addr + Math.min(size, 65536))}`, file], { timeoutMs: 30_000 });
-      return cleanObjdump(r2.output);
-    }
+    // Keep instruction addresses so the comparison can align and label objdump fallback rows.
+    const r = await run('objdump', ['-d', '-M', 'intel', `--start-address=0x${hex(addr)}`, `--stop-address=0x${hex(addr + Math.min(size, 65536))}`, file], { timeoutMs: 30_000 });
+    if (r.code !== 0) throw new HttpError(503, 'original disassembly is unavailable');
     return cleanObjdump(r.output);
   }
 }

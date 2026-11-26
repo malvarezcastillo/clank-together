@@ -1,9 +1,9 @@
 // Human review decisions and the serialized merge queue.
 
 import { HttpError } from './http.js';
-import { now } from './db.js';
+import { now, hardReferenceConflicts, recordFunctionStatus } from './db.js';
 import { hasRole } from './accounts.js';
-import { STATUS, relocOnly, resolvedEffectiveHash, isCompilerGenerated } from '../shared/compare.js';
+import { STATUS, resolvedEffectiveHash, isCompilerGenerated } from '../shared/compare.js';
 import { reconcile } from '../shared/reconcile.js';
 import { returnBatch, batchAttempts, settleBatch, retireSentBack, LIVE_STATES, holdFor } from './batches.js';
 import { withoutFunctions, functionRegions } from './split.js';
@@ -512,7 +512,7 @@ export class Merger {
     if (grown) this.project.compile.units = grown.units;
 
     this.store.tx(() => {
-      this.applyCheckToDatabase(check, rec, commit, batch.user_id, { confirmedIds });
+      this.applyCheckToDatabase(check, rec, commit, batch.user_id, { confirmedIds, comparisonVersion: cacheSnapshot?.version });
       for (const a of attempts) {
         this.store.run(`UPDATE attempts SET state = 'merged', merged_commit = ? WHERE id = ?`, commit, a.id);
         this.store.run(`UPDATE tasks SET state = 'done', lease_user = NULL, updated_at = ? WHERE id = ?`, now(), a.task_id);
@@ -615,7 +615,7 @@ export class Merger {
    * Records what a check on main learned: per-function status, decorated
    * names and new symbols for previously unknown references.
    */
-  applyCheckToDatabase(check, rec, commit, userId, { confirmedIds = new Set() } = {}) {
+  applyCheckToDatabase(check, rec, commit, userId, { confirmedIds = new Set(), comparisonVersion } = {}) {
     const v = this.store.currentVersion();
     const pe = this.getPe();
     for (const u of check.units) {
@@ -634,16 +634,12 @@ export class Merger {
     }
     const compiledUnits = new Set(check.units.filter((u) => u.compiled).map((u) => u.file));
     const addressOf = boundAddresses(check, this.store.symbolMap(v.id));
+    const hardConflicts = hardReferenceConflicts(rec);
     for (const [id, { f, unit }] of bestResults(check)) {
       // A status measured in a unit this check did not compile is not lowered from a partial view.
       const old = this.store.get('SELECT status, file FROM func_status WHERE symbol_id = ?', id);
       if (old && !compiledUnits.has(old.file) && RANK[old.status] > RANK[f.status]) continue;
-      this.store.run(
-        `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash, reloc_only, effective_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(symbol_id) DO UPDATE SET file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at, code_hash = COALESCE(excluded.code_hash, func_status.code_hash), reloc_only = excluded.reloc_only, effective_hash = COALESCE(excluded.effective_hash, func_status.effective_hash),
-           confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 WHEN excluded.status IN ('exact', 'match_unresolved') THEN 0 WHEN func_status.status IN ('exact', 'match_unresolved') THEN 1 ELSE func_status.confirmed END`,
-        f.id, unit, f.status, f.score, commit, now(), confirmedIds.has(f.id) ? 1 : 0, f.codeHash ?? null, relocOnly(f) ? 1 : 0, resolvedEffectiveHash(f, addressOf),
-      );
+      recordFunctionStatus(this.store, f, unit, { commit, version: comparisonVersion ?? v.id, effectiveHash: resolvedEffectiveHash(f, addressOf), hardConflicts, confirmed: confirmedIds.has(id) });
       if (f.demangled) this.store.run('UPDATE symbols SET name = ? WHERE id = ? AND name IS NULL', f.demangled, f.id);
       this.store.run('UPDATE symbols SET unit = ? WHERE id = ? AND unit IS NULL', unit, f.id);
       if (f.status === STATUS.EXACT || f.status === STATUS.UNRESOLVED) {

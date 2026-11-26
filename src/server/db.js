@@ -3,7 +3,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import { formatSymbolId } from '../shared/annotations.js';
-import { relocOnly } from '../shared/compare.js';
+import { STATUS, relocOnly } from '../shared/compare.js';
 
 // Accounts. Registrations stay 'pending' until approved unless auto-approval is on.
 // Approved users create API tokens for their agents; the browser uses short-lived
@@ -301,6 +301,52 @@ CREATE TRIGGER IF NOT EXISTS tasks_done_stays_done BEFORE UPDATE OF state ON tas
 export const now = () => Date.now();
 export const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
+/** The reconciliation conflicts which are wrong references, not merely ambiguous names. */
+export function hardReferenceConflicts(rec) {
+  const hard = new Map();
+  for (const c of rec?.conflicts ?? []) if (c.hard) hard.set(c.symbol, c);
+  return hard;
+}
+
+/** Record one main result and its measurement together; a non-comparison clears old evidence. */
+export function recordFunctionStatus(store, f, unit, { commit, version, effectiveHash, hardConflicts, confirmed = false }) {
+  const measured = f.addr != null && f.size?.ours != null && Object.hasOwn(f, 'differingBytes');
+  const originalSize = measured ? f.size.original ?? null : null;
+  let comparison = null;
+  let failingReferences = null;
+  if (measured) {
+    let relocations = f.relocations ?? [];
+    if (f.status === STATUS.EXACT && f.comparisonStatus === STATUS.UNRESOLVED) relocations = [];
+    else if (f.status === STATUS.MISMATCH && f.comparisonStatus === STATUS.UNRESOLVED) {
+      // Reconcile can mark a formerly unresolved reference as wrong without changing the score
+      // or mutating the raw compiler evidence that a later retry needs.
+      relocations = relocations.map((r) => {
+        const conflict = r.unresolved ? hardConflicts.get(r.symbol) : null;
+        return conflict && conflict.actual === r.actual ? { ...r, ok: false, unresolved: false, reason: conflict.message } : r;
+      });
+    }
+    failingReferences = 0;
+    for (const r of relocations) if (!r.ok) failingReferences++;
+    comparison = JSON.stringify({ asm: f.asm ?? null, size: { ours: f.size.ours, original: originalSize }, diffRegions: f.diffRegions ?? [], relocations, file: f.file ?? null, line: f.line ?? null });
+  }
+  store.run(
+    `INSERT INTO func_status (symbol_id, file, status, score, commit_hash, updated_at, confirmed, code_hash, reloc_only, effective_hash,
+                              our_size, differing_bytes, failing_references, comparison_json, comparison_version, comparison_addr, comparison_size)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(symbol_id) DO UPDATE SET
+       file = excluded.file, status = excluded.status, score = excluded.score, commit_hash = excluded.commit_hash, updated_at = excluded.updated_at,
+       code_hash = COALESCE(excluded.code_hash, func_status.code_hash), reloc_only = excluded.reloc_only,
+       effective_hash = COALESCE(excluded.effective_hash, func_status.effective_hash), our_size = excluded.our_size,
+       differing_bytes = excluded.differing_bytes, failing_references = excluded.failing_references,
+       comparison_json = excluded.comparison_json, comparison_version = excluded.comparison_version,
+       comparison_addr = excluded.comparison_addr, comparison_size = excluded.comparison_size,
+       confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 WHEN excluded.status IN ('exact', 'match_unresolved') THEN 0 WHEN func_status.status IN ('exact', 'match_unresolved') THEN 1 ELSE func_status.confirmed END`,
+    f.id, unit, f.status, f.score, commit, now(), confirmed ? 1 : 0, f.codeHash ?? null, relocOnly(f) ? 1 : 0, effectiveHash,
+    measured ? f.size.ours : null, measured ? f.differingBytes : null, failingReferences, comparison,
+    measured ? version : null, measured ? f.addr : null, originalSize,
+  );
+}
+
 export class Store {
   constructor(file) {
     this.db = new DatabaseSync(file);
@@ -315,6 +361,14 @@ export class Store {
     this.addColumn('func_status', 'effective_hash', 'TEXT');
     // 1 when main's code is byte-identical and only references the original has no relocation for differ.
     this.addColumn('func_status', 'reloc_only', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumn('func_status', 'our_size', 'INTEGER');
+    this.addColumn('func_status', 'differing_bytes', 'INTEGER');
+    this.addColumn('func_status', 'failing_references', 'INTEGER');
+    this.addColumn('func_status', 'comparison_json', 'TEXT');
+    // The target ID, address and original size used when measuring the row, not today's metadata.
+    this.addColumn('func_status', 'comparison_version', 'TEXT');
+    this.addColumn('func_status', 'comparison_addr', 'INTEGER');
+    this.addColumn('func_status', 'comparison_size', 'INTEGER');
     this.addColumn('versions', 'label', 'TEXT');
     this.addColumn('check_jobs', 'files_hash', 'TEXT'); // a retry of the same check joins the queued one
     this.addColumn('batches', 'cost', 'INTEGER'); // units its verification compiles (queue order)

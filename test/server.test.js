@@ -2570,3 +2570,65 @@ test('match history: a point per commit, size-weighted over counted functions, p
   assert.ok(Math.abs(r.body.points.at(-1).score - ctx.store.matchNow().score) < 1e-6, 'the last point is the value right now');
   ctx.store.run('DELETE FROM match_history');
 });
+
+test('byte map and main compare use committed measurements independently of attempts', async () => {
+  const token = await activeUser('mapreader');
+  const store = ctx.store;
+  const version = store.currentVersion().id;
+  const addr = 0x4fa000;
+  const unit = 'src/map_fixture.cpp';
+  const header = 'include/map_fixture.h';
+  const id = store.ensureSymbol({ kind: 'function', versionId: version, addr, size: 8, unit }).symbol.id;
+  const library = store.ensureSymbol({ kind: 'function', versionId: version, addr: addr + 32, size: 2, library: true }).symbol.id;
+  const source = (value) => `// FUNCTION: ${id}\ninline int measured() { return ${value}; }\n`;
+  const commit = ctx.repo.commitFiles({ [unit]: '#include "map_fixture.h"\n', [header]: source(1) }, 'map evidence fixture', 'test <test@example.invalid>');
+  ctx.tasks.generate();
+  const fn = {
+    id, addr, file: header, line: 1, status: STATUS.MISMATCH, score: 0.875, size: { ours: 8, original: 8 },
+    asm: '0000  mov eax, 1\n0005  ret', differingBytes: 1,
+    diffRegions: [{ offset: 1, length: 1, ours: '01', original: '02', sourceLine: 2 }], relocations: [],
+  };
+  const check = { units: [{ file: unit, compiled: true, includes: [header], functions: [fn], bindings: {} }] };
+  ctx.merger.applyCheckToDatabase(check, { learned: [], unknown: [] }, commit, null, { confirmedIds: new Set([id]) });
+  store.run(`UPDATE tasks SET state = 'done' WHERE symbol_id = ?`, id);
+  const head = ctx.repo.commitFiles({ [header]: source(3) }, 'edit after measurement', 'test <test@example.invalid>');
+  const mapServer = createApp(ctx);
+  await new Promise((resolve) => mapServer.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${mapServer.address().port}`;
+  const compare = `/api/map/${id}/compare`;
+  const headers = { authorization: `Bearer ${token}` };
+  try {
+    const mapResponse = await fetch(url + '/api/map');
+    const map = await mapResponse.json();
+    assert.equal(map.version, version);
+    const row = (symbol) => map.rows.find((r) => r[0] === symbol);
+    assert.deepEqual(row(id).slice(2, 13), [addr, 8, unit, 'done', 'mismatch', 0.875, 0, 8, 1, 0, 0]);
+    assert.equal(row(id)[14], 1, 'workflow colors use the recorded confirmation, not just a done task');
+    assert.equal(row(library)[14], 0);
+    assert.equal(row(library)[12], 1, 'library code is navigable but outside the budget');
+    assert.equal((await fetch(url + '/api/map', { headers: { 'if-none-match': mapResponse.headers.get('etag') } })).status, 304);
+    assert.equal((await fetch(url + compare)).status, 401, 'original comparison evidence is not public');
+    assert.equal(store.get('SELECT count(*) AS n FROM attempts a JOIN tasks t ON t.id = a.task_id WHERE t.symbol_id = ?', id).n, 0);
+    const response = await fetch(url + compare, { headers });
+    assert.equal(response.status, 200);
+    const details = await response.json();
+    assert.equal(details.head, head);
+    assert.equal(details.measurement.commit, commit);
+    assert.equal(details.measurement.target.asm, fn.asm);
+    assert.deepEqual(details.measurement.target.diffRegions, fn.diffRegions);
+    assert.equal(details.measurement.target.differingBytes, 1);
+    assert.deepEqual(details.measurement.source, { file: header, line: 1, text: source(1).trimEnd() });
+    assert.deepEqual(details.source, { file: header, line: 1, text: source(3).trimEnd() });
+    store.run('UPDATE symbol_addresses SET size = 9 WHERE version_id = ? AND symbol_id = ?', version, id);
+    const stale = await (await fetch(url + compare, { headers })).json();
+    assert.equal(stale.measurement, null, 'a size correction invalidates offsets and diff regions');
+    assert.equal(stale.symbol.size, 9);
+    assert.equal(stale.source.text, source(3).trimEnd());
+    store.run('UPDATE func_status SET comparison_version = NULL, comparison_addr = NULL, comparison_size = NULL, comparison_json = NULL WHERE symbol_id = ?', id);
+    const legacy = await (await fetch(url + compare, { headers })).json();
+    assert.equal(legacy.source.file, header, 'legacy records can locate header source without guessing an assembly listing');
+    assert.equal(legacy.measurement, null);
+  } finally {
+    mapServer.close();
+  }
+});
